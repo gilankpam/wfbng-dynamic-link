@@ -1,0 +1,19 @@
+The API for majestic and waybeam is quite similar
+
+Bit rate change (majestic and waybeam):
+
+GET http://localhost/api/v1/set?video0.bitrate={bitrate}
+
+
+RoiQP (majestic and waybeam):
+
+GET http://localhost/api/v1/set?fpv.roiQp={roiQp}
+
+You can use it together in single request
+
+GET http://localhost/api/v1/set?video0.bitrate={bitrate}&fpv.roiQp={roiQp}
+
+
+Request IDR Frame (majestic and waybeam):
+
+GET http://localhost/request/idr

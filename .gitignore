@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+env/
+*.egg
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+*.swp
+.idea/
+.vscode/
+.claude
+
+# Reference checkout of upstream wfb-ng — not our code.
+wfb-ng/

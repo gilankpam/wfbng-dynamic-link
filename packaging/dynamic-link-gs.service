@@ -1,0 +1,16 @@
+[Unit]
+Description=Dynamic-link GS controller (Phase 0 observer)
+Documentation=https://github.com/ — see docs/dynamic-link-design.md
+After=network.target wfb@gs.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/dynamic-link-gs --config /etc/dynamic-link/gs.yaml --log-file /var/log/dynamic-link-gs.jsonl
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

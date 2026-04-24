@@ -1,0 +1,80 @@
+# conf/radios/m8812eu2.yaml
+#
+# Source for published values: BL-M8812EU2 datasheet V1.0.1.0
+# (2023-11-13), §4 WLAN RF Specification. Chipset: Realtek
+# RTL8812EU.
+#
+# The datasheet publishes sensitivity at MCS 0 and MCS 7 only.
+# MCS 1-6 values in this file are linear-in-dBm interpolation
+# between those endpoints (2.71 dB per step, rounded to int).
+# Field-validate every row per airframe before operational use
+# — antenna gains, front-end losses, and operator country of
+# operation all shift the numbers from the chip-level sheet.
+#
+# Calibrated TX power from datasheet: HT20 MCS7 = 23 dBm;
+# HT40 MCS7 = 22.5 dBm. Going above the calibrated TX power
+# voids EVM specs.
+
+name: BL-M8812EU2
+chipset: RTL8812EU
+
+mcs_min: 0
+mcs_max: 7
+
+bandwidth_supported: [20, 40]
+bandwidth_default:   20
+
+tx_power_min_dBm: 0
+tx_power_max_dBm: 23
+
+sensitivity_dBm:
+  20:
+    0: -96
+    1: -93
+    2: -91
+    3: -88
+    4: -85
+    5: -83
+    6: -80
+    7: -77
+  40:
+    0: -93
+    1: -90
+    2: -88
+    3: -85
+    4: -82
+    5: -80
+    6: -77
+    7: -74
+
+data_rate_Mbps_LGI:
+  20:
+    0:   6.5
+    1:  13.0
+    2:  19.5
+    3:  26.0
+    4:  39.0
+    5:  52.0
+    6:  58.5
+    7:  65.0
+  40:
+    0:  13.5
+    1:  27.0
+    2:  40.5
+    3:  54.0
+    4:  81.0
+    5: 108.0
+    6: 121.5
+    7: 135.0
+
+preferred_k:
+  7: 8
+  6: 8
+  5: 6
+  4: 6
+  3: 4
+  2: 4
+  1: 2
+  0: 2
+
+encoder_bitrate_frac: 0.40

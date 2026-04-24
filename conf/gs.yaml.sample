@@ -1,0 +1,71 @@
+# /etc/dynamic-link/gs.yaml
+
+enabled: false
+
+wfb_ng:
+  # JSON stats API endpoint. Called "stats_port" in the design doc
+  # but bound to wfb-ng's `api_port` in master.cfg (8103 GS / 8102 drone).
+  stats_api: tcp://127.0.0.1:8103
+  tunnel_local_port: 5800
+  mavlink_local_port: 14550
+
+video:
+  framerate: 60
+  per_packet_airtime_us: 80
+  max_latency_ms: 50
+
+fec:
+  n_min: 4
+  n_max: 16
+  k_min: 2
+  k_max: 8
+  depth_max: 3
+
+leading_loop:
+  radio_profile: m8812eu2
+  radio_profiles_dir: /etc/dynamic-link/radios
+  bandwidth: 20
+  mcs_max: 7
+
+  rssi_margin_db: 8
+  rssi_up_guard_db: 3
+  rssi_up_hold_ms: 2000
+  rssi_down_hold_ms: 500
+
+  rssi_target_dBm: -60
+  rssi_deadband_db: 3
+  tx_power_min_dBm: 5
+  tx_power_max_dBm: 23
+  tx_power_cooldown_ms: 1000
+  tx_power_freeze_after_mcs_ms: 2000
+  tx_power_step_max_db: 3
+  tx_power_gain_up_db: 1.0
+  tx_power_gain_down_db: 1.0
+
+  encoder_degrade_order:
+    - bitrate_half
+    - fps_60
+    - fps_30
+    - roi
+    - resolution
+
+smoothing:
+  ewma_alpha_rssi: 0.2
+  ewma_alpha_fec: 0.2
+  ewma_alpha_burst: 0.1
+
+cooldown:
+  min_change_interval_ms_fec: 200
+  min_change_interval_ms_depth: 200
+  min_change_interval_ms_radio: 500
+  min_change_interval_ms_cross: 50
+
+health_timeout_ms: 10000
+
+safe_defaults:
+  video:
+    k: 8
+    n: 12
+  depth: 1
+  mcs: 1
+  bitrate_kbps: 2000

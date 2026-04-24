@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dynamic-link-gs"
+version = "0.1.0"
+description = "Dynamic-link GS controller — Phase 0 observer (log-only)"
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+dynamic-link-gs = "dynamic_link.service:main"
+
+[tool.setuptools]
+package-dir = {"" = "gs"}
+
+[tool.setuptools.packages.find]
+where = ["gs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
