@@ -18,6 +18,7 @@
 #include "dl_ceiling.h"
 #include "dl_config.h"
 #include "dl_log.h"
+#include "dl_mavlink.h"
 #include "dl_osd.h"
 #include "dl_watchdog.h"
 #include "dl_wire.h"
@@ -188,6 +189,7 @@ int main(int argc, char **argv) {
     dl_backend_radio_t *br = dl_backend_radio_open(&cfg);
     dl_backend_enc_t   *be = dl_backend_enc_open(&cfg);
     dl_osd_t           *osd = dl_osd_open(&cfg);
+    dl_mavlink_t       *mav = dl_mavlink_open(&cfg);
 
     if (!bt) dl_log_warn("tx backend not available; FEC/DEPTH/RADIO drops");
 
@@ -239,7 +241,12 @@ int main(int argc, char **argv) {
                 } else {
                     dl_ceiling_result_t cr = dl_ceiling_check(&d, &cfg);
                     if (cr != DL_CEILING_OK) {
-                        dl_osd_event_reject(osd, dl_ceiling_reason(cr));
+                        const char *rsn = dl_ceiling_reason(cr);
+                        dl_osd_event_reject(osd, rsn);
+                        char text[64];
+                        snprintf(text, sizeof(text), "DL REJECT %s", rsn);
+                        dl_mavlink_emit(mav, "reject",
+                                        DL_MAV_SEV_WARNING, text);
                     } else {
                         uint64_t now = now_monotonic_ms();
                         int drc = 0;
@@ -252,6 +259,9 @@ int main(int argc, char **argv) {
                         if (drc < 0) {
                             dl_log_warn("apply: at least one backend failed seq=%u",
                                         d.sequence);
+                            dl_mavlink_emit(mav, "apply_fail",
+                                            DL_MAV_SEV_WARNING,
+                                            "DL APPLY_FAIL backend");
                         } else {
                             dl_log_debug("apply: seq=%u mcs=%u k=%u n=%u d=%u tx=%d br=%u",
                                          d.sequence, d.mcs, d.k, d.n, d.depth,
@@ -276,6 +286,8 @@ int main(int argc, char **argv) {
                 if (br) dl_backend_radio_apply_safe(br, &cfg);
                 if (be) dl_backend_enc_apply_safe(be, &cfg);
                 dl_osd_event_watchdog(osd);
+                dl_mavlink_emit(mav, "watchdog", DL_MAV_SEV_ERROR,
+                                "DL WATCHDOG safe_defaults");
                 /* Invalidate last-states so the next fresh decision emits
                  * everything. */
                 memset(&last_tx, 0, sizeof(last_tx));
@@ -288,6 +300,7 @@ int main(int argc, char **argv) {
     dl_log_info("dl-applier shutting down");
     close(listen_fd);
     close(tick_fd);
+    dl_mavlink_close(mav);
     dl_osd_close(osd);
     dl_backend_enc_close(be);
     dl_backend_radio_close(br);

@@ -21,8 +21,9 @@ static void usage(const char *prog) {
         "         --mcs N --bandwidth {20|40} --tx-power DBM \\\n"
         "         --k N --n N --depth N \\\n"
         "         --bitrate KBPS [--roi-qp QP] [--fps FPS] \\\n"
-        "         [--idr] [--sequence N]\n",
-        prog);
+        "         [--idr] [--sequence N]\n"
+        "       %s --dry-run ... (prints hex bytes to stdout; no send)\n",
+        prog, prog);
 }
 
 static int parse_host_port(const char *s, char *host, size_t hostlen,
@@ -53,11 +54,13 @@ int main(int argc, char **argv) {
         { "fps",       required_argument, 0, 'f' },
         { "idr",       no_argument,       0, 'I' },
         { "sequence",  required_argument, 0, 's' },
+        { "dry-run",   no_argument,       0, 'D' },
         { "help",      no_argument,       0, 'h' },
         { 0 }
     };
 
     const char *target = NULL;
+    bool dry_run = false;
     dl_decision_t d = {
         .magic = DL_WIRE_MAGIC,
         .version = DL_WIRE_VERSION,
@@ -76,7 +79,7 @@ int main(int argc, char **argv) {
     bool have_seq = false;
 
     int c;
-    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:Is:h",
+    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:Is:Dh",
                             opts, NULL)) != -1) {
         switch (c) {
             case 't': target = optarg; break;
@@ -92,17 +95,20 @@ int main(int argc, char **argv) {
             case 'I': d.flags |= DL_FLAG_IDR_REQUEST; break;
             case 's': explicit_seq = (uint32_t)strtoul(optarg, NULL, 10);
                       have_seq = true; break;
+            case 'D': dry_run = true; break;
             case 'h': usage(argv[0]); return 0;
             default:  usage(argv[0]); return 2;
         }
     }
-    if (!target) { usage(argv[0]); return 2; }
+    if (!target && !dry_run) { usage(argv[0]); return 2; }
 
-    char host[128];
-    uint16_t port;
-    if (parse_host_port(target, host, sizeof(host), &port) != 0) {
-        fprintf(stderr, "bad --target %s (want HOST:PORT)\n", target);
-        return 2;
+    char host[128] = {0};
+    uint16_t port = 0;
+    if (target) {
+        if (parse_host_port(target, host, sizeof(host), &port) != 0) {
+            fprintf(stderr, "bad --target %s (want HOST:PORT)\n", target);
+            return 2;
+        }
     }
 
     if (have_seq) {
@@ -120,6 +126,16 @@ int main(int argc, char **argv) {
     if (nbytes != DL_WIRE_ON_WIRE_SIZE) {
         fprintf(stderr, "wire_encode failed\n");
         return 3;
+    }
+
+    if (dry_run) {
+        /* Emit the encoded bytes as lowercase hex to stdout, no spaces,
+         * terminated by a newline. Used by the GS-side contract test. */
+        for (size_t i = 0; i < nbytes; ++i) {
+            printf("%02x", buf[i]);
+        }
+        printf("\n");
+        return 0;
     }
 
     int fd = socket(AF_INET, SOCK_DGRAM, 0);

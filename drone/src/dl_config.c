@@ -48,6 +48,12 @@ void dl_config_defaults(dl_config_t *cfg) {
     strncpy(cfg->encoder_kind, "majestic", DL_CONF_MAX_STR - 1);
     strncpy(cfg->encoder_host, "127.0.0.1", DL_CONF_MAX_STR - 1);
     cfg->encoder_port = 80;
+
+    cfg->mavlink_enable = true;
+    strncpy(cfg->mavlink_addr, "127.0.0.1", DL_CONF_MAX_STR - 1);
+    cfg->mavlink_port = 14560;
+    cfg->mavlink_sysid = 250;   /* unassigned range; won't collide with FC sysid=1 */
+    cfg->mavlink_compid = 191;  /* MAV_COMPONENT_ID_USER1 */
 }
 
 static void trim(char *s) {
@@ -166,6 +172,11 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "encoder_kind") == 0)       SET_STR(encoder_kind);
         else if (strcmp(key, "encoder_host") == 0)       SET_STR(encoder_host);
         else if (strcmp(key, "encoder_port") == 0)       SET_INT_RANGED(encoder_port, uint16_t, 1, 65535);
+        else if (strcmp(key, "mavlink_enable") == 0)     SET_BOOL(mavlink_enable);
+        else if (strcmp(key, "mavlink_addr") == 0)       SET_STR(mavlink_addr);
+        else if (strcmp(key, "mavlink_port") == 0)       SET_INT_RANGED(mavlink_port, uint16_t, 1, 65535);
+        else if (strcmp(key, "mavlink_sysid") == 0)      SET_INT_RANGED(mavlink_sysid, uint8_t, 0, 255);
+        else if (strcmp(key, "mavlink_compid") == 0)     SET_INT_RANGED(mavlink_compid, uint8_t, 0, 255);
         else {
             dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
         }

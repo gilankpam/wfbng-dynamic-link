@@ -6,7 +6,16 @@ wfb_ng:
   # JSON stats API endpoint. Called "stats_port" in the design doc
   # but bound to wfb-ng's `api_port` in master.cfg (8103 GS / 8102 drone).
   stats_api: tcp://127.0.0.1:8103
-  tunnel_local_port: 5800
+
+  # Drone TUN-side address for decision packets (GS → drone).
+  # Matches wfb-ng's tunnel profile (`drone-wfb` interface at 10.5.0.2/24
+  # by default) and the drone.conf listen_port.
+  drone_addr: 10.5.0.2
+  drone_port: 5800
+
+  # Local end of wfb-ng's mavlink stream (where drone → GS STATUSTEXT
+  # arrives). Matches wfb-ng master.cfg [gs_mavlink] `connect://` port.
+  mavlink_local_addr: 127.0.0.1
   mavlink_local_port: 14550
 
 video:
@@ -59,6 +68,15 @@ cooldown:
   min_change_interval_ms_depth: 200
   min_change_interval_ms_radio: 500
   min_change_interval_ms_cross: 50
+
+# Failsafe 2 — oscillation detector (GS-side).
+# If any knob produces > max_changes distinct value changes within
+# window_ms, lock it at the "safer" recent value for lock_ms.
+# Defaults mirror design doc §5 failsafe 2.
+oscillation:
+  window_ms:   30000
+  lock_ms:     60000
+  max_changes: 4
 
 health_timeout_ms: 10000
 

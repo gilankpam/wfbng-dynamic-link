@@ -55,6 +55,15 @@ typedef struct {
     char     encoder_kind[DL_CONF_MAX_STR];
     char     encoder_host[DL_CONF_MAX_STR];
     uint16_t encoder_port;
+
+    /* MAVLink status channel (Phase 2). Drone → GS via wfb-ng's
+     * mavlink stream (plain UDP loopback; wfb-ng's wfb_tx picks up
+     * from 127.0.0.1:14560 on the drone). */
+    bool     mavlink_enable;
+    char     mavlink_addr[DL_CONF_MAX_STR];
+    uint16_t mavlink_port;
+    uint8_t  mavlink_sysid;
+    uint8_t  mavlink_compid;
 } dl_config_t;
 
 /* Populate `cfg` with built-in defaults. */

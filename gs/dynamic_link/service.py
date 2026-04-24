@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from .oscillation import OscillationConfig, OscillationDetector
 from .policy import (
     CooldownConfig,
     FECBounds,
@@ -20,6 +21,7 @@ from .policy import (
 )
 from .predictor import PredictorConfig
 from .profile import load_profile
+from .return_link import ReturnLink
 from .signals import SignalAggregator
 from .sinks import LogSink
 from .stats_client import (
@@ -30,6 +32,7 @@ from .stats_client import (
     StatsClient,
     TxEvent,
 )
+from .wire import Encoder as WireEncoder
 
 log = logging.getLogger("dynamic_link")
 
@@ -178,8 +181,47 @@ async def _run(args: argparse.Namespace) -> int:
     sink = LogSink(stream=sink_stream, verbose=args.verbose)
 
     enabled = bool(raw.get("enabled", False))
-    if not enabled:
-        log.info("enabled=false; running in observer mode (no commands emitted)")
+
+    # ---- Phase 2 wiring ----
+    osc_raw = raw.get("oscillation", {})
+    osc_cfg = OscillationConfig(
+        window_ms=int(osc_raw.get("window_ms", 30_000)),
+        lock_ms=int(osc_raw.get("lock_ms", 60_000)),
+        max_changes=int(osc_raw.get("max_changes", 4)),
+    )
+    oscillation = OscillationDetector(osc_cfg)
+
+    return_link: ReturnLink | None = None
+    wire_encoder: WireEncoder | None = None
+    if enabled:
+        drone_addr = wfb.get("drone_addr", "10.5.0.2")
+        drone_port = int(wfb.get("drone_port", 5800))
+        return_link = ReturnLink(drone_addr, drone_port)
+        wire_encoder = WireEncoder(seq=1)
+        log.info("enabled=true; emitting decisions to %s:%d",
+                 drone_addr, drone_port)
+    else:
+        log.info(
+            "enabled=false; observer mode (oscillation tracks but doesn't override; no wire emit)"
+        )
+
+    mavlink_reader = None
+    mav_local_addr = wfb.get("mavlink_local_addr", "127.0.0.1")
+    mav_local_port = int(wfb.get("mavlink_local_port", 14550))
+    try:
+        from .mavlink_status import MAVLinkStatusReader
+        mavlink_reader = MAVLinkStatusReader(
+            mav_local_addr, mav_local_port,
+            on_event=lambda ev: None,  # logged inside the reader
+        )
+        await mavlink_reader.start()
+    except ImportError as e:
+        log.warning("mavlink_status: unavailable (%s); "
+                    "drone→GS status channel will not surface to the GS log", e)
+    except OSError as e:
+        log.warning("mavlink_status: bind %s:%d failed: %s",
+                    mav_local_addr, mav_local_port, e)
+        mavlink_reader = None
 
     def on_event(ev):
         if isinstance(ev, SettingsEvent):
@@ -191,11 +233,20 @@ async def _run(args: argparse.Namespace) -> int:
             aggregator.update_session(ev.session)
             return
         if isinstance(ev, TxEvent):
-            return  # Phase 0 ignores TX stats
+            return
         if isinstance(ev, RxEvent):
             signals = aggregator.consume(ev)
             decision = policy.tick(signals)
+            ts_ms = int(signals.timestamp * 1000) if signals.timestamp else 0
+            # Oscillation detector runs always; override is applied only
+            # when enabled=true (otherwise we don't want log noise from
+            # overrides we wouldn't have sent).
+            if enabled:
+                decision = oscillation.maybe_override(decision, ts_ms)
             sink.write(decision)
+            if enabled and return_link is not None and wire_encoder is not None:
+                packet = wire_encoder.encode(decision)
+                return_link.send(packet)
 
     if args.replay is not None:
         client = ReplayClient(str(args.replay), on_event)
@@ -213,13 +264,17 @@ async def _run(args: argparse.Namespace) -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, _handle_signal)
-        except NotImplementedError:  # e.g. Windows
+        except NotImplementedError:
             pass
 
     try:
         await client.run()
     finally:
         sink.close()
+        if return_link is not None:
+            return_link.close()
+        if mavlink_reader is not None:
+            mavlink_reader.stop()
 
     return 0
 

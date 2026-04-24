@@ -61,3 +61,19 @@ wlan_dev             = wlan0
 encoder_kind         = majestic
 encoder_host         = 127.0.0.1
 encoder_port         = 80
+
+# ---- MAVLink status channel (Phase 2) -------------------------------
+# Drone → GS status events over wfb-ng's existing `mavlink` stream.
+# We write STATUSTEXT frames to this local UDP port; wfb-ng's wfb_tx
+# picks them up and sends them over the radio. The GS reads them at
+# its own local mavlink port (14550 by default, per wfb-ng master.cfg).
+# Set mavlink_enable = 0 if you're not running wfb-ng's mavlink stream.
+#
+# mavlink_sysid / mavlink_compid identify us on the MAVLink bus.
+# Defaults are in the "unassigned" ranges — they won't collide with
+# typical flight-controller sysid=1 / MAV_COMP_ID_AUTOPILOT1=1.
+mavlink_enable   = 1
+mavlink_addr     = 127.0.0.1
+mavlink_port     = 14560
+mavlink_sysid    = 250
+mavlink_compid   = 191

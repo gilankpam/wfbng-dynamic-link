@@ -150,12 +150,68 @@ def make_encoder_server() -> HTTPServer:
 # Harness — config file, applier spawn, teardown.
 # -----------------------------------------------------------------
 
+class FakeMavlinkSink:
+    """Mock UDP listener that captures STATUSTEXT bytes the drone sends.
+
+    Binds an ephemeral port; the applier config points mavlink_port at
+    this port. We store raw frames; tests decode them with a hand
+    parser for STATUSTEXT.
+    """
+    def __init__(self):
+        self.port = 0
+        self.received: list[bytes] = []
+        self._sock: socket.socket | None = None
+        self._thread: threading.Thread | None = None
+        self._stop = False
+
+    def start(self) -> None:
+        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.settimeout(0.25)
+        self.port = self._sock.getsockname()[1]
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop = True
+        if self._thread: self._thread.join(timeout=1.0)
+        if self._sock: self._sock.close()
+
+    def _run(self) -> None:
+        assert self._sock is not None
+        while not self._stop:
+            try:
+                data, _ = self._sock.recvfrom(512)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            self.received.append(data)
+
+    def statustexts(self) -> list[tuple[int, str]]:
+        """Decode received STATUSTEXT frames to (severity, text)."""
+        out = []
+        for frame in self.received:
+            if len(frame) < 8 or frame[0] != 0xFE or frame[5] != 253:
+                continue
+            plen = frame[1]
+            if len(frame) < 6 + plen + 2:
+                continue
+            payload = frame[6:6 + plen]
+            severity = payload[0]
+            text = payload[1:].rstrip(b"\x00").decode("utf-8", errors="replace")
+            out.append((severity, text))
+        return out
+
+
 @contextlib.contextmanager
 def _sandbox(tmp_path: Path, **overrides):
     wfb = FakeWfbTx()
     wfb.start()
     enc = make_encoder_server()
     enc_port = enc.server_address[1]
+    mav = FakeMavlinkSink()
+    mav.start()
 
     # Pick a free port for the applier's UDP listen.
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -189,6 +245,12 @@ def _sandbox(tmp_path: Path, **overrides):
         "safe_k": 8, "safe_n": 12, "safe_depth": 1,
         "safe_mcs": 1, "safe_bandwidth": 20,
         "safe_tx_power_dBm": 20, "safe_bitrate_kbps": 2000,
+        # MAVLink — point at the FakeMavlinkSink.
+        "mavlink_enable": 1,
+        "mavlink_addr":   "127.0.0.1",
+        "mavlink_port":   mav.port,
+        "mavlink_sysid":  250,
+        "mavlink_compid": 191,
     }
     defaults.update(overrides)
     with open(cfg, "w") as f:
@@ -199,18 +261,30 @@ def _sandbox(tmp_path: Path, **overrides):
         [str(APPLIER), "--config", str(cfg), "--debug"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-    # Wait for applier to bind the socket before we send.
-    for _ in range(50):
-        if _port_open(defaults["listen_addr"], listen_port):
+    # Wait for applier to bind the socket. Probe by trying to bind
+    # the same port ourselves — if our bind succeeds, the applier
+    # hasn't bound yet (so keep waiting); if it fails with EADDRINUSE,
+    # the applier owns it and we're ready to send.
+    deadline = time.monotonic() + 2.0
+    bound = False
+    while time.monotonic() < deadline:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.bind((defaults["listen_addr"], listen_port))
+            probe.close()
+            time.sleep(0.02)
+        except OSError:
+            probe.close()
+            bound = True
             break
-        time.sleep(0.02)
-    else:
+    if not bound:
         proc.terminate()
-        raise RuntimeError("dl-applier did not bind listen port")
+        raise RuntimeError("dl-applier did not bind listen port within 2s")
 
     try:
         yield {
             "wfb": wfb, "encoder": enc, "cfg": defaults,
+            "mavlink": mav,
             "listen_addr": defaults["listen_addr"],
             "listen_port": listen_port,
             "osd_path": osd_path,
@@ -224,6 +298,7 @@ def _sandbox(tmp_path: Path, **overrides):
             proc.kill()
             proc.wait()
         wfb.stop()
+        mav.stop()
         enc.shutdown()
         enc.server_close()
 
@@ -337,6 +412,32 @@ def test_watchdog_pushes_safe_defaults_on_silence(tmp_path: Path):
         # And the OSD should say so.
         content = s["osd_path"].read_text() if s["osd_path"].exists() else ""
         assert "WATCHDOG" in content
+
+
+def test_ceiling_reject_emits_statustext(tmp_path: Path):
+    with _sandbox(tmp_path, mcs_max=5) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target, mcs=7, bandwidth=20, tx_power=18,
+                k=8, n=12, depth=1, bitrate=10000)
+        assert _wait_until(
+            lambda: any("DL REJECT" in t for _, t in s["mavlink"].statustexts()),
+            timeout_s=1.0,
+        ), s["mavlink"].statustexts()
+        texts = [t for _, t in s["mavlink"].statustexts()]
+        assert any("mcs_too_high" in t for t in texts), texts
+
+
+def test_watchdog_emits_statustext(tmp_path: Path):
+    with _sandbox(tmp_path, health_timeout_ms=500) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target, mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2, bitrate=12000, sequence=1)
+        assert _wait_until(lambda: len(s["wfb"].received) >= 3)
+        time.sleep(1.0)  # wait past watchdog
+        assert _wait_until(
+            lambda: any("DL WATCHDOG" in t for _, t in s["mavlink"].statustexts()),
+            timeout_s=1.0,
+        ), s["mavlink"].statustexts()
 
 
 def test_duplicate_sequence_dropped(tmp_path: Path):
