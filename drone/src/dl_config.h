@@ -1,0 +1,72 @@
+/* dl_config.h — drone.conf parser.
+ *
+ * Key=value plaintext, one per line, `#` or `;` starts a comment.
+ * Matches the §6 sample in docs/dynamic-link-design.md with one new
+ * key (`wlan_dev`) added for the iw backend.
+ */
+#pragma once
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#define DL_CONF_MAX_STR 128
+
+typedef struct {
+    /* Listen endpoint for decision packets. */
+    char     listen_addr[DL_CONF_MAX_STR];
+    uint16_t listen_port;
+
+    /* wfb_tx control socket. */
+    char     wfb_tx_ctrl_addr[DL_CONF_MAX_STR];
+    uint16_t wfb_tx_ctrl_port;
+
+    /* Per-airframe ceiling (failsafe 4). */
+    uint8_t  video_k_min;
+    uint8_t  video_k_max;
+    uint8_t  video_n_max;
+    uint8_t  depth_max;
+    uint8_t  mcs_max;
+
+    /* Regulatory / hardware TX power bounds. */
+    int8_t   tx_power_min_dBm;
+    int8_t   tx_power_max_dBm;
+
+    /* IDR throttle. */
+    uint32_t min_idr_interval_ms;
+
+    /* OSD sink (§4B). */
+    bool     osd_enable;
+    char     osd_msg_path[DL_CONF_MAX_STR];
+    uint32_t osd_update_interval_ms;
+
+    /* GS-link watchdog + safe_defaults. */
+    uint32_t health_timeout_ms;
+    uint8_t  safe_k;
+    uint8_t  safe_n;
+    uint8_t  safe_depth;
+    uint8_t  safe_mcs;
+    uint8_t  safe_bandwidth;
+    int8_t   safe_tx_power_dBm;
+    uint16_t safe_bitrate_kbps;
+
+    /* Backends. */
+    char     radio_backend[DL_CONF_MAX_STR];
+    char     wlan_dev[DL_CONF_MAX_STR];
+    char     encoder_kind[DL_CONF_MAX_STR];
+    char     encoder_host[DL_CONF_MAX_STR];
+    uint16_t encoder_port;
+} dl_config_t;
+
+/* Populate `cfg` with built-in defaults. */
+void dl_config_defaults(dl_config_t *cfg);
+
+/* Parse a conf file in place (updates fields of `cfg` that appear in
+ * the file; unmentioned fields keep their incoming values).
+ * Returns 0 on success, -1 on any I/O or parse error (details logged
+ * via dl_log). */
+int dl_config_load(const char *path, dl_config_t *cfg);
+
+/* Validate bounds consistency: safe_defaults fit within the ceiling;
+ * depth_max ≤ 8 (wfb-ng MAX_INTERLEAVE_DEPTH); depth_max > 1 implies
+ * video_n_max ≤ 32. Returns 0 on success, -1 on violation (logged). */
+int dl_config_validate(const dl_config_t *cfg);

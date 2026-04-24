@@ -1,0 +1,63 @@
+# /etc/dynamic-link/drone.conf
+#
+# Parsed by dl-applier at startup. key=value plaintext, one per line.
+# '#' or ';' start a comment.
+
+# ---- Listen endpoint for GS decision packets (over wfb-ng tunnel) ----
+listen_addr = 0.0.0.0
+listen_port = 5800
+
+# ---- wfb_tx control socket (CMD_SET_FEC etc.) -----------------------
+# Operational prereq: set `control_port = 8000` in the matching
+# [tx] section of wfb-ng master.cfg. The default of 0 picks a
+# random port at startup, which the applier can't target.
+wfb_tx_ctrl_addr = 127.0.0.1
+wfb_tx_ctrl_port = 8000
+
+# ---- Per-airframe safety ceiling (failsafe 4) -----------------------
+# depth_max must stay <= 8 (wfb-ng MAX_INTERLEAVE_DEPTH, src/rx.hpp:103).
+# depth_max > 1 forces video_n_max <= 32 (src/tx.cpp:1183).
+# Raise k_min if this airframe should never drop into survival mode.
+video_k_min = 2
+video_k_max = 8
+video_n_max = 16
+depth_max   = 3
+mcs_max     = 7
+
+# TX power hardware / regulatory ceiling. Set to the lower of:
+#   (a) chipset's calibrated operating power,
+#   (b) regulatory limit for the operator's country.
+tx_power_min_dBm = 0
+tx_power_max_dBm = 20
+
+# ---- IDR throttle ---------------------------------------------------
+# Authoritative upper bound on keyframe rate. Lower bound: ~1 frame
+# period (16.7 ms @ 60 fps). Higher = less bandwidth spent on
+# keyframes, but longer corruption window after a missed primary.
+min_idr_interval_ms = 500
+
+# ---- OSD sink (msposd) ----------------------------------------------
+osd_enable              = 1
+osd_msg_path            = /tmp/MSPOSD.msg
+osd_update_interval_ms  = 1000
+
+# ---- GS-link watchdog (failsafe 1) ----------------------------------
+# If no decision packet arrives for this long, push safe_defaults once
+# and stop until a fresh decision arrives.
+health_timeout_ms  = 10000
+safe_k             = 8
+safe_n             = 12
+safe_depth         = 1
+safe_mcs           = 1
+safe_bandwidth     = 20
+safe_tx_power_dBm  = 20
+safe_bitrate_kbps  = 2000
+# short_gi always false — pinned by the applier regardless of GS input.
+
+# ---- Backends -------------------------------------------------------
+radio_backend        = iw
+wlan_dev             = wlan0
+# encoder_kind — one of: waybeam | majestic | none
+encoder_kind         = majestic
+encoder_host         = 127.0.0.1
+encoder_port         = 80

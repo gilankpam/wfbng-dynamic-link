@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+# OpenRC init script for dl-applier.
+
+name="dynamic-link-applier"
+description="Dynamic-link applier (drone, Phase 1)"
+
+command="/usr/local/bin/dl-applier"
+command_args="--config /etc/dynamic-link/drone.conf"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.log"
+
+depend() {
+    need net
+    after wfb
+}

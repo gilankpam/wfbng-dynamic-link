@@ -1,0 +1,16 @@
+[Unit]
+Description=Dynamic-link applier (drone, Phase 1)
+Documentation=see docs/dynamic-link-design.md and docs/phase1-implementation.md
+After=network.target wfb@drone.service
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dl-applier --config /etc/dynamic-link/drone.conf
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,229 @@
+/* dl_config.c — parse /etc/dynamic-link/drone.conf. */
+#include "dl_config.h"
+#include "dl_log.h"
+
+#include <ctype.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define MAX_LINE 256
+#define WFB_MAX_INTERLEAVE_DEPTH 8   /* wfb-ng src/rx.hpp:103 */
+#define WFB_N_LIMIT_WITH_DEPTH   32  /* wfb-ng src/tx.cpp:1183 */
+
+void dl_config_defaults(dl_config_t *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    strncpy(cfg->listen_addr, "0.0.0.0", DL_CONF_MAX_STR - 1);
+    cfg->listen_port = 5800;
+    strncpy(cfg->wfb_tx_ctrl_addr, "127.0.0.1", DL_CONF_MAX_STR - 1);
+    cfg->wfb_tx_ctrl_port = 8000;
+
+    cfg->video_k_min = 2;
+    cfg->video_k_max = 8;
+    cfg->video_n_max = 16;
+    cfg->depth_max   = 3;
+    cfg->mcs_max     = 7;
+
+    cfg->tx_power_min_dBm = 0;
+    cfg->tx_power_max_dBm = 20;
+
+    cfg->min_idr_interval_ms = 500;
+
+    cfg->osd_enable = true;
+    strncpy(cfg->osd_msg_path, "/tmp/MSPOSD.msg", DL_CONF_MAX_STR - 1);
+    cfg->osd_update_interval_ms = 1000;
+
+    cfg->health_timeout_ms = 10000;
+    cfg->safe_k = 8;
+    cfg->safe_n = 12;
+    cfg->safe_depth = 1;
+    cfg->safe_mcs = 1;
+    cfg->safe_bandwidth = 20;
+    cfg->safe_tx_power_dBm = 20;
+    cfg->safe_bitrate_kbps = 2000;
+
+    strncpy(cfg->radio_backend, "iw", DL_CONF_MAX_STR - 1);
+    strncpy(cfg->wlan_dev, "wlan0", DL_CONF_MAX_STR - 1);
+    strncpy(cfg->encoder_kind, "majestic", DL_CONF_MAX_STR - 1);
+    strncpy(cfg->encoder_host, "127.0.0.1", DL_CONF_MAX_STR - 1);
+    cfg->encoder_port = 80;
+}
+
+static void trim(char *s) {
+    char *end;
+    while (*s && isspace((unsigned char)*s)) {
+        memmove(s, s + 1, strlen(s));
+    }
+    end = s + strlen(s);
+    while (end > s && isspace((unsigned char)end[-1])) {
+        *--end = '\0';
+    }
+}
+
+static int parse_int(const char *val, long *out) {
+    char *end;
+    errno = 0;
+    long v = strtol(val, &end, 10);
+    if (errno != 0 || end == val || *end != '\0') return -1;
+    *out = v;
+    return 0;
+}
+
+static int parse_bool(const char *val, bool *out) {
+    if (strcasecmp(val, "1") == 0 || strcasecmp(val, "true") == 0 ||
+        strcasecmp(val, "yes") == 0 || strcasecmp(val, "on") == 0) {
+        *out = true;
+        return 0;
+    }
+    if (strcasecmp(val, "0") == 0 || strcasecmp(val, "false") == 0 ||
+        strcasecmp(val, "no") == 0 || strcasecmp(val, "off") == 0) {
+        *out = false;
+        return 0;
+    }
+    return -1;
+}
+
+#define SET_STR(field) do { strncpy(cfg->field, val, DL_CONF_MAX_STR - 1); \
+                            cfg->field[DL_CONF_MAX_STR - 1] = '\0'; } while(0)
+
+#define SET_INT_RANGED(field, type, lo, hi) do {                      \
+    long _v;                                                          \
+    if (parse_int(val, &_v) != 0 || _v < (lo) || _v > (hi)) {         \
+        dl_log_err("%s:%d: bad value for %s: %s", path, lineno, key, val); \
+        rc = -1; continue;                                            \
+    }                                                                 \
+    cfg->field = (type)_v;                                            \
+} while(0)
+
+#define SET_BOOL(field) do {                                          \
+    bool _v;                                                          \
+    if (parse_bool(val, &_v) != 0) {                                  \
+        dl_log_err("%s:%d: bad bool for %s: %s", path, lineno, key, val); \
+        rc = -1; continue;                                            \
+    }                                                                 \
+    cfg->field = _v;                                                  \
+} while(0)
+
+int dl_config_load(const char *path, dl_config_t *cfg) {
+    FILE *fd = fopen(path, "r");
+    if (!fd) {
+        dl_log_err("config: open %s: %s", path, strerror(errno));
+        return -1;
+    }
+
+    char line[MAX_LINE];
+    int lineno = 0;
+    int rc = 0;
+    while (fgets(line, sizeof(line), fd)) {
+        lineno++;
+        /* strip comments */
+        char *hash = strchr(line, '#');
+        if (hash) *hash = '\0';
+        char *semi = strchr(line, ';');
+        if (semi) *semi = '\0';
+
+        trim(line);
+        if (line[0] == '\0') continue;
+
+        char *eq = strchr(line, '=');
+        if (!eq) {
+            dl_log_err("%s:%d: missing '=': %s", path, lineno, line);
+            rc = -1;
+            continue;
+        }
+        *eq = '\0';
+        char *key = line;
+        char *val = eq + 1;
+        trim(key);
+        trim(val);
+
+        if      (strcmp(key, "listen_addr") == 0)        SET_STR(listen_addr);
+        else if (strcmp(key, "listen_port") == 0)        SET_INT_RANGED(listen_port, uint16_t, 1, 65535);
+        else if (strcmp(key, "wfb_tx_ctrl_addr") == 0)   SET_STR(wfb_tx_ctrl_addr);
+        else if (strcmp(key, "wfb_tx_ctrl_port") == 0)   SET_INT_RANGED(wfb_tx_ctrl_port, uint16_t, 1, 65535);
+        else if (strcmp(key, "video_k_min") == 0)        SET_INT_RANGED(video_k_min, uint8_t, 1, 8);
+        else if (strcmp(key, "video_k_max") == 0)        SET_INT_RANGED(video_k_max, uint8_t, 1, 8);
+        else if (strcmp(key, "video_n_max") == 0)        SET_INT_RANGED(video_n_max, uint8_t, 2, 255);
+        else if (strcmp(key, "depth_max") == 0)          SET_INT_RANGED(depth_max, uint8_t, 1, 8);
+        else if (strcmp(key, "mcs_max") == 0)            SET_INT_RANGED(mcs_max, uint8_t, 0, 7);
+        else if (strcmp(key, "tx_power_min_dBm") == 0)   SET_INT_RANGED(tx_power_min_dBm, int8_t, -10, 30);
+        else if (strcmp(key, "tx_power_max_dBm") == 0)   SET_INT_RANGED(tx_power_max_dBm, int8_t, -10, 30);
+        else if (strcmp(key, "min_idr_interval_ms") == 0) SET_INT_RANGED(min_idr_interval_ms, uint32_t, 0, 60000);
+        else if (strcmp(key, "osd_enable") == 0)         SET_BOOL(osd_enable);
+        else if (strcmp(key, "osd_msg_path") == 0)       SET_STR(osd_msg_path);
+        else if (strcmp(key, "osd_update_interval_ms") == 0) SET_INT_RANGED(osd_update_interval_ms, uint32_t, 100, 60000);
+        else if (strcmp(key, "health_timeout_ms") == 0)  SET_INT_RANGED(health_timeout_ms, uint32_t, 500, 120000);
+        else if (strcmp(key, "safe_k") == 0)             SET_INT_RANGED(safe_k, uint8_t, 1, 8);
+        else if (strcmp(key, "safe_n") == 0)             SET_INT_RANGED(safe_n, uint8_t, 2, 255);
+        else if (strcmp(key, "safe_depth") == 0)         SET_INT_RANGED(safe_depth, uint8_t, 1, 8);
+        else if (strcmp(key, "safe_mcs") == 0)           SET_INT_RANGED(safe_mcs, uint8_t, 0, 7);
+        else if (strcmp(key, "safe_bandwidth") == 0)     SET_INT_RANGED(safe_bandwidth, uint8_t, 20, 40);
+        else if (strcmp(key, "safe_tx_power_dBm") == 0)  SET_INT_RANGED(safe_tx_power_dBm, int8_t, -10, 30);
+        else if (strcmp(key, "safe_bitrate_kbps") == 0)  SET_INT_RANGED(safe_bitrate_kbps, uint16_t, 100, 65535);
+        else if (strcmp(key, "radio_backend") == 0)      SET_STR(radio_backend);
+        else if (strcmp(key, "wlan_dev") == 0)           SET_STR(wlan_dev);
+        else if (strcmp(key, "encoder_kind") == 0)       SET_STR(encoder_kind);
+        else if (strcmp(key, "encoder_host") == 0)       SET_STR(encoder_host);
+        else if (strcmp(key, "encoder_port") == 0)       SET_INT_RANGED(encoder_port, uint16_t, 1, 65535);
+        else {
+            dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
+        }
+    }
+    fclose(fd);
+    return rc;
+}
+
+int dl_config_validate(const dl_config_t *cfg) {
+    int rc = 0;
+
+    if (cfg->video_k_min > cfg->video_k_max) {
+        dl_log_err("config: video_k_min (%u) > video_k_max (%u)",
+                   cfg->video_k_min, cfg->video_k_max);
+        rc = -1;
+    }
+    if (cfg->tx_power_min_dBm > cfg->tx_power_max_dBm) {
+        dl_log_err("config: tx_power_min_dBm (%d) > tx_power_max_dBm (%d)",
+                   cfg->tx_power_min_dBm, cfg->tx_power_max_dBm);
+        rc = -1;
+    }
+    if (cfg->depth_max > WFB_MAX_INTERLEAVE_DEPTH) {
+        dl_log_err("config: depth_max=%u exceeds wfb-ng MAX_INTERLEAVE_DEPTH=%d",
+                   cfg->depth_max, WFB_MAX_INTERLEAVE_DEPTH);
+        rc = -1;
+    }
+    if (cfg->depth_max > 1 && cfg->video_n_max > WFB_N_LIMIT_WITH_DEPTH) {
+        dl_log_err("config: depth_max>1 requires video_n_max<=%d (got %u)",
+                   WFB_N_LIMIT_WITH_DEPTH, cfg->video_n_max);
+        rc = -1;
+    }
+    /* safe_defaults must fit the ceiling. */
+    if (cfg->safe_k < cfg->video_k_min || cfg->safe_k > cfg->video_k_max) {
+        dl_log_err("config: safe_k=%u outside [%u,%u]",
+                   cfg->safe_k, cfg->video_k_min, cfg->video_k_max);
+        rc = -1;
+    }
+    if (cfg->safe_n > cfg->video_n_max) {
+        dl_log_err("config: safe_n=%u > video_n_max=%u",
+                   cfg->safe_n, cfg->video_n_max);
+        rc = -1;
+    }
+    if (cfg->safe_depth > cfg->depth_max) {
+        dl_log_err("config: safe_depth=%u > depth_max=%u",
+                   cfg->safe_depth, cfg->depth_max);
+        rc = -1;
+    }
+    if (cfg->safe_mcs > cfg->mcs_max) {
+        dl_log_err("config: safe_mcs=%u > mcs_max=%u",
+                   cfg->safe_mcs, cfg->mcs_max);
+        rc = -1;
+    }
+    if (cfg->safe_tx_power_dBm < cfg->tx_power_min_dBm ||
+        cfg->safe_tx_power_dBm > cfg->tx_power_max_dBm) {
+        dl_log_err("config: safe_tx_power_dBm=%d outside [%d,%d]",
+                   cfg->safe_tx_power_dBm,
+                   cfg->tx_power_min_dBm, cfg->tx_power_max_dBm);
+        rc = -1;
+    }
+    return rc;
+}
