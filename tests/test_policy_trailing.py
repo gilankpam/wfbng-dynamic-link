@@ -189,6 +189,71 @@ def test_depth_bootstrap_requires_busy_fec_not_just_sustained_loss():
     assert depth == 1
 
 
+def test_depth_steps_down_after_sustained_clean_link():
+    """After enough consecutive zero-loss windows, depth reclaims one
+    step. Walks down one step per threshold period, not all at once,
+    so the link can confirm it tolerates the lower depth before
+    further reductions."""
+    cfg = PolicyConfig(clean_windows_for_depth_stepdown=5)
+    tl = TrailingLoop(cfg)
+    # Start at depth=3. Feed clean windows; depth should drop after 5.
+    depth = 3
+    last_depth = depth
+    for i in range(7):
+        _, _, depth, _ = tl.tick(
+            _sigs(residual_loss_w=0.0, ts=(i + 1) * 0.3),
+            current_k=8, current_n=12, current_depth=depth,
+            ts_ms=(i + 1) * 300.0,
+        )
+    # After 5 clean windows we should have stepped down once (3 → 2).
+    assert depth == 2, f"expected step-down to 2, got {depth}"
+
+
+def test_depth_walks_down_one_step_at_a_time():
+    """Two thresholds met → two step-downs, not one big jump."""
+    cfg = PolicyConfig(clean_windows_for_depth_stepdown=3)
+    tl = TrailingLoop(cfg)
+    depth = 3
+    seen = []
+    for i in range(10):
+        _, _, depth, _ = tl.tick(
+            _sigs(residual_loss_w=0.0, ts=(i + 1) * 0.3),
+            current_k=8, current_n=12, current_depth=depth,
+            ts_ms=(i + 1) * 300.0,
+        )
+        seen.append(depth)
+    # 3 clean → step to 2; counter resets; 3 more clean → step to 1.
+    # Should never reach 0.
+    assert min(seen) == 1
+    assert seen.count(2) >= 1, f"never hit depth=2: {seen}"
+
+
+def test_depth_does_not_step_down_with_recent_loss():
+    """A single loss tick resets the clean-window counter, so
+    subsequent clean ticks must rebuild before step-down can fire."""
+    cfg = PolicyConfig(clean_windows_for_depth_stepdown=5)
+    tl = TrailingLoop(cfg)
+    # 4 clean ticks, then a loss, then 3 more clean — total 7 ticks
+    # but the loss reset means we never accumulate 5 consecutive clean.
+    depth = 3
+    for i in range(4):
+        _, _, depth, _ = tl.tick(
+            _sigs(residual_loss_w=0.0, ts=(i + 1) * 0.3),
+            current_k=8, current_n=12, current_depth=depth, ts_ms=(i + 1) * 300.0,
+        )
+    _, _, depth, _ = tl.tick(
+        _sigs(residual_loss_w=0.05, ts=1.5),
+        current_k=8, current_n=12, current_depth=depth, ts_ms=1500.0,
+    )
+    for i in range(3):
+        _, _, depth, _ = tl.tick(
+            _sigs(residual_loss_w=0.0, ts=1.8 + i * 0.3),
+            current_k=8, current_n=12, current_depth=depth,
+            ts_ms=1800.0 + i * 300.0,
+        )
+    assert depth == 3
+
+
 def test_depth_bootstrap_is_one_shot_at_depth_1():
     """Bootstrap branch only fires at current_depth==1. At depth>=2 we
     rely on the interleaver-internal signals (burst_rate + holdoff_rate),

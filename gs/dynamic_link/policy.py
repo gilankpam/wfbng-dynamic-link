@@ -83,6 +83,12 @@ class PolicyConfig:
     predictor: PredictorConfig = field(default_factory=PredictorConfig)
     max_latency_ms: float = 50.0
     sustained_loss_windows: int = 3  # §4.2 "last two windows also had loss"
+    # §4.2 step-down: how many consecutive zero-loss windows before
+    # depth steps down one notch. At 10 Hz, 10 windows = 1 s of clean
+    # link before reclaiming a depth step. Walks down one step per
+    # threshold-met period (counter resets after each step), so a full
+    # depth=3 → 1 recovery takes ~2 s of sustained clean link.
+    clean_windows_for_depth_stepdown: int = 10
 
 
 # ------------------------------------------------------------------
@@ -301,6 +307,9 @@ class TrailingState:
     recent_loss_windows: list[bool] = field(default_factory=list)
     last_fec_change_ts: float = 0.0
     last_depth_change_ts: float = 0.0
+    # Consecutive zero-loss windows since last loss; drives depth
+    # step-down. Resets to 0 on any loss tick or after a step-down.
+    consecutive_clean_windows: int = 0
 
 
 class TrailingLoop:
@@ -330,6 +339,12 @@ class TrailingLoop:
             st.recent_loss_windows = st.recent_loss_windows[
                 -self.cfg.sustained_loss_windows:
             ]
+
+        # Track consecutive clean windows for depth step-down.
+        if had_loss:
+            st.consecutive_clean_windows = 0
+        else:
+            st.consecutive_clean_windows += 1
 
         new_k, new_n, new_depth = current_k, current_n, current_depth
         idr = False
@@ -369,9 +384,10 @@ class TrailingLoop:
         #   refine     (depth ≥ 2 → higher): the design doc §4.2 trigger
         #     using burst_rate + holdoff_rate. Valid because the interleaver
         #     is on and these counters now reflect reality.
-        if new_depth < self.cfg.fec.depth_max:
-            cooled = (ts_ms - st.last_depth_change_ts
-                      >= self.cfg.cooldown.min_change_interval_ms_depth)
+        cooled_depth = (ts_ms - st.last_depth_change_ts
+                        >= self.cfg.cooldown.min_change_interval_ms_depth)
+        depth_raised = False
+        if cooled_depth and new_depth < self.cfg.fec.depth_max:
             bootstrap = (
                 current_depth == 1
                 and self.sustained_loss()
@@ -380,9 +396,10 @@ class TrailingLoop:
             refine = (
                 signals.burst_rate > 1.0 and signals.holdoff_rate > 0.0
             )
-            if cooled and (bootstrap or refine):
+            if bootstrap or refine:
                 new_depth = min(new_depth + 1, self.cfg.fec.depth_max)
                 st.last_depth_change_ts = ts_ms
+                depth_raised = True
                 if bootstrap:
                     self._reasons.append(
                         f"sustained_loss fec_work={signals.fec_work:.3f} "
@@ -394,6 +411,22 @@ class TrailingLoop:
                         f"holdoff={signals.holdoff_rate:.1f} "
                         f"-> depth={new_depth}"
                     )
+        # Step-down (§4.2): after sustained clean link, reclaim a depth
+        # step. Walks down one notch per threshold-met period; counter
+        # resets so the next step-down requires another clean window.
+        # Don't step down on the same tick we raised.
+        if (not depth_raised
+                and current_depth > 1
+                and cooled_depth
+                and st.consecutive_clean_windows
+                    >= self.cfg.clean_windows_for_depth_stepdown):
+            new_depth = max(current_depth - 1, 1)
+            st.last_depth_change_ts = ts_ms
+            st.consecutive_clean_windows = 0
+            self._reasons.append(
+                f"clean*{self.cfg.clean_windows_for_depth_stepdown} "
+                f"-> depth={new_depth} (stepdown)"
+            )
 
         return new_k, new_n, new_depth, idr
 
