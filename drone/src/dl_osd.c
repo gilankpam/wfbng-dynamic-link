@@ -63,6 +63,11 @@ void dl_osd_write_status(dl_osd_t *o, const dl_decision_t *d, int rssi_dBm) {
              d->k, d->n, d->depth,
              (int)d->tx_power_dBm,
              rssi_dBm);
+    /* Fresh status = the link recovered (or never tripped). Clear any
+     * stale event line so a past WATCHDOG/REJECT toast doesn't sit on
+     * the OSD forever — msposd will keep rendering the last bytes we
+     * wrote, so we have to actively unset. */
+    o->event_line[0] = '\0';
     flush(o);
 }
 
