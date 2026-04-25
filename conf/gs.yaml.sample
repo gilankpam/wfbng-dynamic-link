@@ -69,15 +69,6 @@ cooldown:
   min_change_interval_ms_radio: 500
   min_change_interval_ms_cross: 50
 
-# Failsafe 2 — oscillation detector (GS-side).
-# If any knob produces > max_changes distinct value changes within
-# window_ms, lock it at the "safer" recent value for lock_ms.
-# Defaults mirror design doc §5 failsafe 2.
-oscillation:
-  window_ms:   30000
-  lock_ms:     60000
-  max_changes: 4
-
 health_timeout_ms: 10000
 
 safe_defaults:

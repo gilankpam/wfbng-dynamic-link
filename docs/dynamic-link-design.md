@@ -1134,14 +1134,18 @@ from a sick GS must not depend on the GS.
    control socket and stops touching the TX until a fresh decision
    arrives. The drone never gets stuck at an aggressive setting
    because the GS fell off the air.
-2. **Oscillation detector.** *(GS service, Python.)* If any knob
-   emits the same command > 4 times in 30 s, the controller locks
-   it at its highest recent value for 60 s. Applies to
-   `CMD_SET_FEC`, `CMD_SET_INTERLEAVE_DEPTH`, `CMD_SET_RADIO`,
-   and TX-power updates separately. TX-power's anti-oscillation
-   design (§4.1 inner loop) normally keeps it out of this
-   trigger, but the detector is the backstop when calibration is
-   bad and the dead-band is being chased.
+2. **(Withdrawn)** *Oscillation detector.* The original failsafe 2
+   counted distinct knob-value changes in a window and locked at
+   the "safer" value for 60 s on overflow. Field bring-up showed
+   the trigger fires on normal operation (RSSI walking through a
+   wooded area is enough), and the lock then prevents recovery
+   long after conditions improve. The leading loop's hysteresis
+   (`rssi_up_hold_ms`, `rssi_down_hold_ms`) and the per-knob
+   cooldowns (`min_change_interval_ms_*`) already cap genuine
+   ping-ponging without freezing the link. Removed. If pathological
+   oscillation surfaces in future flight testing, design a
+   targeted detector (e.g., direction-reversal counter) rather
+   than re-introducing this one.
 3. **Never exceed the latency cap.** *(GS service, Python.)*
    Predicted-latency check per §4 above. Refuse, don't degrade
    latency.

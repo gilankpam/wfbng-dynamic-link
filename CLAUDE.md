@@ -28,8 +28,9 @@ Phases (as landed):
 - **Phase 1** — drone `dl-applier` + `dl-inject` CLI. Driven by hand
   or by tests; not yet driven by the GS.
 - **Phase 2** — GS → drone wire + drone → GS MAVLink STATUSTEXT
-  status channel + oscillation detector. Flip `enabled: true` in
-  `gs.yaml` to activate end-to-end.
+  status channel. Flip `enabled: true` in `gs.yaml` to activate
+  end-to-end. (The Phase 2 oscillation detector was removed
+  during bring-up — see design doc §5 failsafe 2.)
 - **Phase 3** (pending) — airframe tuning + flight validation.
 
 ## Repo layout

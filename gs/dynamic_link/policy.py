@@ -399,6 +399,23 @@ class PolicyState:
     bitrate_kbps: int
 
 
+def _fec_aware_bitrate_kbps(
+    bitrate_Mbps: float, k: int, n: int, safe_k: int, safe_n: int,
+) -> int:
+    """Scale a profile bitrate so total on-air rate stays bounded as the
+    trailing loop tightens FEC. The profile's `bitrate_Mbps` is treated
+    as the operator-validated video bitrate at the *default* FEC
+    `(safe_k, safe_n)`. As FEC efficiency drops below default, we scale
+    video bitrate down by the ratio of efficiencies so on-air bitrate
+    stays roughly constant. Capped at the profile value — never auto-
+    boost above what the operator tuned.
+    """
+    default_eff = safe_k / safe_n
+    current_eff = k / n
+    scale = min(1.0, current_eff / default_eff)
+    return int(bitrate_Mbps * 1000 * scale)
+
+
 class Policy:
     """Composes the two loops and runs the latency-budget predictor."""
 
@@ -417,7 +434,10 @@ class Policy:
             k=cfg.safe.k,
             n=cfg.safe.n,
             depth=cfg.safe.depth,
-            bitrate_kbps=int(row.bitrate_Mbps * 1000),
+            bitrate_kbps=_fec_aware_bitrate_kbps(
+                row.bitrate_Mbps, cfg.safe.k, cfg.safe.n,
+                cfg.safe.k, cfg.safe.n,
+            ),
         )
 
     def tick(self, signals: Signals) -> Decision:
@@ -471,7 +491,10 @@ class Policy:
         self.state.k = new_k
         self.state.n = new_n
         self.state.depth = new_depth
-        self.state.bitrate_kbps = int(row.bitrate_Mbps * 1000)
+        self.state.bitrate_kbps = _fec_aware_bitrate_kbps(
+            row.bitrate_Mbps, new_k, new_n,
+            self.cfg.safe.k, self.cfg.safe.n,
+        )
 
         # Assemble Decision.
         knobs_changed: list[str] = []

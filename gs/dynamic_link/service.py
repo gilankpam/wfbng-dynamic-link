@@ -10,7 +10,6 @@ from pathlib import Path
 
 import yaml
 
-from .oscillation import OscillationConfig, OscillationDetector
 from .policy import (
     CooldownConfig,
     FECBounds,
@@ -183,14 +182,6 @@ async def _run(args: argparse.Namespace) -> int:
     enabled = bool(raw.get("enabled", False))
 
     # ---- Phase 2 wiring ----
-    osc_raw = raw.get("oscillation", {})
-    osc_cfg = OscillationConfig(
-        window_ms=int(osc_raw.get("window_ms", 30_000)),
-        lock_ms=int(osc_raw.get("lock_ms", 60_000)),
-        max_changes=int(osc_raw.get("max_changes", 4)),
-    )
-    oscillation = OscillationDetector(osc_cfg)
-
     return_link: ReturnLink | None = None
     wire_encoder: WireEncoder | None = None
     if enabled:
@@ -201,9 +192,7 @@ async def _run(args: argparse.Namespace) -> int:
         log.info("enabled=true; emitting decisions to %s:%d",
                  drone_addr, drone_port)
     else:
-        log.info(
-            "enabled=false; observer mode (oscillation tracks but doesn't override; no wire emit)"
-        )
+        log.info("enabled=false; observer mode (no wire emit)")
 
     mavlink_reader = None
     mav_local_addr = wfb.get("mavlink_local_addr", "127.0.0.1")
@@ -237,12 +226,6 @@ async def _run(args: argparse.Namespace) -> int:
         if isinstance(ev, RxEvent):
             signals = aggregator.consume(ev)
             decision = policy.tick(signals)
-            ts_ms = int(signals.timestamp * 1000) if signals.timestamp else 0
-            # Oscillation detector runs always; override is applied only
-            # when enabled=true (otherwise we don't want log noise from
-            # overrides we wouldn't have sent).
-            if enabled:
-                decision = oscillation.maybe_override(decision, ts_ms)
             sink.write(decision)
             if enabled and return_link is not None and wire_encoder is not None:
                 packet = wire_encoder.encode(decision)
