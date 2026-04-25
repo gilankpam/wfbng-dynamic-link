@@ -149,3 +149,58 @@ def test_depth_not_raised_on_burst_alone():
         current_k=8, current_n=12, current_depth=1, ts_ms=300.0,
     )
     assert depth == 1
+
+
+def test_depth_bootstrap_fires_on_sustained_loss_plus_busy_fec():
+    """At depth=1 wfb-ng's interleaver code path is bypassed
+    (rx.cpp:357), so burst_rate/holdoff_rate are structurally zero
+    and can't trigger the first depth raise. The bootstrap branch uses
+    sustained loss + fec_work as a proxy. Once depth>=2 the interleaver
+    is engaged and the original burst+holdoff trigger takes over."""
+    cfg = PolicyConfig(sustained_loss_windows=3)
+    tl = TrailingLoop(cfg)
+    # Build sustained loss across 3 consecutive windows. Depth stays at
+    # 1 until the third tick because sustained_loss requires all N
+    # windows in history to have loss.
+    depths = []
+    for i in range(3):
+        _, _, depth, _ = tl.tick(
+            _sigs(residual_loss_w=0.05, fec_work=0.20, ts=(i + 1) * 0.3),
+            current_k=8, current_n=12, current_depth=1, ts_ms=(i + 1) * 300.0,
+        )
+        depths.append(depth)
+    # First two ticks: not enough history for sustained_loss → depth=1.
+    # Third tick: history full + still lossy + busy FEC → bootstrap fires.
+    assert depths[-1] == 2, f"expected bootstrap to depth=2, got {depths}"
+
+
+def test_depth_bootstrap_requires_busy_fec_not_just_sustained_loss():
+    """Sustained loss with only marginal FEC work shouldn't bootstrap —
+    the link might just be poor on RSSI; depth=1 is fine until FEC is
+    actually being exercised (which is the signal that loss is bursty
+    enough that interleaving will help)."""
+    cfg = PolicyConfig(sustained_loss_windows=3)
+    tl = TrailingLoop(cfg)
+    for i in range(3):
+        _, _, depth, _ = tl.tick(
+            _sigs(residual_loss_w=0.05, fec_work=0.05, ts=(i + 1) * 0.3),
+            current_k=8, current_n=12, current_depth=1, ts_ms=(i + 1) * 300.0,
+        )
+    assert depth == 1
+
+
+def test_depth_bootstrap_is_one_shot_at_depth_1():
+    """Bootstrap branch only fires at current_depth==1. At depth>=2 we
+    rely on the interleaver-internal signals (burst_rate + holdoff_rate),
+    which are now valid because the interleaver is on."""
+    cfg = PolicyConfig(sustained_loss_windows=3)
+    tl = TrailingLoop(cfg)
+    # Seed sustained loss + busy FEC, but start at depth=2 so the
+    # bootstrap gate (current_depth==1) doesn't apply. Without the
+    # interleaver-internal trigger (burst/holdoff), depth stays put.
+    for i in range(3):
+        _, _, depth, _ = tl.tick(
+            _sigs(residual_loss_w=0.05, fec_work=0.20, ts=(i + 1) * 0.3),
+            current_k=8, current_n=12, current_depth=2, ts_ms=(i + 1) * 300.0,
+        )
+    assert depth == 2

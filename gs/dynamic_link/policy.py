@@ -343,21 +343,6 @@ class TrailingLoop:
                 f"residual_loss={signals.residual_loss_w:.3f} "
                 f"-> ({new_k},{new_n}) +IDR"
             )
-            # Depth escalation only when burst is clumpy AND holdoff firing.
-            if (signals.burst_rate > 1.0 and signals.holdoff_rate > 0.0
-                    and new_depth < self.cfg.fec.depth_max):
-                # Don't lower depth + n in same tick — we're raising both
-                # but never lowering both, so no conflict here.
-                if ts_ms - st.last_depth_change_ts >= (
-                    self.cfg.cooldown.min_change_interval_ms_depth
-                ):
-                    new_depth = min(new_depth + 1, self.cfg.fec.depth_max)
-                    st.last_depth_change_ts = ts_ms
-                    self._reasons.append(
-                        f"burst={signals.burst_rate:.1f} "
-                        f"holdoff={signals.holdoff_rate:.1f} "
-                        f"-> depth={new_depth}"
-                    )
         elif signals.fec_work > 0.05:
             # Preemptive raise — respect cooldown.
             if (ts_ms - st.last_fec_change_ts
@@ -369,6 +354,45 @@ class TrailingLoop:
                     self._reasons.append(
                         f"fec_work={signals.fec_work:.3f} "
                         f"-> ({new_k},{new_n}) preemptive"
+                    )
+
+        # Depth path (independent of FEC k/n path above). Two triggers:
+        #
+        #   bootstrap  (depth=1 → 2): wfb-ng's burst/holdoff counters are
+        #     interleaver-internal and structurally zero while depth==1
+        #     (rx.cpp:357 short-circuits the interleaved code path), so
+        #     they can never trigger the first depth raise. Use a
+        #     non-interleaver proxy: sustained loss across the window plus
+        #     busy FEC. Once depth>1 the interleaver is engaged and the
+        #     real signals become live.
+        #
+        #   refine     (depth ≥ 2 → higher): the design doc §4.2 trigger
+        #     using burst_rate + holdoff_rate. Valid because the interleaver
+        #     is on and these counters now reflect reality.
+        if new_depth < self.cfg.fec.depth_max:
+            cooled = (ts_ms - st.last_depth_change_ts
+                      >= self.cfg.cooldown.min_change_interval_ms_depth)
+            bootstrap = (
+                current_depth == 1
+                and self.sustained_loss()
+                and signals.fec_work > 0.10
+            )
+            refine = (
+                signals.burst_rate > 1.0 and signals.holdoff_rate > 0.0
+            )
+            if cooled and (bootstrap or refine):
+                new_depth = min(new_depth + 1, self.cfg.fec.depth_max)
+                st.last_depth_change_ts = ts_ms
+                if bootstrap:
+                    self._reasons.append(
+                        f"sustained_loss fec_work={signals.fec_work:.3f} "
+                        f"-> depth={new_depth} (bootstrap)"
+                    )
+                else:
+                    self._reasons.append(
+                        f"burst={signals.burst_rate:.1f} "
+                        f"holdoff={signals.holdoff_rate:.1f} "
+                        f"-> depth={new_depth}"
                     )
 
         return new_k, new_n, new_depth, idr

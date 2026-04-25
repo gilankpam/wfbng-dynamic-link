@@ -926,7 +926,18 @@ the reference operating point — matches the `(k=8, n=14) d=3 =
   `n`. Losses are uniform; FEC parity budget is the right answer.
 - `burst_rate` rising AND `holdoff_rate > 0` → raise depth.
   Losses clumping + RX missing deadlines = interleaver is sized
-  too small.
+  too small. *(Refinement trigger; only valid once `depth >= 2`
+  because both counters are interleaver-internal — wfb-ng's
+  `rx.cpp:357` short-circuits the interleaved code path at
+  `depth == 1`, leaving them structurally zero.)*
+- **Bootstrap from `depth == 1`**: the refinement trigger above
+  can never fire while the interleaver is off. To break the
+  chicken-and-egg, raise depth to 2 when the link shows
+  `sustained_loss` (loss in every recent window) AND `fec_work`
+  is high (FEC is being exercised, suggesting clumped loss the
+  interleaver could disperse). Once depth ≥ 2 the interleaver is
+  engaged, the original counters become live, and the refinement
+  trigger takes over.
 - Both signals present → raise both one step.
 
 **On step-down** (multiple consecutive windows with
