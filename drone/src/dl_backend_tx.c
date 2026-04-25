@@ -24,8 +24,25 @@ static uint32_t next_req_id(void) {
     return id++;
 }
 
+/* Discard any queued replies left over from previous timed-out requests.
+ * Without this, the next recv() would read a stale reply whose req_id
+ * doesn't match, desyncing the socket for the rest of the process's
+ * lifetime. */
+static int drain_pending(int fd) {
+    cmd_resp_t junk;
+    int drained = 0;
+    while (recv(fd, &junk, sizeof(junk), MSG_DONTWAIT) >= 0) drained++;
+    return drained;
+}
+
 static int send_and_recv(int fd, const cmd_req_t *req, size_t req_len,
                          cmd_resp_t *resp, const char *label) {
+    int n_drained = drain_pending(fd);
+    if (n_drained > 0) {
+        dl_log_debug("tx_cmd %s: drained %d stale reply%s before send",
+                     label, n_drained, n_drained == 1 ? "" : "ies");
+    }
+
     ssize_t nsent = send(fd, req, req_len, 0);
     if (nsent < 0) {
         dl_log_warn("tx_cmd %s: send: %s", label, strerror(errno));
@@ -35,23 +52,27 @@ static int send_and_recv(int fd, const cmd_req_t *req, size_t req_len,
         dl_log_warn("tx_cmd %s: short send %zd/%zu", label, nsent, req_len);
         return -1;
     }
-    /* 200 ms receive timeout via SO_RCVTIMEO, set once at open. */
-    ssize_t nrecv = recv(fd, resp, sizeof(*resp), 0);
-    if (nrecv < 0) {
-        dl_log_warn("tx_cmd %s: recv: %s", label, strerror(errno));
-        return -1;
+
+    /* Loop on req_id mismatch: a stale reply may still be in transit
+     * from a prior timed-out request. Discard and recv again within
+     * the SO_RCVTIMEO budget; bail when recv times out. */
+    for (;;) {
+        ssize_t nrecv = recv(fd, resp, sizeof(*resp), 0);
+        if (nrecv < 0) {
+            dl_log_warn("tx_cmd %s: recv: %s", label, strerror(errno));
+            return -1;
+        }
+        if ((size_t)nrecv < offsetof(cmd_resp_t, u)) {
+            dl_log_warn("tx_cmd %s: short reply %zd bytes", label, nrecv);
+            return -1;
+        }
+        if (ntohl(resp->req_id) == ntohl(req->req_id)) break;
+        dl_log_debug("tx_cmd %s: discard late reply (sent %u got %u)",
+                     label,
+                     (unsigned)ntohl(req->req_id),
+                     (unsigned)ntohl(resp->req_id));
     }
-    if ((size_t)nrecv < offsetof(cmd_resp_t, u)) {
-        dl_log_warn("tx_cmd %s: short reply %zd bytes", label, nrecv);
-        return -1;
-    }
-    if (ntohl(resp->req_id) != ntohl(req->req_id)) {
-        dl_log_warn("tx_cmd %s: req_id mismatch (sent %u got %u)",
-                    label,
-                    (unsigned)ntohl(req->req_id),
-                    (unsigned)ntohl(resp->req_id));
-        return -1;
-    }
+
     uint32_t rc = ntohl(resp->rc);
     if (rc != 0) {
         dl_log_warn("tx_cmd %s: rc=%u (errno=%s)",
@@ -84,7 +105,11 @@ dl_backend_tx_t *dl_backend_tx_open(const dl_config_t *cfg) {
         return NULL;
     }
 
-    struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 };
+    /* 500 ms — comfortably above observed wfb_tx round-trip on a busy
+     * SoC (200 ms was too tight on SSC338Q under load), but well below
+     * the 10 Hz decision interval so a single hung command can't stall
+     * a whole apply cycle. */
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 500000 };
     if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
         dl_log_warn("tx_cmd: SO_RCVTIMEO: %s", strerror(errno));
     }

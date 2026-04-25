@@ -275,7 +275,11 @@ class LeadingLoop:
 def _ladder_step_up(k: int, n: int) -> tuple[int, int]:
     """One step up the §4.2 ladder within the current k-band.
 
-    At n_max of the band, drop to the next lower band's floor.
+    At n_max of the band, drop to the next lower band's floor — but
+    refuse to land on k=1, which mirrors `predictor.fit_or_degrade`'s
+    "k=1 isn't a real operating band" rule and matches the per-airframe
+    `video_k_min` ceiling. At the floor of the lowest band the loop
+    holds (k, n) and lets depth/encoder degradation carry the load.
     """
     band = LADDER_STEPS.get(k)
     if band is None:
@@ -284,7 +288,10 @@ def _ladder_step_up(k: int, n: int) -> tuple[int, int]:
         if bk == k and bn == n:
             if idx + 1 < len(band):
                 return band[idx + 1]
-            return LADDER_DROP.get(k, (k, n))
+            dropped = LADDER_DROP.get(k, (k, n))
+            if dropped[0] < 2:
+                return k, n
+            return dropped
     # Current (k, n) isn't on the ladder — rebase at this band's floor.
     return band[0]
 

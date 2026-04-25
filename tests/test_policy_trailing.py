@@ -118,6 +118,29 @@ def test_depth_raised_when_burst_and_holdoff_together():
     assert depth == 2
 
 
+def test_ladder_holds_at_k2_floor_does_not_emit_k1():
+    """At the top of the k=2 band (=last entry of LADDER_STEPS[2]),
+    sustained loss must NOT step the ladder to (1, 4). k=1 is below
+    every airframe's ceiling and would be rejected by the drone."""
+    cfg = PolicyConfig()
+    tl = TrailingLoop(cfg)
+    # Walk to (2, 8): the k=2 band's top. Bypass cooldown via residual_loss.
+    pairs = [(2, 4), (2, 6), (2, 8)]
+    k, n = 2, 4
+    for i, expected in enumerate(pairs[1:], start=1):
+        k, n, _, _ = tl.tick(
+            _sigs(residual_loss_w=0.05, ts=i * 0.3),
+            current_k=k, current_n=n, current_depth=1, ts_ms=i * 300.0,
+        )
+        assert (k, n) == expected, f"step {i}"
+    # One more loss tick at (2, 8) must NOT drop to (1, 4).
+    k, n, _, _ = tl.tick(
+        _sigs(residual_loss_w=0.05, ts=1.2),
+        current_k=2, current_n=8, current_depth=1, ts_ms=1200.0,
+    )
+    assert (k, n) == (2, 8)
+
+
 def test_depth_not_raised_on_burst_alone():
     cfg = PolicyConfig()
     tl = TrailingLoop(cfg)
