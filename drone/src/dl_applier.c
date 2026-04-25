@@ -17,6 +17,7 @@
 #include "dl_backend_tx.h"
 #include "dl_ceiling.h"
 #include "dl_config.h"
+#include "dl_dedup.h"
 #include "dl_log.h"
 #include "dl_mavlink.h"
 #include "dl_osd.h"
@@ -96,21 +97,6 @@ static int open_tick_timer(uint32_t interval_ms) {
         return -1;
     }
     return fd;
-}
-
-static bool dedup(uint32_t seq, uint32_t *last_seq, bool *ever) {
-    /* Drop exact duplicates and out-of-order older-than-last sequences.
-     * Wrap tolerance: treat (seq - last) as signed 32-bit — negatives are
-     * old, positives are new. */
-    if (!*ever) {
-        *last_seq = seq;
-        *ever = true;
-        return false;  /* not a dup */
-    }
-    int32_t delta = (int32_t)(seq - *last_seq);
-    if (delta <= 0) return true;
-    *last_seq = seq;
-    return false;
 }
 
 typedef struct {
@@ -202,8 +188,8 @@ int main(int argc, char **argv) {
     dl_decision_t last_radio = {0};
     dl_decision_t last_enc = {0};
     dl_decision_t last_applied = {0};  /* for OSD display only */
-    uint32_t last_seq = 0;
-    bool     ever_seen_seq = false;
+    dl_dedup_t dedup;
+    dl_dedup_init(&dedup);
     int      last_rssi_dBm = 0;  /* Phase 2 will populate from MAVLink */
 
     struct pollfd pfds[2];
@@ -236,7 +222,7 @@ int main(int argc, char **argv) {
                                 (int)dr,
                                 inet_ntoa(src.sin_addr), ntohs(src.sin_port),
                                 got);
-                } else if (dedup(d.sequence, &last_seq, &ever_seen_seq)) {
+                } else if (dl_dedup_check(&dedup, d.sequence)) {
                     dl_log_debug("decode: duplicate seq=%u", d.sequence);
                 } else {
                     dl_ceiling_result_t cr = dl_ceiling_check(&d, &cfg);
@@ -289,10 +275,13 @@ int main(int argc, char **argv) {
                 dl_mavlink_emit(mav, "watchdog", DL_MAV_SEV_ERROR,
                                 "DL WATCHDOG safe_defaults");
                 /* Invalidate last-states so the next fresh decision emits
-                 * everything. */
+                 * everything. Reset dedup too so a GS that restarted with
+                 * a lower seq baseline (or a wedged seq from a stray
+                 * dl-inject) recovers without operator action. */
                 memset(&last_tx, 0, sizeof(last_tx));
                 memset(&last_radio, 0, sizeof(last_radio));
                 memset(&last_enc, 0, sizeof(last_enc));
+                dl_dedup_reset(&dedup);
             }
         }
     }
