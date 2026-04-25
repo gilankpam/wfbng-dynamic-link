@@ -52,9 +52,18 @@ APPLIER := $(OUTDIR)/dl-applier
 INJECT  := $(OUTDIR)/dl-inject
 TESTBIN := $(OUTDIR)/dl-test
 
-.PHONY: all clean test install
+.PHONY: all clean test install ssc338q
 
 all: $(APPLIER) $(INJECT)
+
+# OpenIPC SSC338Q (armv7l, musl, NEON-VFPv4, static).
+ssc338q:
+	$(MAKE) \
+	    CC=armv7l-unknown-linux-musleabihf-gcc \
+	    CFLAGS="-Wall -Wextra -Wformat=2 -std=c11 -D_GNU_SOURCE -march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard -Os" \
+	    LDFLAGS="-lm -lpthread -static" \
+	    OUTDIR=build/ssc338q \
+	    all
 
 $(OUTDIR):
 	mkdir -p $(OUTDIR)

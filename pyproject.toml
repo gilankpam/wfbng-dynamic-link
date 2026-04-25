@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dynamic-link-gs"
 version = "0.1.0"
-description = "Dynamic-link GS controller — Phase 0 observer (log-only)"
+description = "Dynamic-link GS controller"
 requires-python = ">=3.10"
 dependencies = [
     "PyYAML>=6.0",

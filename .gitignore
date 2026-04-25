@@ -17,3 +17,6 @@ dist/
 
 # Reference checkout of upstream wfb-ng — not our code.
 wfb-ng/
+
+# Operator-specific deploy bundle (hardcoded host, init script, wrapper).
+deploy/
