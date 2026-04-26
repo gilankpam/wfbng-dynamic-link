@@ -165,3 +165,41 @@ def test_link_starved_false_when_packet_rate_high():
     agg.consume(_rx(0.1, data=2000))   # session bootstrapped
     s = agg.consume(_rx(0.2, data=200))  # 2000 pps - well above
     assert s.link_starved_w is False
+
+
+def test_snr_slope_initialises_zero_on_first_window():
+    agg = SignalAggregator()
+    s = agg.consume(_rx(0.1, ants=[(-55, -55, 25, 25)]))
+    # First sample — no prior to diff against.
+    assert s.snr_slope == 0.0
+
+
+def test_snr_slope_tracks_per_tick_delta_with_alpha():
+    agg = SignalAggregator(ewma_alpha_rssi=1.0,         # no smoothing on s.snr
+                           ewma_alpha_snr_slope=1.0)    # no smoothing on slope
+    # Two windows with snr 20 → 25. Δ = +5.
+    s = agg.consume(_rx(0.1, ants=[(-50, -50, 20, 20)]))
+    assert s.snr == 20.0
+    s = agg.consume(_rx(0.2, ants=[(-50, -50, 25, 25)]))
+    # alpha=1.0 → slope = delta = 5.0
+    assert abs(s.snr_slope - 5.0) < 1e-9
+
+
+def test_snr_slope_stable_under_constant_snr():
+    agg = SignalAggregator(ewma_alpha_rssi=1.0,
+                           ewma_alpha_snr_slope=0.5)
+    # Repeated identical windows — slope should converge to 0.
+    for _ in range(10):
+        s = agg.consume(_rx(0.1, ants=[(-50, -50, 25, 25)]))
+    assert abs(s.snr_slope) < 1e-9
+
+
+def test_snr_slope_tracks_negative_trend():
+    agg = SignalAggregator(ewma_alpha_rssi=1.0,
+                           ewma_alpha_snr_slope=1.0)
+    # Falling SNR: 30 → 25 → 20 → 15.
+    agg.consume(_rx(0.1, ants=[(-50, -50, 30, 30)]))
+    s = agg.consume(_rx(0.2, ants=[(-50, -50, 25, 25)]))
+    assert s.snr_slope == -5.0
+    s = agg.consume(_rx(0.3, ants=[(-50, -50, 20, 20)]))
+    assert s.snr_slope == -5.0

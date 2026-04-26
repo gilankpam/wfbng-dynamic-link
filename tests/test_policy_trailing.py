@@ -271,12 +271,8 @@ def _policy(**overrides) -> Policy:
     prof = load_profile("m8812eu2", [PACKAGED_DIR])
     leading_overrides = overrides.pop("leading", {})
     leading = LeadingLoopConfig(
-        # Settle TX power so it doesn't move around in these tests.
-        tx_power_freeze_after_mcs_ms=0.0,
-        tx_power_cooldown_ms=0.0,
+        tx_power_min_dBm=5.0,
         tx_power_max_dBm=30.0,
-        snr_margin_db=3.0,
-        forced_drop_inhibit_ms=0.0,  # tests opt-in by overriding
         **leading_overrides,
     )
     cfg = PolicyConfig(
@@ -303,42 +299,83 @@ def _starved_sigs(ts_ms: float, *, link_starved: bool) -> Signals:
     )
 
 
-def test_starvation_triggers_forced_drop_after_n_windows():
+def _settle_at_max_mcs(p, base_ts: float = 0.0) -> float:
+    """Drive the policy up to its MCS cap with healthy non-starved signals.
+    Returns the next ts to use."""
+    ts = base_ts
+    for _ in range(200):
+        if p.state.mcs >= p.cfg.gate.max_mcs:
+            break
+        p.tick(_starved_sigs(ts, link_starved=False))
+        ts += 100.0
+    return ts
+
+
+def test_starvation_needs_n_consecutive_windows():
+    """Per-tick link_starved_w is too noisy on bursty video traffic
+    to trigger emergency directly — need N consecutive starved
+    windows. starvation_windows=5 is the default."""
     p = _policy(starvation_windows=5)
+    ts = _settle_at_max_mcs(p)
     start_mcs = p.state.mcs
-    # 4 starved ticks → no drop yet.
-    for i in range(4):
-        d = p.tick(_starved_sigs(i * 100.0, link_starved=True))
+    # 4 starved ticks → still no drop.
+    for _ in range(4):
+        d = p.tick(_starved_sigs(ts, link_starved=True))
+        ts += 100.0
     assert d.mcs == start_mcs
-    # 5th starved tick → forced drop fires.
-    d = p.tick(_starved_sigs(400.0, link_starved=True))
+    # 5th consecutive starved → emergency fires.
+    d = p.tick(_starved_sigs(ts, link_starved=True))
     assert d.mcs < start_mcs
-    assert "forced_mcs_drop" in d.reason
+    assert "emergency" in d.reason and "starved" in d.reason
+
+
+def test_starvation_resets_on_recovery():
+    """A non-starved window in the middle resets the accumulator."""
+    p = _policy(starvation_windows=5)
+    ts = _settle_at_max_mcs(p)
+    start_mcs = p.state.mcs
+    # 3 starved
+    for _ in range(3):
+        p.tick(_starved_sigs(ts, link_starved=True))
+        ts += 100.0
+    # 1 healthy → resets
+    p.tick(_starved_sigs(ts, link_starved=False))
+    ts += 100.0
+    # 4 more starved → only 4 in a row, threshold 5, no drop.
+    for _ in range(4):
+        d = p.tick(_starved_sigs(ts, link_starved=True))
+        ts += 100.0
+    assert d.mcs == start_mcs
 
 
 def test_starvation_pins_tx_power_to_max():
-    p = _policy(starvation_windows=2)
-    # Default leading config above sets tx_power_max_dBm=30. Seed power
-    # low so we can see the pin.
+    """Inverse coupling: when sustained starvation drives MCS to 0,
+    TX power follows to max via inverse coupling."""
+    p = _policy(starvation_windows=5)
     p.leading.state.tx_power_dBm = 10.0
-    p.tick(_starved_sigs(0.0, link_starved=True))
-    d = p.tick(_starved_sigs(100.0, link_starved=True))
+    ts = 10_000.0
+    for _ in range(50):
+        d = p.tick(_starved_sigs(ts, link_starved=True))
+        ts += 100.0
+        if d.mcs == 0:
+            break
+    assert d.mcs == 0
     assert d.tx_power_dBm == 30
 
 
-def test_starvation_resets_on_packet_recovery():
-    """A non-starved window between starved ones must reset the counter
-    so we don't drop on stale evidence."""
-    p = _policy(starvation_windows=3)
-    start_mcs = p.state.mcs
-    p.tick(_starved_sigs(0.0, link_starved=True))
-    p.tick(_starved_sigs(100.0, link_starved=True))
-    # Recovery tick.
-    p.tick(_starved_sigs(200.0, link_starved=False))
-    # Two more starved — only 2 in a row, threshold 3 → no drop.
-    p.tick(_starved_sigs(300.0, link_starved=True))
-    d = p.tick(_starved_sigs(400.0, link_starved=True))
-    assert d.mcs == start_mcs
+def test_starvation_holds_at_floor_no_climb():
+    """Continued sustained starvation past the floor doesn't climb
+    back up — the emergency-at-floor guard pins MCS at the bottom."""
+    p = _policy(starvation_windows=5)
+    ts = 10_000.0
+    for _ in range(50):
+        p.tick(_starved_sigs(ts, link_starved=True))
+        ts += 100.0
+    # 50 more starved ticks — should stay pinned at the floor.
+    for _ in range(50):
+        d = p.tick(_starved_sigs(ts, link_starved=True))
+        ts += 100.0
+        assert d.mcs == 0, f"climbed to {d.mcs} during sustained starvation"
 
 
 def test_depth_bootstrap_is_one_shot_at_depth_1():

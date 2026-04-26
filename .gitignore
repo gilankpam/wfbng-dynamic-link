@@ -18,5 +18,13 @@ dist/
 # Reference checkout of upstream wfb-ng — not our code.
 wfb-ng/
 
+# Reference checkout of gilankpam/adaptive-link — porting reference, not our code.
+adaptive-link/
+
 # Operator-specific deploy bundle (hardcoded host, init script, wrapper).
 deploy/
+
+# Flight-log captures pulled from the live GS for offline analysis.
+gs.jsonl
+gs.*.jsonl
+gs.log

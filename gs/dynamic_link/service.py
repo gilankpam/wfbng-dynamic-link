@@ -13,9 +13,11 @@ import yaml
 from .policy import (
     CooldownConfig,
     FECBounds,
+    GateConfig,
     LeadingLoopConfig,
     Policy,
     PolicyConfig,
+    ProfileSelectionConfig,
     SafeDefaults,
 )
 from .predictor import PredictorConfig
@@ -44,20 +46,52 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(fd) or {}
 
 
+_DEPRECATED_LEADING_KEYS = {
+    # Old hysteresis / inhibit knobs — superseded by gate / profile_selection.
+    "snr_margin_db", "snr_up_guard_db", "snr_up_hold_ms", "snr_down_hold_ms",
+    "loss_margin_weight", "fec_margin_weight", "forced_drop_inhibit_ms",
+    "mcs_max",  # moved to gate.max_mcs
+    # Old RSSI closed loop / closed-loop power knobs — fully retired.
+    "rssi_margin_db", "rssi_up_guard_db", "rssi_up_hold_ms",
+    "rssi_down_hold_ms", "rssi_target_dBm", "rssi_deadband_db",
+    "tx_power_cooldown_ms", "tx_power_freeze_after_mcs_ms",
+    "tx_power_step_max_db", "tx_power_gain_up_db", "tx_power_gain_down_db",
+}
+
+
 def _build_policy_config(raw: dict) -> PolicyConfig:
     leading_raw = raw.get("leading_loop", {})
+    gate_raw = raw.get("gate", {})
+    selection_raw = raw.get("profile_selection", {})
     cooldown_raw = raw.get("cooldown", {})
     fec_raw = raw.get("fec", {})
     safe_raw = raw.get("safe_defaults", {})
     video_raw = raw.get("video", {})
 
+    deprecated_present = sorted(
+        k for k in _DEPRECATED_LEADING_KEYS if k in leading_raw
+    )
+    if deprecated_present:
+        log.warning(
+            "leading_loop has deprecated keys (ignored): %s. "
+            "Migrate to the `gate:` / `profile_selection:` sections.",
+            ", ".join(deprecated_present),
+        )
+
     leading = LeadingLoopConfig(
         bandwidth=int(leading_raw.get("bandwidth", 20)),
+        tx_power_min_dBm=float(leading_raw.get("tx_power_min_dBm", 5.0)),
+        tx_power_max_dBm=float(leading_raw.get("tx_power_max_dBm", 23.0)),
+        # Deprecated keys: parse-and-store so they round-trip but the
+        # selector ignores them. Defaults match the old values so any
+        # in-tree consumer relying on them still gets sensible numbers.
         mcs_max=int(leading_raw.get("mcs_max", 7)),
         snr_margin_db=float(leading_raw.get("snr_margin_db", 3.0)),
         snr_up_guard_db=float(leading_raw.get("snr_up_guard_db", 2.0)),
         snr_up_hold_ms=float(leading_raw.get("snr_up_hold_ms", 2000.0)),
         snr_down_hold_ms=float(leading_raw.get("snr_down_hold_ms", 500.0)),
+        loss_margin_weight=float(leading_raw.get("loss_margin_weight", 20.0)),
+        fec_margin_weight=float(leading_raw.get("fec_margin_weight", 20.0)),
         forced_drop_inhibit_ms=float(
             leading_raw.get("forced_drop_inhibit_ms", 5000.0)
         ),
@@ -67,15 +101,52 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         rssi_down_hold_ms=float(leading_raw.get("rssi_down_hold_ms", 500.0)),
         rssi_target_dBm=float(leading_raw.get("rssi_target_dBm", -60.0)),
         rssi_deadband_db=float(leading_raw.get("rssi_deadband_db", 3.0)),
-        tx_power_min_dBm=float(leading_raw.get("tx_power_min_dBm", 5.0)),
-        tx_power_max_dBm=float(leading_raw.get("tx_power_max_dBm", 23.0)),
-        tx_power_cooldown_ms=float(leading_raw.get("tx_power_cooldown_ms", 1000.0)),
+        tx_power_cooldown_ms=float(
+            leading_raw.get("tx_power_cooldown_ms", 1000.0)
+        ),
         tx_power_freeze_after_mcs_ms=float(
             leading_raw.get("tx_power_freeze_after_mcs_ms", 2000.0)
         ),
-        tx_power_step_max_db=float(leading_raw.get("tx_power_step_max_db", 3.0)),
+        tx_power_step_max_db=float(
+            leading_raw.get("tx_power_step_max_db", 3.0)
+        ),
         tx_power_gain_up_db=float(leading_raw.get("tx_power_gain_up_db", 1.0)),
-        tx_power_gain_down_db=float(leading_raw.get("tx_power_gain_down_db", 1.0)),
+        tx_power_gain_down_db=float(
+            leading_raw.get("tx_power_gain_down_db", 1.0)
+        ),
+    )
+
+    gate = GateConfig(
+        snr_ema_alpha=float(gate_raw.get("snr_ema_alpha", 0.3)),
+        snr_slope_alpha=float(gate_raw.get("snr_slope_alpha", 0.3)),
+        snr_predict_horizon_ticks=float(
+            gate_raw.get("snr_predict_horizon_ticks", 3.0)
+        ),
+        snr_safety_margin=float(gate_raw.get("snr_safety_margin", 3.0)),
+        loss_margin_weight=float(gate_raw.get("loss_margin_weight", 20.0)),
+        fec_margin_weight=float(gate_raw.get("fec_margin_weight", 5.0)),
+        hysteresis_up_db=float(gate_raw.get("hysteresis_up_db", 2.5)),
+        hysteresis_down_db=float(gate_raw.get("hysteresis_down_db", 1.0)),
+        emergency_loss_rate=float(gate_raw.get("emergency_loss_rate", 0.05)),
+        emergency_fec_pressure=float(
+            gate_raw.get("emergency_fec_pressure", 0.80)
+        ),
+        max_mcs=int(gate_raw.get("max_mcs", 7)),
+        max_mcs_step_up=int(gate_raw.get("max_mcs_step_up", 1)),
+    )
+
+    selection = ProfileSelectionConfig(
+        hold_fallback_mode_ms=int(
+            selection_raw.get("hold_fallback_mode_ms", 1000)
+        ),
+        hold_modes_down_ms=int(selection_raw.get("hold_modes_down_ms", 2000)),
+        min_between_changes_ms=int(
+            selection_raw.get("min_between_changes_ms", 200)
+        ),
+        fast_downgrade=bool(selection_raw.get("fast_downgrade", True)),
+        upward_confidence_loops=int(
+            selection_raw.get("upward_confidence_loops", 4)
+        ),
     )
     cooldown = CooldownConfig(
         min_change_interval_ms_fec=float(
@@ -112,6 +183,8 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     policy_raw = raw.get("policy", {})
     return PolicyConfig(
         leading=leading,
+        gate=gate,
+        selection=selection,
         cooldown=cooldown,
         fec=fec,
         safe=safe,
@@ -123,11 +196,15 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
 
 def _build_aggregator(raw: dict) -> SignalAggregator:
     s = raw.get("smoothing", {})
-    starv = raw.get("smoothing", {}).get("starvation_threshold_pps", 50.0)
+    gate = raw.get("gate", {})
+    starv = s.get("starvation_threshold_pps", 50.0)
+    # snr_slope alpha lives under [gate] so operators can tune it
+    # alongside the other gate knobs; aggregator just consumes it.
     return SignalAggregator(
         ewma_alpha_rssi=float(s.get("ewma_alpha_rssi", 0.2)),
         ewma_alpha_fec=float(s.get("ewma_alpha_fec", 0.2)),
         ewma_alpha_burst=float(s.get("ewma_alpha_burst", 0.1)),
+        ewma_alpha_snr_slope=float(gate.get("snr_slope_alpha", 0.3)),
         starvation_threshold_pps=float(starv),
     )
 

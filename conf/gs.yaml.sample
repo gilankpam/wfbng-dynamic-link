@@ -34,38 +34,12 @@ leading_loop:
   radio_profile: m8812eu2
   radio_profiles_dir: /etc/dynamic-link/radios
   bandwidth: 20
-  mcs_max: 7
 
-  # MCS hysteresis is SNR-driven. Per-MCS SNR floors live in the
-  # radio profile YAML; snr_margin_db is operator-tuned safety budget
-  # added on top.
-  snr_margin_db: 3
-  snr_up_guard_db: 2
-  snr_up_hold_ms: 2000
-  snr_down_hold_ms: 500
-  # After a forced MCS drop (sustained loss or starvation), inhibit
-  # the up-climb for this long. Defends against survivor-biased SNR
-  # samples instantly snapping MCS back up.
-  forced_drop_inhibit_ms: 5000
-
-  # The rssi_*_hold / rssi_*_guard knobs below are no longer consumed
-  # by the MCS hysteresis (which is SNR-driven). They remain parsed
-  # for back-compat but have no effect on MCS selection.
-  rssi_margin_db: 8
-  rssi_up_guard_db: 3
-  rssi_up_hold_ms: 2000
-  rssi_down_hold_ms: 500
-
-  # The TX power inner loop is RSSI-driven (direct dBm-vs-dBm).
-  rssi_target_dBm: -60
-  rssi_deadband_db: 3
-  tx_power_min_dBm: 5
-  tx_power_max_dBm: 23
-  tx_power_cooldown_ms: 1000
-  tx_power_freeze_after_mcs_ms: 2000
-  tx_power_step_max_db: 3
-  tx_power_gain_up_db: 1.0
-  tx_power_gain_down_db: 1.0
+  # MCS-coupled TX power: power = max - (mcs / gate.max_mcs) * (max - min).
+  # Atomic per tick — when MCS drops, power jumps to max in the same
+  # tick (no ramp).
+  tx_power_min_dBm: 18
+  tx_power_max_dBm: 28
 
   encoder_degrade_order:
     - bitrate_half
@@ -73,6 +47,44 @@ leading_loop:
     - fps_30
     - roi
     - resolution
+
+# Two-channel gate (alink_gs port).
+#
+# Channel A (slow/symmetric): SNR-margin hysteresis with predictive
+# horizon and confidence-loop gating on upgrades.
+# Channel B (fast/asymmetric): emergency triggers — loss / FEC pressure
+# above threshold force an immediate one-step downgrade, bypassing rate
+# limit and hold timers.
+gate:
+  # SNR smoothing
+  snr_ema_alpha: 0.3
+  snr_slope_alpha: 0.3
+  snr_predict_horizon_ticks: 3
+
+  # Stress-widened margin: base + loss*loss_w + fec*fec_w
+  snr_safety_margin: 3
+  loss_margin_weight: 20    # +1 dB per 0.05 loss
+  fec_margin_weight: 5      # +0.5 dB per 0.10 fec_work
+
+  # Channel A (SNR-margin hysteresis) — dB of margin
+  hysteresis_up_db: 2.5
+  hysteresis_down_db: 1.0
+
+  # Channel B (emergency one-step forced-down)
+  emergency_loss_rate: 0.05         # >= 5% loss → force MCS-1 immediately
+  emergency_fec_pressure: 0.80
+
+  # Bounds
+  max_mcs: 5
+  max_mcs_step_up: 1                # 0 = unlimited
+
+# Cadence / hold timers for the dual-gate selector.
+profile_selection:
+  hold_fallback_mode_ms: 1000       # extra hold when climbing out of MCS 0
+  hold_modes_down_ms: 2000          # min between MCS changes
+  min_between_changes_ms: 200       # rate limit (skipped during emergency)
+  fast_downgrade: true              # downgrade bypasses hold_modes_down_ms
+  upward_confidence_loops: 4        # ticks of upgrade-eligibility before climb
 
 smoothing:
   ewma_alpha_rssi: 0.2
