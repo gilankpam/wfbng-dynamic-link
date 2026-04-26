@@ -10,7 +10,6 @@ from __future__ import annotations
 import pytest
 
 from dynamic_link.policy import _fec_aware_bitrate_kbps
-from dynamic_link.predictor import LADDER_DROP, LADDER_STEPS
 
 
 PROFILE_Mbps = 26.0   # MCS7 HT20 m8812eu2: 65 × 0.40
@@ -38,21 +37,21 @@ def test_bitrate_scales_down_at_aggressive_fec():
 
 def test_bitrate_capped_at_profile_for_efficient_fec():
     """A hypothetical FEC more efficient than safe defaults must NOT
-    auto-boost video bitrate above the operator-validated profile.
-    Defensive cap — current ladder doesn't produce this, but guards
-    against future LADDER_STEPS edits."""
+    auto-boost video bitrate above the operator-validated profile."""
     # (k=8, n=10): efficiency 0.8, default 0.667 → ratio 1.2 → cap to 1.0.
     got = _fec_aware_bitrate_kbps(PROFILE_Mbps, 8, 10, SAFE_K, SAFE_N)
     assert got == 26000
 
 
 @pytest.mark.parametrize("k,n", [
-    *(kn for band in LADDER_STEPS.values() for kn in band),
-    *LADDER_DROP.values(),
+    (k, n)
+    for k in (2, 4, 6, 8)
+    for n in range(k + 1, 17)
 ])
-def test_on_air_bitrate_bounded_for_every_ladder_pair(k, n):
-    """For every (k, n) the trailing loop can produce, the resulting
-    on-air bitrate must not exceed the on-air bitrate at safe defaults."""
+def test_on_air_bitrate_bounded_for_every_pair(k, n):
+    """For every plausible (k, n) the controller can produce, the
+    resulting on-air bitrate must not exceed the on-air bitrate at
+    safe defaults."""
     got = _fec_aware_bitrate_kbps(PROFILE_Mbps, k, n, SAFE_K, SAFE_N)
     on_air_default = 26000 * (SAFE_N / SAFE_K)
     on_air_now     = got    * (n / k) if k > 0 else float("inf")

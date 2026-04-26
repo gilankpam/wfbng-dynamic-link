@@ -31,12 +31,10 @@ def test_rssi_mcs_map_mcs7_floor_matches_spec():
     # Highest row first.
     assert rows[0].mcs == 7
     assert rows[0].rssi_floor_dBm == -77 + 8  # -69 dBm from §4.1 table
-    assert rows[0].preferred_k == 8
     # MCS0 row bitrate = 6.5 Mbps * 0.40 = 2.6 Mbps
     mcs0 = rows[-1]
     assert mcs0.mcs == 0
     assert abs(mcs0.bitrate_Mbps - 2.6) < 1e-6
-    assert mcs0.preferred_k == 2
 
 
 def test_rssi_mcs_map_rejects_unsupported_bandwidth():
@@ -64,7 +62,6 @@ def _base_profile() -> dict:
         "sensitivity_dBm": {20: {i: -90 + i for i in range(8)}},
         "snr_floor_dB": {20: {i: 5 + 3 * i for i in range(8)}},
         "data_rate_Mbps_LGI": {20: {i: 6.5 * (i + 1) for i in range(8)}},
-        "preferred_k": {7: 8, 6: 8, 5: 6, 4: 6, 3: 4, 2: 4, 1: 2, 0: 2},
         "encoder_bitrate_frac": 0.40,
     }
 
@@ -74,7 +71,6 @@ def test_rejects_mcs_max_above_7(tmp_path):
     d["mcs_max"] = 8
     d["sensitivity_dBm"][20][8] = -70
     d["data_rate_Mbps_LGI"][20][8] = 80.0
-    d["preferred_k"][8] = 8
     p = _write_profile(tmp_path, d)
     with pytest.raises(ProfileError, match="mcs_max"):
         load_profile_file(p)
@@ -86,30 +82,6 @@ def test_rejects_missing_bandwidth_entry(tmp_path):
     # Missing 40 in sensitivity / data_rate.
     p = _write_profile(tmp_path, d)
     with pytest.raises(ProfileError, match="bw=40"):
-        load_profile_file(p)
-
-
-def test_rejects_non_monotone_preferred_k(tmp_path):
-    d = _base_profile()
-    d["preferred_k"][3] = 8  # jumps back up at mcs=3
-    p = _write_profile(tmp_path, d)
-    with pytest.raises(ProfileError, match="monotone"):
-        load_profile_file(p)
-
-
-def test_rejects_preferred_k_out_of_set(tmp_path):
-    d = _base_profile()
-    d["preferred_k"][7] = 3  # not in {2,4,6,8}
-    p = _write_profile(tmp_path, d)
-    with pytest.raises(ProfileError, match=r"\{2,4,6,8\}"):
-        load_profile_file(p)
-
-
-def test_rejects_missing_preferred_k_row(tmp_path):
-    d = _base_profile()
-    del d["preferred_k"][4]
-    p = _write_profile(tmp_path, d)
-    with pytest.raises(ProfileError, match="preferred_k missing"):
         load_profile_file(p)
 
 

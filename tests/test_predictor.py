@@ -17,6 +17,7 @@ from dynamic_link.predictor import (
     PredictorConfig,
     Proposal,
     fit_or_degrade,
+    max_n_for_latency,
     predict,
 )
 
@@ -71,15 +72,36 @@ def test_fit_or_degrade_drops_depth_first():
     assert result.depth < 4
 
 
-def test_fit_or_degrade_drops_k_when_depth_saturated():
-    # Tight cap at depth=1 forces a k-band drop.
-    # (8, 16) d=1 = 11.2 + 1.28 + 1.0 = ~13.5 ms.
-    # Cap at 10 ms forces drop to (6, 10) = 8.4 + 0.8 + 1 = ~10.2 → drops to (4,8) next.
-    result = fit_or_degrade(Proposal(8, 16, 1), cap_ms=10.0, cfg=REFERENCE_CFG)
-    assert result.k < 8
+def test_fit_or_degrade_refuses_when_depth1_overruns():
+    # depth=1 already overruns; nothing left to drop → BudgetExhausted.
+    # (8, 16) d=1 = 11.2 + 1.28 + 1.0 = ~13.5 ms; cap at 10 ms → no fit.
+    with pytest.raises(BudgetExhausted):
+        fit_or_degrade(Proposal(8, 16, 1), cap_ms=10.0, cfg=REFERENCE_CFG)
 
 
 def test_fit_or_degrade_refuses_when_no_combination_fits():
-    # Cap so tight nothing (not even (2,4) d=1) fits.
+    # Cap so tight nothing fits.
     with pytest.raises(BudgetExhausted):
         fit_or_degrade(Proposal(8, 12, 3), cap_ms=1.0, cfg=REFERENCE_CFG)
+
+
+def test_max_n_for_latency_inverts_predict():
+    """For a given (k, depth, cap), max_n_for_latency returns the
+    largest integer n where predict() ≤ cap."""
+    cap = 50.0
+    for k in (2, 4, 6, 8):
+        for depth in (1, 2, 3):
+            n_max = max_n_for_latency(k, depth, cap, REFERENCE_CFG)
+            if n_max <= 0:
+                continue
+            assert predict(Proposal(k, n_max, depth), REFERENCE_CFG).latency_ms <= cap
+            # n_max + 1 should overrun (or hit some other limit).
+            assert predict(Proposal(k, n_max + 1, depth), REFERENCE_CFG).latency_ms > cap
+
+
+def test_max_n_for_latency_returns_zero_when_fixed_cost_exceeds_cap():
+    """When block_fill + decode + interleave already exceed the cap,
+    no n satisfies — return 0."""
+    # k=8, depth=4 at reference: block_fill=11.2 + decode=1 + 36 interleave = 48.2 ms.
+    # Cap at 5 ms → 0.
+    assert max_n_for_latency(8, 4, cap_ms=5.0, cfg=REFERENCE_CFG) == 0

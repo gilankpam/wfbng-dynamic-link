@@ -11,12 +11,9 @@ class ProfileError(ValueError):
     """Raised on malformed or semantically invalid radio profile."""
 
 
-_ALLOWED_K = frozenset({2, 4, 6, 8})
-
-
 @dataclass(frozen=True)
 class MCSRow:
-    """One row of the runtime RSSI/SNR → (MCS, bitrate, k) map.
+    """One row of the runtime RSSI/SNR → (MCS, bitrate) map.
 
     Both `rssi_floor_dBm` and `snr_floor_dB` are populated by both
     `rssi_mcs_map` and `snr_mcs_map`. The leading loop's MCS hysteresis
@@ -27,7 +24,6 @@ class MCSRow:
     rssi_floor_dBm: float  # sensitivity_dBm[mcs] + rssi_margin_db
     snr_floor_dB: float    # snr_floor_dB[mcs] + snr_margin_db
     bitrate_Mbps: float    # data_rate * encoder_bitrate_frac
-    preferred_k: int
 
 
 @dataclass(frozen=True)
@@ -44,7 +40,6 @@ class RadioProfile:
     sensitivity_dBm: dict[int, dict[int, int]]   # bw -> mcs -> dBm
     snr_floor_dB: dict[int, dict[int, float]]    # bw -> mcs -> dB
     data_rate_Mbps_LGI: dict[int, dict[int, float]]
-    preferred_k: dict[int, int]
     encoder_bitrate_frac: float
 
     def _build_rows(
@@ -67,7 +62,6 @@ class RadioProfile:
                 rssi_floor_dBm=sens[mcs] + rssi_margin_db,
                 snr_floor_dB=snr[mcs] + snr_margin_db,
                 bitrate_Mbps=rates[mcs] * self.encoder_bitrate_frac,
-                preferred_k=self.preferred_k[mcs],
             ))
         return rows
 
@@ -159,27 +153,6 @@ def _validate(data: dict, source: str) -> RadioProfile:
                     f"{source}: data_rate_Mbps_LGI[{bw}] missing mcs={mcs}"
                 )
 
-    preferred_k_raw = req("preferred_k")
-    preferred_k = {int(m): int(k) for m, k in preferred_k_raw.items()}
-    for mcs in range(mcs_min, mcs_max + 1):
-        if mcs not in preferred_k:
-            raise ProfileError(f"{source}: preferred_k missing mcs={mcs}")
-        if preferred_k[mcs] not in _ALLOWED_K:
-            raise ProfileError(
-                f"{source}: preferred_k[{mcs}]={preferred_k[mcs]} not in {{2,4,6,8}}"
-            )
-    # Monotone non-increasing from mcs_max down to mcs_min (i.e. k decreases as
-    # MCS decreases — high MCS uses bigger k blocks).
-    prev = preferred_k[mcs_max]
-    for mcs in range(mcs_max - 1, mcs_min - 1, -1):
-        cur = preferred_k[mcs]
-        if cur > prev:
-            raise ProfileError(
-                f"{source}: preferred_k not monotone non-increasing from "
-                f"mcs_max down (mcs={mcs} k={cur} > prev k={prev})"
-            )
-        prev = cur
-
     encoder_bitrate_frac = float(req("encoder_bitrate_frac"))
     if not 0.0 < encoder_bitrate_frac <= 1.0:
         raise ProfileError(
@@ -198,6 +171,5 @@ def _validate(data: dict, source: str) -> RadioProfile:
         sensitivity_dBm=sensitivity,
         snr_floor_dB=snr_floor,
         data_rate_Mbps_LGI=data_rate,
-        preferred_k=preferred_k,
         encoder_bitrate_frac=encoder_bitrate_frac,
     )

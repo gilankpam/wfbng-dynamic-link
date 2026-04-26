@@ -162,12 +162,25 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
             cooldown_raw.get("min_change_interval_ms_cross", 50.0)
         ),
     )
+    raw_max_red = fec_raw.get("max_redundancy_ratio", 1.0)
     fec = FECBounds(
         n_min=int(fec_raw.get("n_min", 4)),
-        n_max=int(fec_raw.get("n_max", 16)),
         k_min=int(fec_raw.get("k_min", 2)),
-        k_max=int(fec_raw.get("k_max", 8)),
+        k_max=int(fec_raw.get("k_max", 12)),
         depth_max=int(fec_raw.get("depth_max", 3)),
+        max_redundancy_ratio=(
+            None if raw_max_red is None else float(raw_max_red)
+        ),
+        base_redundancy_ratio=float(
+            fec_raw.get("base_redundancy_ratio", 0.5)
+        ),
+        fec_block_fill_ms_target=float(
+            fec_raw.get("fec_block_fill_ms_target", 12.0)
+        ),
+        n_loss_step=int(fec_raw.get("n_loss_step", 2)),
+        n_preempt_step=int(fec_raw.get("n_preempt_step", 1)),
+        n_recover_step=int(fec_raw.get("n_recover_step", 1)),
+        mtu_bytes=int(fec_raw.get("mtu_bytes", 1400)),
     )
     safe_video = safe_raw.get("video", {})
     safe = SafeDefaults(

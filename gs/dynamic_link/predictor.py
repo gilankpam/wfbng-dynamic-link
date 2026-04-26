@@ -21,30 +21,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Step 3 of §4.2 ladder: at n_max of a k-band with loss still non-zero,
-# drop to the next lower band's floor.
-LADDER_STEPS = {
-    8: [(8, 12), (8, 14), (8, 16)],
-    6: [(6, 10), (6, 12), (6, 14)],
-    4: [(4, 8),  (4, 10), (4, 12)],
-    2: [(2, 4),  (2, 6),  (2, 8)],
-}
-# Step 3 drop (k, n) destinations, mirroring §4.2 table.
-LADDER_DROP = {8: (6, 12), 6: (4, 8), 4: (2, 6), 2: (1, 4)}
-
-# Inverse "climb" used by FEC step-down: when at a band's FLOOR rung
-# (LADDER_STEPS[k][0]), step-down lands at the previous (higher-k)
-# band's TOP rung. From band 8 floor (8, 12) there is nowhere to climb
-# to — caller holds. Note this is asymmetric to LADDER_DROP because
-# the step-up path skips band floors that aren't its destinations,
-# while step-down walks every rung in LADDER_STEPS in reverse so
-# recovery is granular rung-by-rung.
-LADDER_CLIMB = {
-    (6, 10): (8, 16),
-    (4, 8):  (6, 14),
-    (2, 4):  (4, 12),
-}
-
 
 @dataclass(frozen=True)
 class Proposal:
@@ -92,6 +68,26 @@ def predict(proposal: Proposal, cfg: PredictorConfig) -> Prediction:
     )
 
 
+def max_n_for_latency(
+    k: int, depth: int, cap_ms: float, cfg: PredictorConfig,
+) -> int:
+    """Largest integer n where predict(k, n, depth) ≤ cap_ms.
+
+    Inverse of `predict()` — solves for n given fixed k, depth, cap.
+    Returns 0 when even n=0 would overrun (no valid n exists).
+    """
+    block_fill = k * cfg.inter_packet_interval_ms
+    decode = cfg.fec_decode_ms
+    interleave = (depth - 1) * cfg.block_duration_ms
+    airtime_budget_ms = cap_ms - block_fill - decode - interleave
+    if airtime_budget_ms <= 0.0:
+        return 0
+    per_n_ms = cfg.per_packet_airtime_us / 1000.0
+    if per_n_ms <= 0.0:
+        return 0
+    return int(airtime_budget_ms / per_n_ms)
+
+
 class BudgetExhausted(Exception):
     """No (k, n, depth) combination fits the cap."""
 
@@ -103,11 +99,14 @@ def fit_or_degrade(
 ) -> Proposal:
     """Auto-adjust downward until we fit, or raise BudgetExhausted.
 
-    Priority order per §4:
+    Priority order:
       1. drop depth by 1 (reclaims one block_duration).
-      2. if depth already 1, drop k to next lower band
-         (rebase n to that band's floor).
-      3. if already (2, 4, 1) and still over cap → refuse.
+      2. if depth already 1 and still over cap → refuse.
+
+    The trailing controller is responsible for choosing (k, n) under
+    the latency cap (it queries `max_n_for_latency` when computing the
+    n upper bound), so this is a defensive last-resort gate that only
+    has to handle depth.
     """
     current = proposal
     while True:
@@ -116,16 +115,6 @@ def fit_or_degrade(
             return current
         if current.depth > 1:
             current = Proposal(k=current.k, n=current.n, depth=current.depth - 1)
-            continue
-        # depth == 1; try to drop to next-lower band's floor.
-        if current.k in LADDER_DROP:
-            next_k, next_n = LADDER_DROP[current.k]
-            # k=1 isn't a real operating band — refuse rather than land there.
-            if next_k < 2:
-                raise BudgetExhausted(
-                    f"no fit for cap={cap_ms} ms starting from {proposal}"
-                )
-            current = Proposal(k=next_k, n=next_n, depth=1)
             continue
         raise BudgetExhausted(
             f"no fit for cap={cap_ms} ms starting from {proposal}"

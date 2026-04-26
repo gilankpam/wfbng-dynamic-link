@@ -7,17 +7,16 @@ every tick; `knobs_changed` records which knobs actually moved.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
 from .decision import Decision
 from .predictor import (
-    LADDER_CLIMB,
-    LADDER_DROP,
-    LADDER_STEPS,
     BudgetExhausted,
     PredictorConfig,
     Proposal,
     fit_or_degrade,
+    max_n_for_latency,
     predict,
 )
 from .profile import MCSRow, RadioProfile
@@ -122,10 +121,26 @@ class CooldownConfig:
 @dataclass
 class FECBounds:
     n_min: int = 4
-    n_max: int = 16
     k_min: int = 2
-    k_max: int = 8
+    k_max: int = 12
     depth_max: int = 3
+    # Hard cap on (n - k) / k. None disables. The bandwidth budget
+    # 1/encoder_bitrate_frac − 1 may already be tighter; the effective
+    # ceiling is min(this, bandwidth, latency).
+    max_redundancy_ratio: float | None = 1.0
+    # Floor redundancy on a clean link. n_lower = round(k * (1 + this)),
+    # bounded below by n_min and above by n_upper.
+    base_redundancy_ratio: float = 0.5
+    # Target for k × inter_packet_interval (the FEC block-fill latency
+    # contribution). Drives k selection from the current encoder rate.
+    fec_block_fill_ms_target: float = 12.0
+    # n adjustment magnitudes per tick.
+    n_loss_step: int = 2     # immediate bump on residual_loss > 0
+    n_preempt_step: int = 1  # bump on fec_work above threshold (cooled)
+    n_recover_step: int = 1  # walk down on sustained clean+idle (cooled)
+    # MTU used to translate encoder kbps → inter_packet_interval_ms.
+    # 1400 B is wfb-ng's default UDP MTU.
+    mtu_bytes: int = 1400
 
 
 @dataclass
@@ -526,51 +541,73 @@ class LeadingSelector:
 # Trailing loop — loss-driven protective escalation.
 # ------------------------------------------------------------------
 
-def _ladder_step_up(k: int, n: int) -> tuple[int, int]:
-    """One step up the §4.2 ladder within the current k-band.
+def compute_k(
+    ipi_ms: float, target_fill_ms: float, k_min: int, k_max: int,
+) -> int:
+    """Smallest integer k whose block_fill (= k × ipi_ms) meets or
+    exceeds `target_fill_ms`, clamped to `[k_min, k_max]`.
 
-    At n_max of the band, drop to the next lower band's floor — but
-    refuse to land on k=1, which mirrors `predictor.fit_or_degrade`'s
-    "k=1 isn't a real operating band" rule and matches the per-airframe
-    `video_k_min` ceiling. At the floor of the lowest band the loop
-    holds (k, n) and lets depth/encoder degradation carry the load.
+    At fast IPI (high MCS), this picks larger k — more primaries per
+    block, less parity overhead. At slow IPI (low MCS), it picks
+    smaller k so block-fill latency stays inside the target budget.
     """
-    band = LADDER_STEPS.get(k)
-    if band is None:
-        return k, n
-    for idx, (bk, bn) in enumerate(band):
-        if bk == k and bn == n:
-            if idx + 1 < len(band):
-                return band[idx + 1]
-            dropped = LADDER_DROP.get(k, (k, n))
-            if dropped[0] < 2:
-                return k, n
-            return dropped
-    # Current (k, n) isn't on the ladder — rebase at this band's floor.
-    return band[0]
+    raw = target_fill_ms / max(ipi_ms, 0.1)
+    k = max(1, math.ceil(raw))
+    return max(k_min, min(k_max, k))
 
 
-def _ladder_step_down(k: int, n: int) -> tuple[int, int]:
-    """One step down the §4.2 ladder. Inverse direction of step_up.
+def compute_n_bounds(
+    k: int,
+    encoder_kbps: float,
+    bw_Mbps: float,
+    bounds: FECBounds,
+    max_latency_ms: float,
+    depth: int,
+    predictor_cfg: PredictorConfig,
+) -> tuple[int, int]:
+    """Compute (n_lower, n_upper) for the trailing loop's n state.
 
-    Within a band: decrement to the previous rung in LADDER_STEPS.
-    At a band floor: climb to the previous (higher-k) band's TOP rung
-    via LADDER_CLIMB.
-    Off-ladder or already at band-8 floor: hold.
+    n_upper is the tightest of: bandwidth headroom, redundancy cap,
+    latency budget, and the absolute n_max bound.
 
-    Step-down walks every rung in LADDER_STEPS in reverse — including
-    band floors that step-up skips. This gives granular rung-by-rung
-    recovery toward higher efficiency.
+    n_lower is `round(k × (1 + base_redundancy_ratio))`, clamped to
+    n_min and to n_upper (latency wins over a clean-link floor).
     """
-    band = LADDER_STEPS.get(k)
-    if band is None:
-        return k, n
-    for idx, (bk, bn) in enumerate(band):
-        if bk == k and bn == n:
-            if idx > 0:
-                return band[idx - 1]
-            return LADDER_CLIMB.get((k, n), (k, n))
-    return k, n
+    # Bandwidth-derived redundancy ceiling: encoder × n/k must fit in
+    # the link rate. Below: max n/k = (bw_kbps / encoder_kbps), so
+    # max redundancy = bw_kbps / encoder_kbps − 1.
+    bw_kbps = bw_Mbps * 1000.0
+    if encoder_kbps > 0.0:
+        max_redundancy_bw = bw_kbps / encoder_kbps - 1.0
+    else:
+        max_redundancy_bw = float("inf")
+    if bounds.max_redundancy_ratio is not None:
+        max_redundancy = min(max_redundancy_bw, bounds.max_redundancy_ratio)
+    else:
+        max_redundancy = max_redundancy_bw
+    max_redundancy = max(0.0, max_redundancy)
+    n_from_redundancy = int(round(k * (1.0 + max_redundancy)))
+    n_from_latency = max_n_for_latency(k, depth, max_latency_ms, predictor_cfg)
+    n_upper = min(n_from_redundancy, n_from_latency)
+    n_upper = max(k, n_upper)  # parity≥0; some n must exist
+
+    # ceil so redundancy at the floor is never *below* base_redundancy_ratio
+    # (a half-value at odd k would otherwise round to the lower neighbour
+    # under Python's banker's rounding).
+    n_lower = int(math.ceil(k * (1.0 + bounds.base_redundancy_ratio)))
+    n_lower = max(n_lower, bounds.n_min, k + 1)
+    n_lower = min(n_lower, n_upper)
+    return n_lower, n_upper
+
+
+def _ipi_ms_for_encoder(encoder_kbps: float, mtu_bytes: int) -> float:
+    """Inter-packet interval (ms) implied by a given encoder rate
+    and packet size. Returns a large number for non-positive rates so
+    compute_k falls through to k_min."""
+    if encoder_kbps <= 0.0:
+        return 1000.0
+    mtu_bits = mtu_bytes * 8
+    return mtu_bits / encoder_kbps
 
 
 @dataclass
@@ -599,19 +636,21 @@ class TrailingLoop:
     def tick(
         self,
         signals: Signals,
-        current_k: int,
         current_n: int,
         current_depth: int,
         ts_ms: float,
-        stepdown_floor: tuple[int, int] | None = None,
-    ) -> tuple[int, int, int, bool]:
-        """Returns (k, n, depth, idr_request).
+        n_lower: int,
+        n_upper: int,
+    ) -> tuple[int, int, bool]:
+        """Adjust n within [n_lower, n_upper] from observed signals.
 
-        `stepdown_floor` (kept None for back-compat callers) is the
-        per-MCS target rung for FEC step-down. The trailing loop will
-        not step down past this rung. Callers from `Policy.tick` pass
-        `LADDER_STEPS[row.preferred_k][0]` so step-down lands at the
-        same operating point that the MCS-change rebase would.
+        Returns (n, depth, idr_request). `k` is computed by `Policy.tick`
+        from MCS-driven inter-packet interval; the trailing loop only
+        moves `n` around. On residual_loss bumps n by `n_loss_step`
+        immediately (no cooldown, IDR requested). On fec_work above
+        the preempt threshold, bumps by `n_preempt_step` after the
+        FEC cooldown elapses. On sustained clean+idle, walks n down
+        by `n_recover_step` toward `n_lower`.
         """
         self._reasons = []
         st = self.state
@@ -639,52 +678,52 @@ class TrailingLoop:
         else:
             st.consecutive_clean_for_fec_windows = 0
 
-        new_k, new_n, new_depth = current_k, current_n, current_depth
+        new_n, new_depth = current_n, current_depth
         idr = False
+        fec_bounds = self.cfg.fec
 
         if had_loss:
-            # §4.2: immediate escalation — bypass min_change_interval_ms_fec.
-            new_k, new_n = _ladder_step_up(current_k, current_n)
+            # Immediate escalation — bypass min_change_interval_ms_fec.
+            new_n = current_n + fec_bounds.n_loss_step
             st.last_fec_change_ts = ts_ms
             idr = True
             self._reasons.append(
                 f"residual_loss={signals.residual_loss_w:.3f} "
-                f"-> ({new_k},{new_n}) +IDR"
+                f"-> n={min(new_n, n_upper)} +IDR"
             )
         elif signals.fec_work > 0.05:
-            # Preemptive raise — respect cooldown.
             if (ts_ms - st.last_fec_change_ts
                     >= self.cfg.cooldown.min_change_interval_ms_fec):
-                stepped_k, stepped_n = _ladder_step_up(current_k, current_n)
-                if (stepped_k, stepped_n) != (current_k, current_n):
-                    new_k, new_n = stepped_k, stepped_n
+                bumped = current_n + fec_bounds.n_preempt_step
+                if bumped > current_n and bumped <= n_upper:
+                    new_n = bumped
                     st.last_fec_change_ts = ts_ms
                     self._reasons.append(
                         f"fec_work={signals.fec_work:.3f} "
-                        f"-> ({new_k},{new_n}) preemptive"
+                        f"-> n={new_n} preemptive"
                     )
 
-        # FEC ladder step-down: after sustained clean+idle link,
-        # reclaim one rung toward the per-MCS target (stepdown_floor).
-        # Same cooldown anchor as step-up — either direction blocks
-        # the other for min_change_interval_ms_fec. Don't fire if
-        # we're already at the floor or no floor was provided.
-        if (stepdown_floor is not None
-                and (new_k, new_n) != stepdown_floor
+        # Step-down on sustained clean+idle. Same cooldown anchor as
+        # step-up — either direction blocks the other for the FEC
+        # cooldown. Don't fire if we're at or below the floor.
+        if (new_n > n_lower
                 and (ts_ms - st.last_fec_change_ts
                      >= self.cfg.cooldown.min_change_interval_ms_fec)
                 and st.consecutive_clean_for_fec_windows
                     >= self.cfg.clean_windows_for_fec_stepdown):
-            stepped = _ladder_step_down(new_k, new_n)
-            if stepped != (new_k, new_n):
-                new_k, new_n = stepped
+            stepped = max(n_lower, new_n - fec_bounds.n_recover_step)
+            if stepped != new_n:
+                new_n = stepped
                 st.last_fec_change_ts = ts_ms
                 st.consecutive_clean_for_fec_windows = 0
                 self._reasons.append(
                     f"clean*{self.cfg.clean_windows_for_fec_stepdown} "
                     f"fec_work={signals.fec_work:.3f} "
-                    f"-> ({new_k},{new_n}) fec_stepdown"
+                    f"-> n={new_n} stepdown"
                 )
+
+        # Final clamp to the computed envelope.
+        new_n = max(n_lower, min(n_upper, new_n))
 
         # Depth path (independent of FEC k/n path above). Two triggers:
         #
@@ -743,7 +782,7 @@ class TrailingLoop:
                 f"-> depth={new_depth} (stepdown)"
             )
 
-        return new_k, new_n, new_depth, idr
+        return new_n, new_depth, idr
 
     @property
     def reasons(self) -> list[str]:
@@ -855,31 +894,53 @@ class Policy:
         )
         row = self.leading.current_row
 
-        # On MCS row change, rebase (k, n) to the new band's floor
-        # (§4.2 "band boundary crossings").
-        if mcs_changed:
-            band = LADDER_STEPS.get(row.preferred_k)
-            if band is not None:
-                self.state.k, self.state.n = band[0]
-
-        # FEC step-down target: the rung the MCS-change rebase would
-        # land on for the current MCS row. Step-down stops here so we
-        # never recover *past* the operator's per-MCS operating point.
-        band = LADDER_STEPS.get(row.preferred_k)
-        stepdown_floor = band[0] if band else None
-
-        # Trailing loop operates on the (maybe just-rebased) (k, n).
-        new_k, new_n, new_depth, idr = self.trailing.tick(
-            signals, self.state.k, self.state.n, self.state.depth, ts_ms,
-            stepdown_floor=stepdown_floor,
+        # Compute (k, n) bounds from current MCS conditions. The
+        # encoder bitrate at this MCS is `row.bitrate_Mbps` (=
+        # data_rate * encoder_bitrate_frac), already in Mbps.
+        encoder_kbps = row.bitrate_Mbps * 1000.0
+        bw_Mbps = row.bitrate_Mbps / self.profile.encoder_bitrate_frac
+        ipi_ms = _ipi_ms_for_encoder(encoder_kbps, self.cfg.fec.mtu_bytes)
+        # Per-tick predictor cfg with the live ipi_ms (the static
+        # predictor cfg is anchored to the MCS7 reference; here we
+        # need the actual current rate).
+        predictor_cfg = PredictorConfig(
+            per_packet_airtime_us=self.cfg.predictor.per_packet_airtime_us,
+            inter_packet_interval_ms=ipi_ms,
+            fec_decode_ms=self.cfg.predictor.fec_decode_ms,
+            block_duration_ms=self.cfg.predictor.block_duration_ms,
+        )
+        new_k = compute_k(
+            ipi_ms,
+            self.cfg.fec.fec_block_fill_ms_target,
+            self.cfg.fec.k_min,
+            self.cfg.fec.k_max,
+        )
+        n_lower, n_upper = compute_n_bounds(
+            new_k, encoder_kbps, bw_Mbps, self.cfg.fec,
+            self.cfg.max_latency_ms, self.state.depth, predictor_cfg,
         )
 
-        # Latency-budget gate — drop depth / drop k until it fits.
+        # On MCS row change (or first tick after k recompute), rebase
+        # n to the new MCS's floor. Otherwise carry n forward and
+        # clamp into the freshly-computed envelope.
+        if mcs_changed or new_k != self.state.k:
+            self.state.n = n_lower
+        # Note: state.n may be outside [n_lower, n_upper] this tick if
+        # the bounds shifted; trailing.tick() will clamp.
+
+        new_n, new_depth, idr = self.trailing.tick(
+            signals, self.state.n, self.state.depth, ts_ms,
+            n_lower=n_lower, n_upper=n_upper,
+        )
+
+        # Latency-budget gate — defensive last-resort. compute_n_bounds
+        # already feeds max_n_for_latency into n_upper, so this should
+        # only fire if depth interleaver pushes us over.
         proposal = Proposal(k=new_k, n=new_n, depth=new_depth)
         reason_budget = ""
         try:
             adjusted = fit_or_degrade(
-                proposal, self.cfg.max_latency_ms, self.cfg.predictor
+                proposal, self.cfg.max_latency_ms, predictor_cfg,
             )
             if adjusted != proposal:
                 reason_budget = (
@@ -887,7 +948,6 @@ class Policy:
                 )
             new_k, new_n, new_depth = adjusted.k, adjusted.n, adjusted.depth
         except BudgetExhausted:
-            # Refuse: hold current state and flag budget_exhausted.
             reason_budget = "budget_exhausted"
             new_k, new_n, new_depth = (
                 self.state.k, self.state.n, self.state.depth

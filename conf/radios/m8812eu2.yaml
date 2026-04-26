@@ -19,13 +19,13 @@ name: BL-M8812EU2
 chipset: RTL8812EU
 
 mcs_min: 0
-mcs_max: 7
+mcs_max: 5
 
 bandwidth_supported: [20, 40]
 bandwidth_default:   20
 
 tx_power_min_dBm: 0
-tx_power_max_dBm: 23
+tx_power_max_dBm: 30
 
 sensitivity_dBm:
   20:
@@ -95,15 +95,5 @@ snr_floor_dB:
     5: 23
     6: 26
     7: 28
-
-preferred_k:
-  7: 8
-  6: 8
-  5: 6
-  4: 6
-  3: 4
-  2: 4
-  1: 2
-  0: 2
 
 encoder_bitrate_frac: 0.40

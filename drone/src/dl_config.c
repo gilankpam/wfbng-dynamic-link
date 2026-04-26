@@ -148,8 +148,8 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "listen_port") == 0)        SET_INT_RANGED(listen_port, uint16_t, 1, 65535);
         else if (strcmp(key, "wfb_tx_ctrl_addr") == 0)   SET_STR(wfb_tx_ctrl_addr);
         else if (strcmp(key, "wfb_tx_ctrl_port") == 0)   SET_INT_RANGED(wfb_tx_ctrl_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "video_k_min") == 0)        SET_INT_RANGED(video_k_min, uint8_t, 1, 8);
-        else if (strcmp(key, "video_k_max") == 0)        SET_INT_RANGED(video_k_max, uint8_t, 1, 8);
+        else if (strcmp(key, "video_k_min") == 0)        SET_INT_RANGED(video_k_min, uint8_t, 1, 32);
+        else if (strcmp(key, "video_k_max") == 0)        SET_INT_RANGED(video_k_max, uint8_t, 1, 32);
         else if (strcmp(key, "video_n_max") == 0)        SET_INT_RANGED(video_n_max, uint8_t, 2, 255);
         else if (strcmp(key, "depth_max") == 0)          SET_INT_RANGED(depth_max, uint8_t, 1, 8);
         else if (strcmp(key, "mcs_max") == 0)            SET_INT_RANGED(mcs_max, uint8_t, 0, 7);
@@ -160,7 +160,7 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "osd_msg_path") == 0)       SET_STR(osd_msg_path);
         else if (strcmp(key, "osd_update_interval_ms") == 0) SET_INT_RANGED(osd_update_interval_ms, uint32_t, 100, 60000);
         else if (strcmp(key, "health_timeout_ms") == 0)  SET_INT_RANGED(health_timeout_ms, uint32_t, 500, 120000);
-        else if (strcmp(key, "safe_k") == 0)             SET_INT_RANGED(safe_k, uint8_t, 1, 8);
+        else if (strcmp(key, "safe_k") == 0)             SET_INT_RANGED(safe_k, uint8_t, 1, 32);
         else if (strcmp(key, "safe_n") == 0)             SET_INT_RANGED(safe_n, uint8_t, 2, 255);
         else if (strcmp(key, "safe_depth") == 0)         SET_INT_RANGED(safe_depth, uint8_t, 1, 8);
         else if (strcmp(key, "safe_mcs") == 0)           SET_INT_RANGED(safe_mcs, uint8_t, 0, 7);
