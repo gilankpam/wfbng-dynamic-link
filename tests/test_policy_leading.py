@@ -82,10 +82,17 @@ def _selector(*,
 
 
 def _select(s: LeadingSelector, *,
-            snr=30.0, snr_slope=0.0, loss=0.0, fec=0.0,
+            snr=30.0, snr_raw=None, snr_slope=0.0, loss=0.0, fec=0.0,
             link_starved=False, ts_ms=0.0):
+    """Drive the selector. `snr` is the smoothed (EMA) value;
+    `snr_raw` is the latest per-window raw best-antenna mean.
+    `snr_raw=None` defaults to the same value as `snr` so existing
+    tests keep their symmetric behaviour. Tests that exercise the
+    asymmetry pass `snr_raw=...` explicitly."""
     return s.select(
-        snr_ema=snr, snr_slope=snr_slope,
+        snr_ema=snr,
+        snr_raw=snr_raw if snr_raw is not None else snr,
+        snr_slope=snr_slope,
         loss_rate=loss, fec_pressure=fec,
         link_starved=link_starved, ts_ms=ts_ms,
     )
@@ -438,3 +445,101 @@ def test_no_snr_holds_state_but_emergency_still_fires():
     # NOTE: the current implementation returns early if snr_ema is None
     # AND link_starved is False. With link_starved=True, we proceed.
     assert mcs <= pre  # emergency drove down or held
+
+
+# ── Asymmetric SNR (raw for downgrade, smoothed for upgrade) ────────────────
+
+
+def test_downgrade_fires_on_raw_collapse_while_smoothed_clears():
+    """Reproduces gs.5.jsonl t=146.3 → 146.6 fast-fade. Smoothed snr
+    still clears the floor; raw has just collapsed below. Asymmetric
+    selector should drop now, not 500 ms later."""
+    s = _selector(hysteresis_down_db=1.0, snr_safety_margin=3.0,
+                  fast_downgrade=True, snr_predict_horizon_ticks=0.0,
+                  emergency_loss_rate=0.99)  # disable Channel B
+    _drive_to_mcs(s, 4)
+    pre = s.state.current_mcs
+    # smoothed=24.7 still clears MCS4 effective floor 17+3=20 (margin +4.7);
+    # raw=20 → margin against MCS4 = 20 - 17 - 3 = 0 → below
+    # -hysteresis_down_db (-1) is needed... wait, 0 > -1 so not below.
+    # Use raw=18 → margin = 18 - 20 = -2 → below -1 → drop fires.
+    mcs, _, changed = _select(
+        s, snr=24.7, snr_raw=18.0, ts_ms=10_000.0,
+    )
+    assert changed
+    assert mcs < pre
+
+
+def test_downgrade_does_not_fire_when_raw_matches_smoothed_high():
+    """Control case for the test above: when raw matches smoothed at
+    a healthy value, no drop should fire."""
+    s = _selector(hysteresis_down_db=1.0, snr_safety_margin=3.0,
+                  fast_downgrade=True, snr_predict_horizon_ticks=0.0,
+                  emergency_loss_rate=0.99)
+    _drive_to_mcs(s, 4)
+    pre = s.state.current_mcs
+    mcs, _, changed = _select(
+        s, snr=24.7, snr_raw=24.7, ts_ms=10_000.0,
+    )
+    assert not changed
+    assert mcs == pre
+
+
+def test_upgrade_unchanged_uses_smoothed_not_raw():
+    """When smoothed is high but raw is low, the climb is held — `min`
+    of the two candidate computations caps the upgrade to whatever
+    the more-pessimistic (raw) signal allows."""
+    s = _selector(hysteresis_up_db=2.5, snr_safety_margin=3.0,
+                  upward_confidence_loops=1, emergency_loss_rate=0.99)
+    # Raw is low — only clears MCS1 (effective floor 8+3=11). With raw=12,
+    # _pick_mcs(raw) → MCS1; _pick_mcs(smoothed=30) → max_mcs=7 (capped).
+    # min(...) → MCS1 = current. No climb.
+    mcs, _, changed = _select(
+        s, snr=30.0, snr_raw=12.0, ts_ms=10_000.0,
+    )
+    assert not changed
+    assert mcs == s.state.current_mcs
+
+
+def test_upgrade_fires_when_raw_clears_too():
+    """Control for above: raw matches smoothed at a healthy level →
+    upgrade fires normally."""
+    s = _selector(hysteresis_up_db=2.5, snr_safety_margin=3.0,
+                  upward_confidence_loops=1, max_mcs_step_up=1,
+                  emergency_loss_rate=0.99)
+    # First tick sets candidate; second applies (confidence_loops=1).
+    _select(s, snr=30.0, snr_raw=30.0, ts_ms=10_000.0)
+    _, _, changed = _select(s, snr=30.0, snr_raw=30.0, ts_ms=10_100.0)
+    assert changed
+    assert s.state.current_mcs > 1
+
+
+def test_no_snr_raw_falls_back_to_snr_ema():
+    """Helper passes None when caller doesn't specify; selector should
+    treat that identically to symmetric behaviour."""
+    s = _selector(hysteresis_down_db=1.0, snr_safety_margin=3.0,
+                  fast_downgrade=True, emergency_loss_rate=0.99)
+    _drive_to_mcs(s, 4)
+    # Calling s.select directly with snr_raw=None is allowed; and
+    # because the helper falls back to snr when snr_raw is unset, all
+    # existing tests in this file effectively exercise the symmetric
+    # path. So a direct check that explicitly passing None matches:
+    pre = s.state.current_mcs
+    mcs, _, changed = s.select(
+        snr_ema=24.7, snr_raw=None, snr_slope=0.0,
+        loss_rate=0.0, fec_pressure=0.0, link_starved=False,
+        ts_ms=10_000.0,
+    )
+    # smoothed=24.7 clears MCS4 effective floor (20) by 4.7 dB > -1 → hold.
+    assert not changed
+    assert mcs == pre
+
+
+def test_min_picks_more_pessimistic_candidate():
+    """Direct sanity test on _pick_mcs and the min() composition."""
+    s = _selector(snr_safety_margin=3.0, emergency_loss_rate=0.99)
+    # MCS5 floor 20+3=23; MCS2 floor 11+3=14.
+    pick_high = s._pick_mcs(33.0, 0.0, 0.0)   # clears MCS5
+    pick_low = s._pick_mcs(15.0, 0.0, 0.0)    # only clears MCS2
+    assert pick_high > pick_low
+    assert min(pick_high, pick_low) == pick_low

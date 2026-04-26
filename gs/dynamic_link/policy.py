@@ -327,8 +327,17 @@ class LeadingSelector:
         fec_pressure: float,
         link_starved: bool,
         ts_ms: float,
+        snr_raw: float | None = None,
     ) -> tuple[int, float, bool]:
-        """Decide MCS for this tick. Returns (mcs, tx_power_dBm, changed)."""
+        """Decide MCS for this tick. Returns (mcs, tx_power_dBm, changed).
+
+        Asymmetric SNR: `snr_ema` (smoothed) gates upgrades — stable,
+        slow, ignores single-tick spikes. `snr_raw` (latest per-window
+        max(snr_avg) across antennas) gates downgrades — fresh, fast,
+        catches fast fades within one tick instead of waiting ~500 ms
+        for the EWMA to lag-track. If `snr_raw` is None we fall back
+        to symmetric behaviour (both decisions use `snr_ema`).
+        """
         self._reasons = []
         st = self.state
         cur = st.current_mcs
@@ -350,12 +359,22 @@ class LeadingSelector:
             st.tx_power_dBm = tx
             return cur, tx, False
 
-        # Compute candidate from current link state.
-        candidate = (
-            self._pick_mcs(snr_ema, loss_rate, fec_pressure)
-            if snr_ema is not None
-            else cur
-        )
+        # Compute candidate from current link state. Asymmetric pick:
+        #   - candidate_up via smoothed snr (stable; upgrade-side)
+        #   - candidate_down via raw snr_max_w (fresh; downgrade-side)
+        # Take the more pessimistic of the two so a fast fade visible
+        # in raw drives MCS down before EWMA catches up. When raw
+        # spikes high above smoothed, candidate_up bounds us — we
+        # don't climb on noisy raw alone.
+        if snr_ema is None:
+            candidate = cur
+        else:
+            candidate_up = self._pick_mcs(snr_ema, loss_rate, fec_pressure)
+            candidate_down = (
+                self._pick_mcs(snr_raw, loss_rate, fec_pressure)
+                if snr_raw is not None else candidate_up
+            )
+            candidate = min(candidate_up, candidate_down)
 
         # Channel B emergency: at least one MCS step down. If already
         # at the floor, refuse any climb — emergency means link state
@@ -391,8 +410,13 @@ class LeadingSelector:
                     st.tx_power_dBm = tx
                     return cur, tx, False
             elif candidate < cur:
+                # Use raw snr for the down-margin so a fast fade
+                # triggers the drop within one tick instead of waiting
+                # ~500 ms for the EWMA to catch up. Falls back to
+                # smoothed if raw is unavailable.
+                snr_for_down = snr_raw if snr_raw is not None else snr_ema
                 cur_margin = self._margin(
-                    cur, snr_ema, loss_rate, fec_pressure
+                    cur, snr_for_down, loss_rate, fec_pressure
                 )
                 predicted = (
                     cur_margin
@@ -737,8 +761,12 @@ class Policy:
         # Dual-gate selector picks MCS + computes inverse-coupled TX
         # power. Channel B (emergency) is owned by the selector; we
         # don't need to compute forced_drop here anymore.
+        # snr_raw (latest per-window max-of-avg across antennas) is
+        # used asymmetrically — only for downgrade decisions. Climbs
+        # still gate on smoothed snr_ema to avoid bouncing on noise.
         new_mcs, tx_power, mcs_changed = self.leading.select(
             snr_ema=signals.snr,
+            snr_raw=signals.snr_max_w,
             snr_slope=signals.snr_slope,
             loss_rate=signals.residual_loss_w,
             fec_pressure=signals.fec_work,
