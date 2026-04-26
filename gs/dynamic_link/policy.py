@@ -127,7 +127,18 @@ class LeadingLoop:
     def __init__(self, cfg: LeadingLoopConfig, profile: RadioProfile):
         self.cfg = cfg
         self.profile = profile
-        self.rows = profile.rssi_mcs_map(cfg.bandwidth, cfg.rssi_margin_db)
+        # Profile's mcs_max is the static hardware ceiling; cfg.mcs_max
+        # is the operator's runtime cap (gs.yaml leading_loop.mcs_max).
+        # Clamp to the lower of the two.
+        rows = profile.rssi_mcs_map(cfg.bandwidth, cfg.rssi_margin_db)
+        rows = [r for r in rows if r.mcs <= cfg.mcs_max]
+        if not rows:
+            raise ValueError(
+                f"leading_loop.mcs_max={cfg.mcs_max} excludes every MCS "
+                f"in profile {profile.name!r} "
+                f"(mcs_min={profile.mcs_min}, mcs_max={profile.mcs_max})"
+            )
+        self.rows = rows
         # Start at MCS 1 (safe_defaults) — index in the high-MCS-first list.
         start_mcs = 1
         start_idx = next(

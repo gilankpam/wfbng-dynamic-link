@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from dynamic_link.policy import LeadingLoop, LeadingLoopConfig
 from dynamic_link.profile import load_profile
 
@@ -133,3 +135,19 @@ def test_forced_mcs_drop_from_trailing_loop():
     )
     assert changed
     assert ll.current_row.mcs < start_mcs
+
+
+def test_cfg_mcs_max_caps_row_table():
+    """leading_loop.mcs_max from gs.yaml must clamp the runtime row
+    table — even when the radio profile permits higher MCS."""
+    ll = _loop(mcs_max=5, rssi_up_hold_ms=0.0, rssi_up_guard_db=0.0)
+    assert max(r.mcs for r in ll.rows) == 5
+    # Drive RSSI well above MCS7 floor; the loop must not climb past 5.
+    for ts in range(0, 5000, 100):
+        ll.tick(rssi_smooth=-30.0, ts_ms=float(ts))
+    assert ll.current_row.mcs == 5
+
+
+def test_cfg_mcs_max_too_low_raises():
+    with pytest.raises(ValueError, match="mcs_max"):
+        _loop(mcs_max=-1)
