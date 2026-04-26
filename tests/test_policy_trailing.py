@@ -9,8 +9,10 @@ from dynamic_link.policy import (
     PolicyConfig,
     SafeDefaults,
     TrailingLoop,
+    _ladder_step_down,
+    _ladder_step_up,
 )
-from dynamic_link.predictor import LADDER_STEPS
+from dynamic_link.predictor import LADDER_CLIMB, LADDER_STEPS
 from dynamic_link.profile import load_profile
 from dynamic_link.signals import Signals
 from dynamic_link.stats_client import SessionInfo
@@ -393,3 +395,317 @@ def test_depth_bootstrap_is_one_shot_at_depth_1():
             current_k=8, current_n=12, current_depth=2, ts_ms=(i + 1) * 300.0,
         )
     assert depth == 2
+
+
+# ── FEC ladder step-down ─────────────────────────────────────────────────────
+
+
+# Pure helper tests on _ladder_step_down + LADDER_CLIMB.
+
+def test_ladder_step_down_within_band_decrements_n():
+    assert _ladder_step_down(8, 16) == (8, 14)
+    assert _ladder_step_down(8, 14) == (8, 12)
+    assert _ladder_step_down(6, 14) == (6, 12)
+    assert _ladder_step_down(6, 12) == (6, 10)
+    assert _ladder_step_down(4, 12) == (4, 10)
+    assert _ladder_step_down(4, 10) == (4, 8)
+    assert _ladder_step_down(2, 8) == (2, 6)
+    assert _ladder_step_down(2, 6) == (2, 4)
+
+
+def test_ladder_step_down_at_band_floor_climbs_to_previous_band_top():
+    assert _ladder_step_down(6, 10) == (8, 16)
+    assert _ladder_step_down(4, 8) == (6, 14)
+    assert _ladder_step_down(2, 4) == (4, 12)
+
+
+def test_ladder_step_down_at_band_8_floor_holds():
+    """No band above k=8 — step-down at (8, 12) holds in place."""
+    assert _ladder_step_down(8, 12) == (8, 12)
+
+
+def test_ladder_step_down_off_ladder_holds():
+    """Inputs not in any LADDER_STEPS rung return unchanged."""
+    assert _ladder_step_down(8, 11) == (8, 11)   # not a real rung
+    assert _ladder_step_down(7, 12) == (7, 12)   # k=7 not a band
+    assert _ladder_step_down(2, 5) == (2, 5)     # not a rung
+
+
+def test_ladder_full_traversal_to_band_8_floor():
+    """Walking step-down from (2, 8) hits every LADDER_STEPS rung in
+    reverse and lands at (8, 12) after 11 steps."""
+    expected = [
+        (2, 8), (2, 6), (2, 4),
+        (4, 12), (4, 10), (4, 8),
+        (6, 14), (6, 12), (6, 10),
+        (8, 16), (8, 14), (8, 12),
+    ]
+    trace = [(2, 8)]
+    for _ in range(11):
+        trace.append(_ladder_step_down(*trace[-1]))
+    assert trace == expected
+
+
+def test_ladder_climb_inverts_band_floor_transitions():
+    """LADDER_CLIMB keys are band-floor rungs; values are the top
+    rung of the previous (higher-k) band."""
+    for floor, top in LADDER_CLIMB.items():
+        assert floor in (band[0] for band in LADDER_STEPS.values())
+        # top is the highest-n rung of the band above
+        floor_band_idx = sorted(LADDER_STEPS.keys(), reverse=True).index(floor[0])
+        higher_k = sorted(LADDER_STEPS.keys(), reverse=True)[floor_band_idx - 1]
+        assert top == LADDER_STEPS[higher_k][-1]
+
+
+# Trailing-loop integration tests.
+
+def _idle_sigs(ts_ms: float) -> Signals:
+    """Clean & FEC-idle window."""
+    return _sigs(residual_loss_w=0.0, fec_work=0.0, ts=ts_ms / 1000.0)
+
+
+def test_fec_stepdown_after_clean_windows():
+    """10 consecutive clean+idle windows → one rung of step-down."""
+    cfg = PolicyConfig(clean_windows_for_fec_stepdown=10,
+                       fec_work_idle_threshold=0.02)
+    cfg.cooldown.min_change_interval_ms_fec = 0
+    tl = TrailingLoop(cfg)
+    k, n, ts = 2, 8, 0.0
+    # 9 clean windows: counter at 9, no step yet.
+    for _ in range(9):
+        ts += 100.0
+        k, n, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                             stepdown_floor=(8, 12))
+    assert (k, n) == (2, 8)
+    # 10th tick → step-down fires.
+    ts += 100.0
+    k, n, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                         stepdown_floor=(8, 12))
+    assert (k, n) == (2, 6)
+
+
+def test_fec_stepdown_blocked_by_loss_in_window():
+    """A single lossy tick mid-clean resets the counter; step-down
+    doesn't fire."""
+    cfg = PolicyConfig(clean_windows_for_fec_stepdown=10,
+                       fec_work_idle_threshold=0.02)
+    cfg.cooldown.min_change_interval_ms_fec = 0
+    tl = TrailingLoop(cfg)
+    k, n, ts = 2, 8, 0.0
+    # 5 clean
+    for _ in range(5):
+        ts += 100.0
+        k, n, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                             stepdown_floor=(8, 12))
+    # 1 lossy tick — counter resets (and step-up fires)
+    ts += 100.0
+    k, n, _, _ = tl.tick(
+        _sigs(residual_loss_w=0.10, ts=ts / 1000.0),
+        k, n, 1, ts, stepdown_floor=(8, 12),
+    )
+    # 5 more clean — total 10 clean post-loss but counter was reset
+    # at tick 6, so we're at counter=5, no step-down yet.
+    ts0 = ts
+    for _ in range(5):
+        ts += 100.0
+        k_after, n_after, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                                         stepdown_floor=(8, 12))
+        # State should hold — k and n shouldn't be changing.
+        k, n = k_after, n_after
+    # The lossy tick walked the ladder up first, so we're not at (2,8) anymore.
+    # The point is that no FEC step-DOWN happened during the post-loss window.
+    # After loss step-up, k goes from (2,8) → (1,4) refused → holds at (2,8).
+    # So we should still be at (2, 8) here, not (2, 6).
+    assert (k, n) == (2, 8)
+
+
+def test_fec_stepdown_blocked_by_fec_work_above_threshold():
+    """fec_work=0.04 > idle_threshold=0.02 → counter never increments,
+    no step-down."""
+    cfg = PolicyConfig(clean_windows_for_fec_stepdown=10,
+                       fec_work_idle_threshold=0.02)
+    cfg.cooldown.min_change_interval_ms_fec = 0
+    tl = TrailingLoop(cfg)
+    k, n, ts = 2, 8, 0.0
+    for _ in range(20):
+        ts += 100.0
+        k, n, _, _ = tl.tick(
+            _sigs(residual_loss_w=0.0, fec_work=0.04, ts=ts / 1000.0),
+            k, n, 1, ts, stepdown_floor=(8, 12),
+        )
+    assert (k, n) == (2, 8)
+
+
+def test_fec_stepdown_stops_at_floor():
+    """Once at stepdown_floor, no further step-downs fire."""
+    cfg = PolicyConfig(clean_windows_for_fec_stepdown=10,
+                       fec_work_idle_threshold=0.02)
+    cfg.cooldown.min_change_interval_ms_fec = 0
+    tl = TrailingLoop(cfg)
+    k, n, ts = 8, 14, 0.0
+    # First 10 clean → step (8, 14) → (8, 12) (the floor).
+    for _ in range(10):
+        ts += 100.0
+        k, n, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                             stepdown_floor=(8, 12))
+    assert (k, n) == (8, 12)
+    # 30 more clean — should hold at (8, 12).
+    for _ in range(30):
+        ts += 100.0
+        k, n, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                             stepdown_floor=(8, 12))
+    assert (k, n) == (8, 12)
+
+
+def test_fec_stepdown_walks_full_ladder_to_floor():
+    """Continuous clean+idle from (2, 8) lands at (8, 12) in 11 steps,
+    each separated by ~10 ticks of clean window."""
+    cfg = PolicyConfig(clean_windows_for_fec_stepdown=10,
+                       fec_work_idle_threshold=0.02)
+    cfg.cooldown.min_change_interval_ms_fec = 0
+    tl = TrailingLoop(cfg)
+    k, n, ts = 2, 8, 0.0
+    # 11 step-downs * 10 windows = 110 ticks
+    for _ in range(120):
+        ts += 100.0
+        k, n, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                             stepdown_floor=(8, 12))
+    assert (k, n) == (8, 12)
+
+
+def test_fec_stepdown_respects_cooldown():
+    """Even with the clean-window threshold met, the FEC cooldown
+    blocks back-to-back steps."""
+    cfg = PolicyConfig(clean_windows_for_fec_stepdown=10,
+                       fec_work_idle_threshold=0.02)
+    cfg.cooldown.min_change_interval_ms_fec = 500.0
+    tl = TrailingLoop(cfg)
+    k, n, ts = 2, 8, 0.0
+    # 10 windows clean → first step-down at ts=1000.
+    for _ in range(10):
+        ts += 100.0
+        k, n, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                             stepdown_floor=(8, 12))
+    assert (k, n) == (2, 6)
+    first_step_ts = ts
+    # 10 more clean windows immediately after — would normally step,
+    # but the 500 ms cooldown is still active for the first ~5 ticks.
+    # Continue feeding clean until cooldown expires AND counter
+    # rebuilds to 10 again.
+    for _ in range(20):
+        ts += 100.0
+        k_new, n_new, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                                     stepdown_floor=(8, 12))
+        if (k_new, n_new) != (k, n):
+            assert ts - first_step_ts >= 500.0
+            assert (k_new, n_new) == (2, 4)
+            return
+        k, n = k_new, n_new
+    assert False, "Step-down never fired after cooldown"
+
+
+def test_fec_stepdown_no_floor_passed_no_step():
+    """stepdown_floor=None → step-down never fires (back-compat)."""
+    cfg = PolicyConfig(clean_windows_for_fec_stepdown=10,
+                       fec_work_idle_threshold=0.02)
+    cfg.cooldown.min_change_interval_ms_fec = 0
+    tl = TrailingLoop(cfg)
+    k, n, ts = 2, 8, 0.0
+    for _ in range(50):
+        ts += 100.0
+        k, n, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                             stepdown_floor=None)
+    assert (k, n) == (2, 8)
+
+
+def test_fec_stepdown_does_not_fire_during_step_up_tick():
+    """A tick that triggers preemptive step-up shouldn't also step
+    down — the fec_work signal that drives step-up is above the idle
+    threshold so the step-down counter is reset."""
+    cfg = PolicyConfig(clean_windows_for_fec_stepdown=10,
+                       fec_work_idle_threshold=0.02)
+    cfg.cooldown.min_change_interval_ms_fec = 0
+    tl = TrailingLoop(cfg)
+    k, n, ts = 6, 10, 0.0
+    # Build up clean counter first.
+    for _ in range(9):
+        ts += 100.0
+        k, n, _, _ = tl.tick(_idle_sigs(ts), k, n, 1, ts,
+                             stepdown_floor=(8, 12))
+    # Tick with fec_work=0.10 — preemptive step-up fires; step-down
+    # counter resets to 0; no step-down.
+    ts += 100.0
+    k_after, n_after, _, _ = tl.tick(
+        _sigs(residual_loss_w=0.0, fec_work=0.10, ts=ts / 1000.0),
+        k, n, 1, ts, stepdown_floor=(8, 12),
+    )
+    # Ladder went UP, not down.
+    assert (k_after, n_after) != (k, n)
+    # Step-up of (6, 10) → (6, 12).
+    assert (k_after, n_after) == (6, 12)
+
+
+# Policy-level integration.
+
+def _settled_clean_sigs(ts_ms: float, snr: float = 30.0) -> Signals:
+    """A Signals that the dual-gate selector treats as 'fine, hold MCS'
+    while leaving FEC idle."""
+    return Signals(
+        rssi=-55.0, rssi_min_w=-55.0, rssi_max_w=-55.0,
+        snr=snr, snr_min_w=snr, snr_max_w=snr,
+        residual_loss_w=0.0, fec_work=0.0,
+        timestamp=ts_ms / 1000.0,
+        link_starved_w=False,
+        session=SessionInfo(
+            fec_type="VDM_RS", fec_k=8, fec_n=12, epoch=1,
+            interleave_depth=1, contract_version=2,
+        ),
+    )
+
+
+def _policy_at_mcs5() -> Policy:
+    """Build a policy capped at gate.max_mcs=5 so _settle_at_max_mcs
+    lands us at MCS 5 (preferred_k=6, band floor (6, 10))."""
+    from dynamic_link.policy import GateConfig
+    prof = load_profile("m8812eu2", [PACKAGED_DIR])
+    cfg = PolicyConfig(
+        leading=LeadingLoopConfig(tx_power_min_dBm=5.0, tx_power_max_dBm=30.0),
+        gate=GateConfig(max_mcs=5),
+        safe=SafeDefaults(k=8, n=12, depth=1, mcs=1, bitrate_kbps=2000),
+        clean_windows_for_fec_stepdown=10,
+        fec_work_idle_threshold=0.02,
+    )
+    cfg.cooldown.min_change_interval_ms_fec = 0
+    return Policy(cfg, prof)
+
+
+def test_policy_passes_correct_stepdown_floor_for_current_mcs():
+    """At MCS 5 (preferred_k=6), step-down should walk from (2, 8)
+    toward (6, 10) — the band-6 floor."""
+    p = _policy_at_mcs5()
+    ts = _settle_at_max_mcs(p)
+    assert p.state.mcs == 5
+    # Force (k, n) to (2, 8). This bypasses the rebase that would
+    # have happened on MCS climb.
+    p.state.k, p.state.n = 2, 8
+    # Feed enough clean ticks to walk all 8 step-downs from (2, 8) to (6, 10):
+    # (2, 8) → (2, 6) → (2, 4) → (4, 12) → (4, 10) → (4, 8) → (6, 14) → (6, 12) → (6, 10)
+    # = 8 step-downs. Need 8 * 10 = 80 windows.
+    for _ in range(120):
+        ts += 100.0
+        p.tick(_settled_clean_sigs(ts))
+    assert (p.state.k, p.state.n) == (6, 10)
+
+
+def test_policy_stepdown_holds_at_per_mcs_floor():
+    """Once recovery walks (k, n) to the per-MCS floor, further clean
+    windows at the same MCS don't change (k, n)."""
+    p = _policy_at_mcs5()
+    ts = _settle_at_max_mcs(p)
+    assert p.state.mcs == 5
+    # Force (k, n) to (6, 10) — already at the per-MCS floor for MCS 5.
+    p.state.k, p.state.n = 6, 10
+    for _ in range(100):
+        ts += 100.0
+        p.tick(_settled_clean_sigs(ts))
+    assert (p.state.k, p.state.n) == (6, 10)

@@ -32,6 +32,19 @@ LADDER_STEPS = {
 # Step 3 drop (k, n) destinations, mirroring §4.2 table.
 LADDER_DROP = {8: (6, 12), 6: (4, 8), 4: (2, 6), 2: (1, 4)}
 
+# Inverse "climb" used by FEC step-down: when at a band's FLOOR rung
+# (LADDER_STEPS[k][0]), step-down lands at the previous (higher-k)
+# band's TOP rung. From band 8 floor (8, 12) there is nowhere to climb
+# to — caller holds. Note this is asymmetric to LADDER_DROP because
+# the step-up path skips band floors that aren't its destinations,
+# while step-down walks every rung in LADDER_STEPS in reverse so
+# recovery is granular rung-by-rung.
+LADDER_CLIMB = {
+    (6, 10): (8, 16),
+    (4, 8):  (6, 14),
+    (2, 4):  (4, 12),
+}
+
 
 @dataclass(frozen=True)
 class Proposal:

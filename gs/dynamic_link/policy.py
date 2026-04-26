@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from .decision import Decision
 from .predictor import (
+    LADDER_CLIMB,
     LADDER_DROP,
     LADDER_STEPS,
     BudgetExhausted,
@@ -155,6 +156,18 @@ class PolicyConfig:
     # threshold-met period (counter resets after each step), so a full
     # depth=3 → 1 recovery takes ~2 s of sustained clean link.
     clean_windows_for_depth_stepdown: int = 10
+    # FEC ladder step-down: how many consecutive clean+idle windows
+    # (no residual_loss AND fec_work below idle threshold) before
+    # one rung of FEC redundancy is reclaimed. Mirrors the depth
+    # step-down knob. At 10 Hz, 10 windows = 1 s clean link between
+    # rungs. Counter resets after each step; full recovery from
+    # (2, 8) to (8, 12) is up to 11 rungs ≈ 11 s.
+    clean_windows_for_fec_stepdown: int = 10
+    # FEC is "idle enough to recover redundancy" below this fraction
+    # of FEC-recovered packets per window. Just below the existing
+    # preemptive step-up threshold (0.05) so fec_work in the band
+    # 0.02–0.05 holds (k, n) steady — neither tightens nor loosens.
+    fec_work_idle_threshold: float = 0.02
     # Total-blackout failsafe: this many consecutive starved windows
     # (packet_rate_w < starvation_threshold while session active) trips
     # forced_mcs_drop and pins TX power to max. Intentionally short —
@@ -537,6 +550,29 @@ def _ladder_step_up(k: int, n: int) -> tuple[int, int]:
     return band[0]
 
 
+def _ladder_step_down(k: int, n: int) -> tuple[int, int]:
+    """One step down the §4.2 ladder. Inverse direction of step_up.
+
+    Within a band: decrement to the previous rung in LADDER_STEPS.
+    At a band floor: climb to the previous (higher-k) band's TOP rung
+    via LADDER_CLIMB.
+    Off-ladder or already at band-8 floor: hold.
+
+    Step-down walks every rung in LADDER_STEPS in reverse — including
+    band floors that step-up skips. This gives granular rung-by-rung
+    recovery toward higher efficiency.
+    """
+    band = LADDER_STEPS.get(k)
+    if band is None:
+        return k, n
+    for idx, (bk, bn) in enumerate(band):
+        if bk == k and bn == n:
+            if idx > 0:
+                return band[idx - 1]
+            return LADDER_CLIMB.get((k, n), (k, n))
+    return k, n
+
+
 @dataclass
 class TrailingState:
     recent_loss_windows: list[bool] = field(default_factory=list)
@@ -545,6 +581,11 @@ class TrailingState:
     # Consecutive zero-loss windows since last loss; drives depth
     # step-down. Resets to 0 on any loss tick or after a step-down.
     consecutive_clean_windows: int = 0
+    # Stricter than consecutive_clean_windows: increments only when
+    # NO loss AND fec_work below the idle threshold. Drives FEC
+    # ladder step-down. Resets on any loss tick, on any tick with
+    # fec_work above the idle threshold, or after a step-down.
+    consecutive_clean_for_fec_windows: int = 0
 
 
 class TrailingLoop:
@@ -562,8 +603,16 @@ class TrailingLoop:
         current_n: int,
         current_depth: int,
         ts_ms: float,
+        stepdown_floor: tuple[int, int] | None = None,
     ) -> tuple[int, int, int, bool]:
-        """Returns (k, n, depth, idr_request)."""
+        """Returns (k, n, depth, idr_request).
+
+        `stepdown_floor` (kept None for back-compat callers) is the
+        per-MCS target rung for FEC step-down. The trailing loop will
+        not step down past this rung. Callers from `Policy.tick` pass
+        `LADDER_STEPS[row.preferred_k][0]` so step-down lands at the
+        same operating point that the MCS-change rebase would.
+        """
         self._reasons = []
         st = self.state
         had_loss = signals.residual_loss_w > 0.0
@@ -580,6 +629,15 @@ class TrailingLoop:
             st.consecutive_clean_windows = 0
         else:
             st.consecutive_clean_windows += 1
+
+        # Track stricter clean+idle windows for FEC step-down. Resets
+        # on any loss tick OR on any tick where FEC was actively
+        # recovering (fec_work above the idle threshold).
+        if (not had_loss
+                and signals.fec_work < self.cfg.fec_work_idle_threshold):
+            st.consecutive_clean_for_fec_windows += 1
+        else:
+            st.consecutive_clean_for_fec_windows = 0
 
         new_k, new_n, new_depth = current_k, current_n, current_depth
         idr = False
@@ -605,6 +663,28 @@ class TrailingLoop:
                         f"fec_work={signals.fec_work:.3f} "
                         f"-> ({new_k},{new_n}) preemptive"
                     )
+
+        # FEC ladder step-down: after sustained clean+idle link,
+        # reclaim one rung toward the per-MCS target (stepdown_floor).
+        # Same cooldown anchor as step-up — either direction blocks
+        # the other for min_change_interval_ms_fec. Don't fire if
+        # we're already at the floor or no floor was provided.
+        if (stepdown_floor is not None
+                and (new_k, new_n) != stepdown_floor
+                and (ts_ms - st.last_fec_change_ts
+                     >= self.cfg.cooldown.min_change_interval_ms_fec)
+                and st.consecutive_clean_for_fec_windows
+                    >= self.cfg.clean_windows_for_fec_stepdown):
+            stepped = _ladder_step_down(new_k, new_n)
+            if stepped != (new_k, new_n):
+                new_k, new_n = stepped
+                st.last_fec_change_ts = ts_ms
+                st.consecutive_clean_for_fec_windows = 0
+                self._reasons.append(
+                    f"clean*{self.cfg.clean_windows_for_fec_stepdown} "
+                    f"fec_work={signals.fec_work:.3f} "
+                    f"-> ({new_k},{new_n}) fec_stepdown"
+                )
 
         # Depth path (independent of FEC k/n path above). Two triggers:
         #
@@ -782,9 +862,16 @@ class Policy:
             if band is not None:
                 self.state.k, self.state.n = band[0]
 
+        # FEC step-down target: the rung the MCS-change rebase would
+        # land on for the current MCS row. Step-down stops here so we
+        # never recover *past* the operator's per-MCS operating point.
+        band = LADDER_STEPS.get(row.preferred_k)
+        stepdown_floor = band[0] if band else None
+
         # Trailing loop operates on the (maybe just-rebased) (k, n).
         new_k, new_n, new_depth, idr = self.trailing.tick(
             signals, self.state.k, self.state.n, self.state.depth, ts_ms,
+            stepdown_floor=stepdown_floor,
         )
 
         # Latency-budget gate — drop depth / drop k until it fits.
