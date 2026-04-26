@@ -52,12 +52,20 @@ static void flush(dl_osd_t *o) {
     }
 }
 
+/* msposd directive prefix: line 50 (near bottom of frame), font
+ * size 30. Without these directives msposd falls back to its boot-
+ * default `&F38 &L43` style (huge font, middle of frame), which
+ * causes long lines to marquee-scroll left-to-right. Same prefix
+ * the reference alink_drone uses. */
+#define DL_OSD_PREFIX "&L50&F30 "
+
 void dl_osd_write_status(dl_osd_t *o, const dl_decision_t *d, int rssi_dBm) {
     if (!o) return;
     /* &T/&W/&B/&C are msposd placeholders (board temp, wifi-module temp,
      * video bitrate+fps, cpu%); msposd substitutes at render time. */
     snprintf(o->status_line, sizeof(o->status_line),
-             "LA MCS%u %uM (%u,%u)d%u TX%d R%d | &B T&T W&W CPU&C",
+             DL_OSD_PREFIX
+             "MCS%u %uM (%u,%u)d%u TX%d R%d | &B T&T W&W CPU&C",
              d->mcs,
              (unsigned)((d->bitrate_kbps + 500) / 1000),
              d->k, d->n, d->depth,
@@ -73,7 +81,8 @@ void dl_osd_write_status(dl_osd_t *o, const dl_decision_t *d, int rssi_dBm) {
 
 void dl_osd_write_event(dl_osd_t *o, const char *text) {
     if (!o) return;
-    snprintf(o->event_line, sizeof(o->event_line), "LA %s", text);
+    snprintf(o->event_line, sizeof(o->event_line),
+             DL_OSD_PREFIX "%s", text);
     flush(o);
 }
 
