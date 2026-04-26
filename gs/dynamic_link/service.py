@@ -236,7 +236,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--log-file",
         type=Path,
-        help="Path to write the decision log. Default: stdout.",
+        help="Path to write the decision-event log (only ticks where "
+             "a knob actually changed). Default: stdout.",
+    )
+    p.add_argument(
+        "--verbose-log-file",
+        type=Path,
+        help="Path to write the per-tick debug log (every tick, not "
+             "just events). Disabled if omitted.",
     )
     p.add_argument(
         "--replay",
@@ -246,7 +253,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--verbose",
         action="store_true",
-        help="Log every tick (not just ticks with a knob change).",
+        help="Log every tick on stdout when no --verbose-log-file is set. "
+             "Ignored if --verbose-log-file is supplied.",
     )
     p.add_argument(
         "--log-level",
@@ -275,10 +283,19 @@ async def _run(args: argparse.Namespace) -> int:
     policy = Policy(policy_cfg, profile)
     aggregator = _build_aggregator(raw)
 
-    sink_stream = None
-    if args.log_file is not None:
-        sink_stream = open(args.log_file, "a", buffering=1)
-    sink = LogSink(stream=sink_stream, verbose=args.verbose)
+    events_stream = (
+        open(args.log_file, "a", buffering=1)
+        if args.log_file is not None else sys.stdout
+    )
+    if args.verbose_log_file is not None:
+        verbose_stream = open(args.verbose_log_file, "a", buffering=1)
+    elif args.verbose:
+        # Back-compat: --verbose without a dedicated file mirrors every
+        # tick to stdout (matches old behaviour).
+        verbose_stream = sys.stdout
+    else:
+        verbose_stream = None
+    sink = LogSink(events_stream=events_stream, verbose_stream=verbose_stream)
 
     enabled = bool(raw.get("enabled", False))
 

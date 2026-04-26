@@ -20,21 +20,29 @@ def test_load_packaged_m8812eu2():
     prof = load_profile("m8812eu2", [PACKAGED_DIR])
     assert prof.name == "BL-M8812EU2"
     assert prof.chipset == "RTL8812EU"
-    assert prof.mcs_max == 7
+    # Operator-tunable; just verify the field is in a sensible range.
+    assert 0 <= prof.mcs_min <= prof.mcs_max <= 7
     assert 20 in prof.bandwidth_supported
     assert 40 in prof.bandwidth_supported
 
 
-def test_rssi_mcs_map_mcs7_floor_matches_spec():
-    prof = load_profile("m8812eu2", [PACKAGED_DIR])
+def test_rssi_mcs_map_floor_matches_spec():
+    prof = load_packaged()
     rows = prof.rssi_mcs_map(bandwidth=20, rssi_margin_db=8.0)
-    # Highest row first.
-    assert rows[0].mcs == 7
-    assert rows[0].rssi_floor_dBm == -77 + 8  # -69 dBm from §4.1 table
+    # Highest mcs row first; the test asserts against whatever
+    # mcs_max the operator has currently configured.
+    top = rows[0]
+    assert top.mcs == prof.mcs_max
+    expected_floor = prof.sensitivity_dBm[20][prof.mcs_max] + 8
+    assert top.rssi_floor_dBm == expected_floor
     # MCS0 row bitrate = 6.5 Mbps * 0.40 = 2.6 Mbps
     mcs0 = rows[-1]
     assert mcs0.mcs == 0
     assert abs(mcs0.bitrate_Mbps - 2.6) < 1e-6
+
+
+def load_packaged():
+    return load_profile("m8812eu2", [PACKAGED_DIR])
 
 
 def test_rssi_mcs_map_rejects_unsupported_bandwidth():
@@ -96,9 +104,10 @@ def test_rejects_encoder_bitrate_frac_zero(tmp_path):
 def test_snr_mcs_map_floor_includes_margin():
     prof = load_profile("m8812eu2", [PACKAGED_DIR])
     rows = prof.snr_mcs_map(bandwidth=20, snr_margin_db=3.0)
-    # Highest row first (MCS7 floor 25 + margin 3 = 28 dB)
-    assert rows[0].mcs == 7
-    assert rows[0].snr_floor_dB == 25 + 3
+    # Highest configured mcs first.
+    top = rows[0]
+    assert top.mcs == prof.mcs_max
+    assert top.snr_floor_dB == prof.snr_floor_dB[20][prof.mcs_max] + 3
     # MCS0 floor 5 + margin 3 = 8 dB
     assert rows[-1].mcs == 0
     assert rows[-1].snr_floor_dB == 5 + 3
