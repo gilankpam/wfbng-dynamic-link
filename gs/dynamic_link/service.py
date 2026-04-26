@@ -54,6 +54,13 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     leading = LeadingLoopConfig(
         bandwidth=int(leading_raw.get("bandwidth", 20)),
         mcs_max=int(leading_raw.get("mcs_max", 7)),
+        snr_margin_db=float(leading_raw.get("snr_margin_db", 3.0)),
+        snr_up_guard_db=float(leading_raw.get("snr_up_guard_db", 2.0)),
+        snr_up_hold_ms=float(leading_raw.get("snr_up_hold_ms", 2000.0)),
+        snr_down_hold_ms=float(leading_raw.get("snr_down_hold_ms", 500.0)),
+        forced_drop_inhibit_ms=float(
+            leading_raw.get("forced_drop_inhibit_ms", 5000.0)
+        ),
         rssi_margin_db=float(leading_raw.get("rssi_margin_db", 8.0)),
         rssi_up_guard_db=float(leading_raw.get("rssi_up_guard_db", 3.0)),
         rssi_up_hold_ms=float(leading_raw.get("rssi_up_hold_ms", 2000.0)),
@@ -102,6 +109,7 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     predictor = PredictorConfig(
         per_packet_airtime_us=float(video_raw.get("per_packet_airtime_us", 80.0)),
     )
+    policy_raw = raw.get("policy", {})
     return PolicyConfig(
         leading=leading,
         cooldown=cooldown,
@@ -109,15 +117,18 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         safe=safe,
         predictor=predictor,
         max_latency_ms=float(video_raw.get("max_latency_ms", 50.0)),
+        starvation_windows=int(policy_raw.get("starvation_windows", 5)),
     )
 
 
 def _build_aggregator(raw: dict) -> SignalAggregator:
     s = raw.get("smoothing", {})
+    starv = raw.get("smoothing", {}).get("starvation_threshold_pps", 50.0)
     return SignalAggregator(
         ewma_alpha_rssi=float(s.get("ewma_alpha_rssi", 0.2)),
         ewma_alpha_fec=float(s.get("ewma_alpha_fec", 0.2)),
         ewma_alpha_burst=float(s.get("ewma_alpha_burst", 0.1)),
+        starvation_threshold_pps=float(starv),
     )
 
 

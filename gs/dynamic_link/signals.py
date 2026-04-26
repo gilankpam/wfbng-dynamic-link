@@ -24,14 +24,20 @@ class Signals:
     # Raw per-window
     rssi_min_w: float | None = None       # min across antennas of rssi_min
     rssi_avg_w: float | None = None       # diversity-combined estimate
+    rssi_max_w: float | None = None       # max(rssi_avg) — best-antenna operating point
     snr_min_w: float | None = None
     snr_avg_w: float | None = None
+    snr_max_w: float | None = None        # max(snr_avg) — best-antenna SNR
     residual_loss_w: float = 0.0          # used raw — no smoothing (§3)
     fec_work_rate_w: float = 0.0
     packet_rate_w: float = 0.0            # fragments / sec
     burst_rate_w: float = 0.0             # events / sec
     holdoff_rate_w: float = 0.0
     late_rate_w: float = 0.0
+    # Starvation flag: link is up (session known) but data fragments
+    # have dropped to near zero — distinct from "healthy idle" because
+    # a session implies the drone is still TXing.
+    link_starved_w: bool = False
 
     # EWMA-smoothed controller inputs
     rssi: float | None = None
@@ -65,6 +71,11 @@ class SignalAggregator:
     ewma_alpha_rssi: float = 0.2
     ewma_alpha_fec: float = 0.2
     ewma_alpha_burst: float = 0.1
+    # link_starved_w threshold: data fragments/sec below this counts as
+    # starved. Compared per-window against packet_rate_w. Default 50 pps
+    # is well below an FPV video stream's nominal ~700-1500 pps but well
+    # above background noise from a stalled stream.
+    starvation_threshold_pps: float = 50.0
 
     signals: Signals = field(default_factory=Signals)
 
@@ -109,18 +120,34 @@ class SignalAggregator:
             snr_avgs = [a.snr_avg for a in ev.rx_ant_stats]
             s.rssi_min_w = float(min(rssi_mins))
             s.rssi_avg_w = float(sum(rssi_avgs) / len(rssi_avgs))
+            s.rssi_max_w = float(max(rssi_avgs))
             s.snr_min_w = float(min(snr_mins))
             s.snr_avg_w = float(sum(snr_avgs) / len(snr_avgs))
+            s.snr_max_w = float(max(snr_avgs))
             s.ant_count = len(ev.rx_ant_stats)
         # If no antenna lines this window, keep prior values — don't
         # reset; the RSSI operating point doesn't vanish just because
         # no fragments arrived.
 
+        # --- Starvation flag (post-blackout detection) -----------------
+        # Only meaningful once we've seen a session — otherwise we'd
+        # flag every pre-link tick. Bypasses the survivor-bias trap of
+        # rssi/snr because it watches packet_rate, not signal quality.
+        s.link_starved_w = (
+            s.session is not None
+            and s.packet_rate_w < self.starvation_threshold_pps
+        )
+
         # --- EWMA smoothing (§3) ---------------------------------------
-        if s.rssi_min_w is not None:
-            s.rssi = _ewma(s.rssi, s.rssi_min_w, self.ewma_alpha_rssi)
-        if s.snr_min_w is not None:
-            s.snr = _ewma(s.snr, s.snr_min_w, self.ewma_alpha_rssi)
+        # Smoothed inputs feed the leading loop. Use best-antenna
+        # aggregations: max(rssi_avg) / max(snr_avg) match what the
+        # diversity receiver actually decodes against (and what the OSD
+        # shows). min(rssi_min) tracks the weakest antenna and misses
+        # best-antenna degradation entirely.
+        if s.rssi_max_w is not None:
+            s.rssi = _ewma(s.rssi, s.rssi_max_w, self.ewma_alpha_rssi)
+        if s.snr_max_w is not None:
+            s.snr = _ewma(s.snr, s.snr_max_w, self.ewma_alpha_rssi)
 
         s.fec_work = _ewma(s.fec_work, s.fec_work_rate_w, self.ewma_alpha_fec)
         s.burst_rate = _ewma(s.burst_rate, s.burst_rate_w, self.ewma_alpha_burst)

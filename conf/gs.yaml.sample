@@ -36,11 +36,27 @@ leading_loop:
   bandwidth: 20
   mcs_max: 7
 
+  # MCS hysteresis is SNR-driven. Per-MCS SNR floors live in the
+  # radio profile YAML; snr_margin_db is operator-tuned safety budget
+  # added on top.
+  snr_margin_db: 3
+  snr_up_guard_db: 2
+  snr_up_hold_ms: 2000
+  snr_down_hold_ms: 500
+  # After a forced MCS drop (sustained loss or starvation), inhibit
+  # the up-climb for this long. Defends against survivor-biased SNR
+  # samples instantly snapping MCS back up.
+  forced_drop_inhibit_ms: 5000
+
+  # The rssi_*_hold / rssi_*_guard knobs below are no longer consumed
+  # by the MCS hysteresis (which is SNR-driven). They remain parsed
+  # for back-compat but have no effect on MCS selection.
   rssi_margin_db: 8
   rssi_up_guard_db: 3
   rssi_up_hold_ms: 2000
   rssi_down_hold_ms: 500
 
+  # The TX power inner loop is RSSI-driven (direct dBm-vs-dBm).
   rssi_target_dBm: -60
   rssi_deadband_db: 3
   tx_power_min_dBm: 5
@@ -62,12 +78,21 @@ smoothing:
   ewma_alpha_rssi: 0.2
   ewma_alpha_fec: 0.2
   ewma_alpha_burst: 0.1
+  # Below this packet rate (data fragments / sec), a window is counted
+  # as starved. Comfortably below an FPV stream's nominal 700-1500 pps
+  # but well above background noise from a stalled stream.
+  starvation_threshold_pps: 50
 
 cooldown:
   min_change_interval_ms_fec: 200
   min_change_interval_ms_depth: 200
   min_change_interval_ms_radio: 500
   min_change_interval_ms_cross: 50
+
+policy:
+  # Consecutive starved windows that trip forced_mcs_drop and pin TX
+  # power to max. At 10 Hz, 5 windows = 0.5 s.
+  starvation_windows: 5
 
 health_timeout_ms: 10000
 

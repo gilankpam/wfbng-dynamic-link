@@ -67,6 +67,35 @@ data_rate_Mbps_LGI:
     6: 121.5
     7: 135.0
 
+# Per-MCS minimum SNR (dB) the receiver needs to decode that MCS at
+# acceptable PER (~5%). Constellation + coding-rate driven, with
+# chipset implementation loss baked in. HT40 adds ~3 dB across the
+# board (wider channel = higher noise bandwidth).
+#
+# These are 802.11n field-typical starting values, NOT chipset-spec
+# numbers (RTL8812EU datasheet does not publish SNR thresholds).
+# Field-validate per airframe by walking out the link and observing
+# the SNR at which each MCS begins dropping packets.
+snr_floor_dB:
+  20:
+    0:  5     # BPSK 1/2
+    1:  8     # QPSK 1/2
+    2: 11     # QPSK 3/4
+    3: 14     # 16-QAM 1/2
+    4: 17     # 16-QAM 3/4
+    5: 20     # 64-QAM 2/3
+    6: 23     # 64-QAM 3/4
+    7: 25     # 64-QAM 5/6
+  40:
+    0:  8
+    1: 11
+    2: 14
+    3: 17
+    4: 20
+    5: 23
+    6: 26
+    7: 28
+
 preferred_k:
   7: 8
   6: 8

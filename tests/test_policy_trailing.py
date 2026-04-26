@@ -1,10 +1,22 @@
 """Tests for the trailing loop: loss-driven escalation (§4.2)."""
 from __future__ import annotations
 
-from dynamic_link.policy import PolicyConfig, TrailingLoop
+from pathlib import Path
+
+from dynamic_link.policy import (
+    LeadingLoopConfig,
+    Policy,
+    PolicyConfig,
+    SafeDefaults,
+    TrailingLoop,
+)
 from dynamic_link.predictor import LADDER_STEPS
+from dynamic_link.profile import load_profile
 from dynamic_link.signals import Signals
 from dynamic_link.stats_client import SessionInfo
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+PACKAGED_DIR = REPO_ROOT / "conf" / "radios"
 
 
 def _sigs(
@@ -252,6 +264,81 @@ def test_depth_does_not_step_down_with_recent_loss():
             ts_ms=1800.0 + i * 300.0,
         )
     assert depth == 3
+
+
+def _policy(**overrides) -> Policy:
+    """Build a Policy backed by the packaged radio profile."""
+    prof = load_profile("m8812eu2", [PACKAGED_DIR])
+    leading_overrides = overrides.pop("leading", {})
+    leading = LeadingLoopConfig(
+        # Settle TX power so it doesn't move around in these tests.
+        tx_power_freeze_after_mcs_ms=0.0,
+        tx_power_cooldown_ms=0.0,
+        tx_power_max_dBm=30.0,
+        snr_margin_db=3.0,
+        forced_drop_inhibit_ms=0.0,  # tests opt-in by overriding
+        **leading_overrides,
+    )
+    cfg = PolicyConfig(
+        leading=leading,
+        safe=SafeDefaults(k=8, n=12, depth=1, mcs=1, bitrate_kbps=2000),
+        **overrides,
+    )
+    return Policy(cfg, prof)
+
+
+def _starved_sigs(ts_ms: float, *, link_starved: bool) -> Signals:
+    """Build a Signals snapshot driving the starvation path. snr=30 keeps
+    the leading loop's MCS hysteresis quiet; only link_starved_w moves."""
+    return Signals(
+        rssi=-55.0, rssi_min_w=-55.0, rssi_max_w=-55.0,
+        snr=30.0, snr_min_w=30.0, snr_max_w=30.0,
+        residual_loss_w=0.0,
+        timestamp=ts_ms / 1000.0,
+        link_starved_w=link_starved,
+        session=SessionInfo(
+            fec_type="VDM_RS", fec_k=8, fec_n=12, epoch=1,
+            interleave_depth=1, contract_version=2,
+        ),
+    )
+
+
+def test_starvation_triggers_forced_drop_after_n_windows():
+    p = _policy(starvation_windows=5)
+    start_mcs = p.state.mcs
+    # 4 starved ticks → no drop yet.
+    for i in range(4):
+        d = p.tick(_starved_sigs(i * 100.0, link_starved=True))
+    assert d.mcs == start_mcs
+    # 5th starved tick → forced drop fires.
+    d = p.tick(_starved_sigs(400.0, link_starved=True))
+    assert d.mcs < start_mcs
+    assert "forced_mcs_drop" in d.reason
+
+
+def test_starvation_pins_tx_power_to_max():
+    p = _policy(starvation_windows=2)
+    # Default leading config above sets tx_power_max_dBm=30. Seed power
+    # low so we can see the pin.
+    p.leading.state.tx_power_dBm = 10.0
+    p.tick(_starved_sigs(0.0, link_starved=True))
+    d = p.tick(_starved_sigs(100.0, link_starved=True))
+    assert d.tx_power_dBm == 30
+
+
+def test_starvation_resets_on_packet_recovery():
+    """A non-starved window between starved ones must reset the counter
+    so we don't drop on stale evidence."""
+    p = _policy(starvation_windows=3)
+    start_mcs = p.state.mcs
+    p.tick(_starved_sigs(0.0, link_starved=True))
+    p.tick(_starved_sigs(100.0, link_starved=True))
+    # Recovery tick.
+    p.tick(_starved_sigs(200.0, link_starved=False))
+    # Two more starved — only 2 in a row, threshold 3 → no drop.
+    p.tick(_starved_sigs(300.0, link_starved=True))
+    d = p.tick(_starved_sigs(400.0, link_starved=True))
+    assert d.mcs == start_mcs
 
 
 def test_depth_bootstrap_is_one_shot_at_depth_1():

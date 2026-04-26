@@ -62,6 +62,7 @@ def _base_profile() -> dict:
         "tx_power_min_dBm": 0,
         "tx_power_max_dBm": 20,
         "sensitivity_dBm": {20: {i: -90 + i for i in range(8)}},
+        "snr_floor_dB": {20: {i: 5 + 3 * i for i in range(8)}},
         "data_rate_Mbps_LGI": {20: {i: 6.5 * (i + 1) for i in range(8)}},
         "preferred_k": {7: 8, 6: 8, 5: 6, 4: 6, 3: 4, 2: 4, 1: 2, 0: 2},
         "encoder_bitrate_frac": 0.40,
@@ -117,6 +118,36 @@ def test_rejects_encoder_bitrate_frac_zero(tmp_path):
     d["encoder_bitrate_frac"] = 0.0
     p = _write_profile(tmp_path, d)
     with pytest.raises(ProfileError, match="encoder_bitrate_frac"):
+        load_profile_file(p)
+
+
+def test_snr_mcs_map_floor_includes_margin():
+    prof = load_profile("m8812eu2", [PACKAGED_DIR])
+    rows = prof.snr_mcs_map(bandwidth=20, snr_margin_db=3.0)
+    # Highest row first (MCS7 floor 25 + margin 3 = 28 dB)
+    assert rows[0].mcs == 7
+    assert rows[0].snr_floor_dB == 25 + 3
+    # MCS0 floor 5 + margin 3 = 8 dB
+    assert rows[-1].mcs == 0
+    assert rows[-1].snr_floor_dB == 5 + 3
+
+
+def test_rejects_missing_snr_floor_bw_entry(tmp_path):
+    d = _base_profile()
+    d["bandwidth_supported"] = [20, 40]
+    d["sensitivity_dBm"][40] = {i: -90 + i for i in range(8)}
+    d["data_rate_Mbps_LGI"][40] = {i: 6.5 * (i + 1) for i in range(8)}
+    # snr_floor_dB still missing 40 → should fail with snr_floor_dB error
+    p = _write_profile(tmp_path, d)
+    with pytest.raises(ProfileError, match="snr_floor_dB missing bw=40"):
+        load_profile_file(p)
+
+
+def test_rejects_missing_snr_floor_mcs_entry(tmp_path):
+    d = _base_profile()
+    del d["snr_floor_dB"][20][3]
+    p = _write_profile(tmp_path, d)
+    with pytest.raises(ProfileError, match="snr_floor_dB.*mcs=3"):
         load_profile_file(p)
 
 

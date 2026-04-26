@@ -112,3 +112,56 @@ def test_burst_holdoff_late_smoothed_with_alpha_burst():
     s = agg.consume(_rx(0.2, bursts_rec=10))
     # 0.1 * 100 + 0.9 * 0 = 10.0 (100 events/s)
     assert abs(s.burst_rate - 10.0) < 1e-9
+
+
+def test_rssi_max_is_max_of_avgs_across_antennas():
+    agg = SignalAggregator()
+    s = agg.consume(_rx(0.1, ants=[(-55, -55, 20, 20),
+                                   (-72, -70, 15, 17),
+                                   (-60, -58, 18, 20)]))
+    assert s.rssi_max_w == -55.0  # best antenna's avg
+
+
+def test_snr_max_is_max_of_avgs_across_antennas():
+    agg = SignalAggregator()
+    s = agg.consume(_rx(0.1, ants=[(-55, -55, 20, 22),
+                                   (-72, -70, 15, 17),
+                                   (-60, -58, 18, 30)]))
+    assert s.snr_max_w == 30.0  # best antenna's snr_avg
+
+
+def test_ewma_smoothes_rssi_max_not_min():
+    """Smoothed s.rssi must track best-antenna avg (max-of-avgs), not
+    the worst-antenna min — that was the survivor-bias bug."""
+    agg = SignalAggregator(ewma_alpha_rssi=1.0)  # no smoothing
+    s = agg.consume(_rx(0.1, ants=[(-55, -50, 25, 30),
+                                   (-72, -70, 15, 17)]))
+    assert s.rssi == -50.0   # max(rssi_avg) — the best antenna
+    assert s.snr == 30.0     # max(snr_avg)
+
+
+def test_link_starved_w_when_packet_rate_below_threshold():
+    agg = SignalAggregator(starvation_threshold_pps=50.0)
+    # Bootstrap a session.
+    agg.consume(_rx(0.1, data=2000))
+    # Now drop traffic. data=4 in 100 ms → packet_rate_w = 40 < 50 → starved.
+    s = agg.consume(_rx(0.2, data=4))
+    assert s.link_starved_w is True
+
+
+def test_link_starved_false_when_no_session():
+    """Pre-link windows must not flag starvation — only meaningful once
+    we know the drone is supposed to be TXing."""
+    agg = SignalAggregator(starvation_threshold_pps=50.0)
+    # Build an RxEvent with no session.
+    ev = _rx(0.1, data=0)
+    ev.session = None
+    s = agg.consume(ev)
+    assert s.link_starved_w is False
+
+
+def test_link_starved_false_when_packet_rate_high():
+    agg = SignalAggregator(starvation_threshold_pps=50.0)
+    agg.consume(_rx(0.1, data=2000))   # session bootstrapped
+    s = agg.consume(_rx(0.2, data=200))  # 2000 pps - well above
+    assert s.link_starved_w is False

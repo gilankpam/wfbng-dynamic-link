@@ -33,6 +33,20 @@ log = logging.getLogger(__name__)
 class LeadingLoopConfig:
     bandwidth: int = 20
     mcs_max: int = 7
+    # SNR-driven MCS hysteresis (§4.1). MCS row floors come from the
+    # radio profile's snr_floor_dB table; snr_margin_db is operator-
+    # tunable safety budget added on top.
+    snr_margin_db: float = 3.0
+    snr_up_guard_db: float = 2.0
+    snr_up_hold_ms: float = 2000.0
+    snr_down_hold_ms: float = 500.0
+    # After a forced MCS drop (sustained loss or starvation), inhibit
+    # any up-climb for this long. Prevents instant snap-back on
+    # survivor-biased SNR/RSSI samples.
+    forced_drop_inhibit_ms: float = 5000.0
+    # RSSI knobs are now consumed only by the TX power inner loop;
+    # the legacy rssi_*_hold and rssi_*_guard fields are no longer
+    # read but kept here for back-compat YAML parsing.
     rssi_margin_db: float = 8.0
     rssi_up_guard_db: float = 3.0
     rssi_up_hold_ms: float = 2000.0
@@ -89,6 +103,13 @@ class PolicyConfig:
     # threshold-met period (counter resets after each step), so a full
     # depth=3 → 1 recovery takes ~2 s of sustained clean link.
     clean_windows_for_depth_stepdown: int = 10
+    # Total-blackout failsafe: this many consecutive starved windows
+    # (packet_rate_w < starvation_threshold while session active) trips
+    # forced_mcs_drop and pins TX power to max. Intentionally short —
+    # at 10 Hz, 5 windows = 0.5 s — because starvation is unambiguous
+    # and the alternative is the trailing loop's ~38 s sustained_loss
+    # path, which we observed in the live antenna-cover test.
+    starvation_windows: int = 5
 
 
 # ------------------------------------------------------------------
@@ -115,6 +136,7 @@ class LeadingState:
     tx_power_dBm: float
     last_tx_power_change_ts: float = 0.0
     last_mcs_change_ts: float = 0.0
+    last_forced_drop_ts: float = 0.0  # post-drop inhibit anchor
     # Row-hysteresis tracking
     candidate_row_idx: int | None = None
     candidate_seen_since_ts: float = 0.0
@@ -122,7 +144,14 @@ class LeadingState:
 
 
 class LeadingLoop:
-    """RSSI-driven feed-forward (§4.1). Returns (row, tx_power, changed)."""
+    """SNR-driven MCS hysteresis + RSSI-driven TX power loop (§4.1).
+
+    The two sub-loops use different signals on purpose: MCS selection
+    is bounded by SNR (the actual decode constraint, robust to
+    noise-floor changes), while TX power drives RSSI toward target
+    (a direct dBm-vs-dBm relationship). They couple through the
+    physics: TX power up → RSSI up → SNR up since noise is unchanged.
+    """
 
     def __init__(self, cfg: LeadingLoopConfig, profile: RadioProfile):
         self.cfg = cfg
@@ -130,7 +159,9 @@ class LeadingLoop:
         # Profile's mcs_max is the static hardware ceiling; cfg.mcs_max
         # is the operator's runtime cap (gs.yaml leading_loop.mcs_max).
         # Clamp to the lower of the two.
-        rows = profile.rssi_mcs_map(cfg.bandwidth, cfg.rssi_margin_db)
+        rows = profile.snr_mcs_map(
+            cfg.bandwidth, cfg.snr_margin_db, cfg.rssi_margin_db
+        )
         rows = [r for r in rows if r.mcs <= cfg.mcs_max]
         if not rows:
             raise ValueError(
@@ -155,40 +186,53 @@ class LeadingLoop:
     def current_row(self) -> MCSRow:
         return self.rows[self.state.current_row_idx]
 
-    def _mcs_down_target(self, rssi: float) -> int | None:
-        """If smoothed RSSI has fallen below current row's floor, return index
-        of the row the RSSI now lives in (lower-MCS). Else None."""
+    def _mcs_down_target(self, snr: float) -> int | None:
+        """If smoothed SNR has fallen below current row's floor, return
+        index of the row the SNR now lives in (lower-MCS). Else None."""
         cur = self.current_row
-        if rssi >= cur.rssi_floor_dBm:
+        if snr >= cur.snr_floor_dB:
             return None
         # Walk down to find the highest-MCS row whose floor clears.
         for i in range(self.state.current_row_idx + 1, len(self.rows)):
-            if rssi >= self.rows[i].rssi_floor_dBm:
+            if snr >= self.rows[i].snr_floor_dB:
                 return i
         return len(self.rows) - 1  # below MCS0 floor — last row
 
-    def _mcs_up_target(self, rssi: float) -> int | None:
-        """If RSSI is well above next-higher row's floor (+ up_guard),
-        return that row's index. Else None."""
+    def _mcs_up_target(self, snr: float, ts_ms: float) -> int | None:
+        """If SNR is above the next-higher row's floor (+ up_guard) AND
+        we're past the post-drop inhibit window, return that row's
+        index. Else None."""
         if self.state.current_row_idx == 0:
             return None  # already at top
+        # Post-drop inhibit: after a forced drop, hold the dropped MCS
+        # for forced_drop_inhibit_ms regardless of how good SNR looks.
+        # Defends against survivor-biased SNR samples spuriously
+        # triggering an immediate snap-back.
+        if (ts_ms - self.state.last_forced_drop_ts
+                < self.cfg.forced_drop_inhibit_ms):
+            return None
         next_idx = self.state.current_row_idx - 1
         target = self.rows[next_idx]
-        if rssi >= target.rssi_floor_dBm + self.cfg.rssi_up_guard_db:
+        if snr >= target.snr_floor_dB + self.cfg.snr_up_guard_db:
             return next_idx
         return None
 
     def tick(
         self,
         rssi_smooth: float | None,
+        snr_smooth: float | None,
         ts_ms: float,
         forced_mcs_drop: bool = False,
+        force_tx_power_to: float | None = None,
     ) -> tuple[MCSRow, float, bool]:
         """One tick of the leading loop.
 
         Returns (chosen_row, tx_power_dBm, mcs_changed).
         `forced_mcs_drop=True` overrides hysteresis to drop one row
-        immediately (§4.2 trailing-loop sustained-loss escalation).
+        immediately (§4.2 sustained-loss / starvation escalation).
+        `force_tx_power_to` pins TX power to a specific dBm,
+        bypassing the cooldown and freeze (used by the starvation
+        path to push power to max).
         """
         self._reasons = []
         mcs_changed = False
@@ -196,15 +240,16 @@ class LeadingLoop:
         if forced_mcs_drop and self.state.current_row_idx < len(self.rows) - 1:
             self.state.current_row_idx += 1
             self.state.last_mcs_change_ts = ts_ms
+            self.state.last_forced_drop_ts = ts_ms
             self.state.candidate_row_idx = None
             self._reasons.append("forced_mcs_drop")
             mcs_changed = True
 
-        # Outer loop — row hysteresis. Skip if we have no rssi reading yet
-        # or we just made a forced drop.
-        elif rssi_smooth is not None:
-            down = self._mcs_down_target(rssi_smooth)
-            up = self._mcs_up_target(rssi_smooth)
+        # Outer loop — row hysteresis on SNR. Skip if we have no SNR
+        # reading yet or we just made a forced drop.
+        elif snr_smooth is not None:
+            down = self._mcs_down_target(snr_smooth)
+            up = self._mcs_up_target(snr_smooth, ts_ms)
             st = self.state
             if down is not None:
                 if st.candidate_row_idx != down or st.candidate_is_upgrade:
@@ -212,12 +257,12 @@ class LeadingLoop:
                     st.candidate_seen_since_ts = ts_ms
                     st.candidate_is_upgrade = False
                 if (ts_ms - st.candidate_seen_since_ts
-                        >= self.cfg.rssi_down_hold_ms):
+                        >= self.cfg.snr_down_hold_ms):
                     st.current_row_idx = down
                     st.last_mcs_change_ts = ts_ms
                     st.candidate_row_idx = None
                     self._reasons.append(
-                        f"mcs_down rssi={rssi_smooth:.1f}"
+                        f"mcs_down snr={snr_smooth:.1f}"
                     )
                     mcs_changed = True
             elif up is not None:
@@ -226,20 +271,30 @@ class LeadingLoop:
                     st.candidate_seen_since_ts = ts_ms
                     st.candidate_is_upgrade = True
                 if (ts_ms - st.candidate_seen_since_ts
-                        >= self.cfg.rssi_up_hold_ms):
+                        >= self.cfg.snr_up_hold_ms):
                     st.current_row_idx = up
                     st.last_mcs_change_ts = ts_ms
                     st.candidate_row_idx = None
                     self._reasons.append(
-                        f"mcs_up rssi={rssi_smooth:.1f}"
+                        f"mcs_up snr={snr_smooth:.1f}"
                     )
                     mcs_changed = True
             else:
-                # RSSI is inside the current row's band; clear any candidate.
+                # SNR is inside the current row's band; clear any candidate.
                 st.candidate_row_idx = None
 
-        # Inner loop — TX power closed loop.
-        self._tick_tx_power(rssi_smooth, ts_ms, mcs_changed)
+        # Inner loop — TX power closed loop on RSSI, OR force-pin override.
+        if force_tx_power_to is not None:
+            pinned = max(
+                self.cfg.tx_power_min_dBm,
+                min(self.cfg.tx_power_max_dBm, force_tx_power_to),
+            )
+            if int(round(pinned)) != int(round(self.state.tx_power_dBm)):
+                self.state.tx_power_dBm = pinned
+                self.state.last_tx_power_change_ts = ts_ms
+                self._reasons.append(f"tx_power_pinned->{pinned:.1f}")
+        else:
+            self._tick_tx_power(rssi_smooth, ts_ms, mcs_changed)
 
         return self.current_row, self.state.tx_power_dBm, mcs_changed
 
@@ -492,6 +547,7 @@ class Policy:
         self.profile = profile
         self.leading = LeadingLoop(cfg.leading, profile)
         self.trailing = TrailingLoop(cfg)
+        self._starvation_count: int = 0
         # Boot with safe_defaults — keeps the controller safe on a
         # link that hasn't produced an RSSI reading yet.
         row = self.leading.current_row
@@ -512,15 +568,36 @@ class Policy:
         ts_ms = signals.timestamp * 1000.0 if signals.timestamp else 0.0
         prev = PolicyState(**self.state.__dict__)
 
+        # Starvation failsafe: after N consecutive starved windows,
+        # bypass the trailing loop's sustained_loss accumulator (which
+        # is poisoned by dead-window resets — see live antenna-cover
+        # test) and force MCS down + TX power to max.
+        if signals.link_starved_w:
+            self._starvation_count += 1
+        else:
+            self._starvation_count = 0
+        starvation_drop = self._starvation_count >= self.cfg.starvation_windows
+
         # Trailing sustained-loss check (done before the leading tick
         # so the forced_mcs_drop flag is fresh).
-        forced_drop = False
-        if self.trailing.sustained_loss() and signals.residual_loss_w > 0.0:
-            forced_drop = True
+        forced_drop = starvation_drop or (
+            self.trailing.sustained_loss() and signals.residual_loss_w > 0.0
+        )
+        force_tx = self.cfg.leading.tx_power_max_dBm if starvation_drop else None
 
         row, tx_power, mcs_changed = self.leading.tick(
-            signals.rssi, ts_ms, forced_mcs_drop=forced_drop
+            signals.rssi,
+            signals.snr,
+            ts_ms,
+            forced_mcs_drop=forced_drop,
+            force_tx_power_to=force_tx,
         )
+
+        if starvation_drop:
+            # Reset so the next 5 starved windows have to accumulate
+            # again before we drop another notch (and so a recovering
+            # link clears the counter immediately).
+            self._starvation_count = 0
 
         # On MCS row change, rebase (k, n) to the new band's floor
         # (§4.2 "band boundary crossings").
@@ -598,9 +675,15 @@ class Policy:
             signals_snapshot={
                 "rssi": signals.rssi,
                 "rssi_min_w": signals.rssi_min_w,
+                "rssi_max_w": signals.rssi_max_w,
+                "snr": signals.snr,
+                "snr_min_w": signals.snr_min_w,
+                "snr_max_w": signals.snr_max_w,
                 "residual_loss_w": signals.residual_loss_w,
                 "fec_work": signals.fec_work,
                 "burst_rate": signals.burst_rate,
                 "holdoff_rate": signals.holdoff_rate,
+                "packet_rate_w": signals.packet_rate_w,
+                "link_starved_w": signals.link_starved_w,
             },
         )
