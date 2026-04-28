@@ -24,30 +24,12 @@ video:
   max_latency_ms: 50
 
 fec:
-  n_min: 4
-  k_min: 2
-  # Largest k the controller will pick. Bounds the integer k that
-  # `compute_k` returns (= ceil(fec_block_fill_ms_target / ipi_ms)).
-  # 12 covers MCS 0-3 at the 12 ms target with the m8812eu2 profile;
-  # MCS 4-7 clamp here.
-  k_max: 12
+  # `(k, n)` and bitrate are now per-MCS lookups in the radio
+  # profile's `fec_table` block. The controller never moves them
+  # reactively to loss — see `docs/knob-cadence-bench.md` for why
+  # FEC `CMD_SET_FEC` reconfigs are pinned per-MCS instead of
+  # escalated on loss.
   depth_max: 3
-  # Hard cap on (n - k) / k. The bandwidth-derived ceiling
-  # (1/encoder_bitrate_frac − 1) may already be tighter; whichever
-  # is smaller wins. Set null to disable this cap entirely.
-  max_redundancy_ratio: 1.0
-  # Floor redundancy on a clean link. n_lower = round(k * (1 + this)).
-  # Latency may pull n_upper below this on slow links.
-  base_redundancy_ratio: 0.5
-  # Target block-fill latency (k × inter_packet_interval_ms) used to
-  # pick k from the {2, 4, 6, 8} set: at fast IPI we land on k=8, at
-  # slow IPI we land on k=2.
-  fec_block_fill_ms_target: 12.0
-  # Per-tick n adjustments. Loss bumps immediately (no cooldown);
-  # preempt and recover obey the FEC cooldown.
-  n_loss_step: 2
-  n_preempt_step: 1
-  n_recover_step: 1
   mtu_bytes: 1400
 
 leading_loop:
@@ -154,3 +136,10 @@ debug:
   latency_log: null
   video_tap: null
   video_tap_port: 5600
+  # Per-flight log rotation. Only consulted when the service is run
+  # with `--log-dir DIR`; the rotator opens flight-NNNN/ subdirs under
+  # that path and closes the current one after this many seconds of
+  # empty rx_ant_stats (drone power-off / battery swap / sustained
+  # blackout). Default 10 s; raise if real flights dip into long fades.
+  flight_rotation:
+    gap_seconds: 10.0

@@ -7,7 +7,6 @@ every tick; `knobs_changed` records which knobs actually moved.
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 
 from .decision import Decision
@@ -16,8 +15,6 @@ from .predictor import (
     PredictorConfig,
     Proposal,
     fit_or_degrade,
-    max_n_for_latency,
-    predict,
 )
 from .profile import MCSRow, RadioProfile
 from .signals import Signals
@@ -120,26 +117,18 @@ class CooldownConfig:
 
 @dataclass
 class FECBounds:
-    n_min: int = 4
-    k_min: int = 2
-    k_max: int = 12
+    """FEC ceilings used for safety clamps.
+
+    `(k, n)` is supplied per-MCS by the radio profile's `fec_table`
+    (see `gs/dynamic_link/profile.py` and `docs/knob-cadence-bench.md`).
+    These bounds exist only as defensive limits — the loader rejects
+    any profile that would violate them. The trailing loop no longer
+    adjusts `n` in response to loss; it follows MCS deterministically.
+    """
     depth_max: int = 3
-    # Hard cap on (n - k) / k. None disables. The bandwidth budget
-    # 1/encoder_bitrate_frac − 1 may already be tighter; the effective
-    # ceiling is min(this, bandwidth, latency).
-    max_redundancy_ratio: float | None = 1.0
-    # Floor redundancy on a clean link. n_lower = round(k * (1 + this)),
-    # bounded below by n_min and above by n_upper.
-    base_redundancy_ratio: float = 0.5
-    # Target for k × inter_packet_interval (the FEC block-fill latency
-    # contribution). Drives k selection from the current encoder rate.
-    fec_block_fill_ms_target: float = 12.0
-    # n adjustment magnitudes per tick.
-    n_loss_step: int = 2     # immediate bump on residual_loss > 0
-    n_preempt_step: int = 1  # bump on fec_work above threshold (cooled)
-    n_recover_step: int = 1  # walk down on sustained clean+idle (cooled)
-    # MTU used to translate encoder kbps → inter_packet_interval_ms.
-    # 1400 B is wfb-ng's default UDP MTU.
+    # MTU used by the latency-budget predictor when translating
+    # encoder kbps → inter-packet interval. 1400 B is wfb-ng's
+    # default UDP MTU.
     mtu_bytes: int = 1400
 
 
@@ -164,31 +153,20 @@ class PolicyConfig:
     safe: SafeDefaults = field(default_factory=SafeDefaults)
     predictor: PredictorConfig = field(default_factory=PredictorConfig)
     max_latency_ms: float = 50.0
-    sustained_loss_windows: int = 3  # §4.2 "last two windows also had loss"
+    # Trailing-loop depth=1 → 2 bootstrap requires the last N windows
+    # all show residual_loss (§4.2 sustained-loss trigger). Default 3.
+    sustained_loss_windows: int = 3
     # §4.2 step-down: how many consecutive zero-loss windows before
     # depth steps down one notch. At 10 Hz, 10 windows = 1 s of clean
     # link before reclaiming a depth step. Walks down one step per
     # threshold-met period (counter resets after each step), so a full
     # depth=3 → 1 recovery takes ~2 s of sustained clean link.
     clean_windows_for_depth_stepdown: int = 10
-    # FEC ladder step-down: how many consecutive clean+idle windows
-    # (no residual_loss AND fec_work below idle threshold) before
-    # one rung of FEC redundancy is reclaimed. Mirrors the depth
-    # step-down knob. At 10 Hz, 10 windows = 1 s clean link between
-    # rungs. Counter resets after each step; full recovery from
-    # (2, 8) to (8, 12) is up to 11 rungs ≈ 11 s.
-    clean_windows_for_fec_stepdown: int = 10
-    # FEC is "idle enough to recover redundancy" below this fraction
-    # of FEC-recovered packets per window. Just below the existing
-    # preemptive step-up threshold (0.05) so fec_work in the band
-    # 0.02–0.05 holds (k, n) steady — neither tightens nor loosens.
-    fec_work_idle_threshold: float = 0.02
     # Total-blackout failsafe: this many consecutive starved windows
     # (packet_rate_w < starvation_threshold while session active) trips
     # forced_mcs_drop and pins TX power to max. Intentionally short —
     # at 10 Hz, 5 windows = 0.5 s — because starvation is unambiguous
-    # and the alternative is the trailing loop's ~38 s sustained_loss
-    # path, which we observed in the live antenna-cover test.
+    # and the alternative is letting the link sit silent.
     starvation_windows: int = 5
 
 
@@ -538,72 +516,27 @@ class LeadingSelector:
 
 
 # ------------------------------------------------------------------
-# Trailing loop — loss-driven protective escalation.
+# Trailing loop — depth + IDR signalling.
 # ------------------------------------------------------------------
-
-def compute_k(
-    ipi_ms: float, target_fill_ms: float, k_min: int, k_max: int,
-) -> int:
-    """Smallest integer k whose block_fill (= k × ipi_ms) meets or
-    exceeds `target_fill_ms`, clamped to `[k_min, k_max]`.
-
-    At fast IPI (high MCS), this picks larger k — more primaries per
-    block, less parity overhead. At slow IPI (low MCS), it picks
-    smaller k so block-fill latency stays inside the target budget.
-    """
-    raw = target_fill_ms / max(ipi_ms, 0.1)
-    k = max(1, math.ceil(raw))
-    return max(k_min, min(k_max, k))
-
-
-def compute_n_bounds(
-    k: int,
-    encoder_kbps: float,
-    bw_Mbps: float,
-    bounds: FECBounds,
-    max_latency_ms: float,
-    depth: int,
-    predictor_cfg: PredictorConfig,
-) -> tuple[int, int]:
-    """Compute (n_lower, n_upper) for the trailing loop's n state.
-
-    n_upper is the tightest of: bandwidth headroom, redundancy cap,
-    latency budget, and the absolute n_max bound.
-
-    n_lower is `round(k × (1 + base_redundancy_ratio))`, clamped to
-    n_min and to n_upper (latency wins over a clean-link floor).
-    """
-    # Bandwidth-derived redundancy ceiling: encoder × n/k must fit in
-    # the link rate. Below: max n/k = (bw_kbps / encoder_kbps), so
-    # max redundancy = bw_kbps / encoder_kbps − 1.
-    bw_kbps = bw_Mbps * 1000.0
-    if encoder_kbps > 0.0:
-        max_redundancy_bw = bw_kbps / encoder_kbps - 1.0
-    else:
-        max_redundancy_bw = float("inf")
-    if bounds.max_redundancy_ratio is not None:
-        max_redundancy = min(max_redundancy_bw, bounds.max_redundancy_ratio)
-    else:
-        max_redundancy = max_redundancy_bw
-    max_redundancy = max(0.0, max_redundancy)
-    n_from_redundancy = int(round(k * (1.0 + max_redundancy)))
-    n_from_latency = max_n_for_latency(k, depth, max_latency_ms, predictor_cfg)
-    n_upper = min(n_from_redundancy, n_from_latency)
-    n_upper = max(k, n_upper)  # parity≥0; some n must exist
-
-    # ceil so redundancy at the floor is never *below* base_redundancy_ratio
-    # (a half-value at odd k would otherwise round to the lower neighbour
-    # under Python's banker's rounding).
-    n_lower = int(math.ceil(k * (1.0 + bounds.base_redundancy_ratio)))
-    n_lower = max(n_lower, bounds.n_min, k + 1)
-    n_lower = min(n_lower, n_upper)
-    return n_lower, n_upper
+#
+# Reactive `n`-escalation was removed when the per-MCS FEC table
+# moved into the radio profile (`fec_table`). FEC `(k, n)` follows
+# MCS deterministically; if the link gets worse the leading loop
+# drops MCS and the row's `(k, n)` is applied with it. The trailing
+# loop now does two things only:
+#
+#   1. Request an IDR on any window with residual loss — the GOP is
+#      already corrupted, so a fresh keyframe is needed regardless
+#      of FEC strategy. IDR is encoder-only; no `CMD_SET_FEC`.
+#   2. Manage `depth` (interleaver) bootstrap + step-down. depth is
+#      independent of `(k, n)` and its reconfig cost is small.
+#
+# See `docs/knob-cadence-bench.md` for the empirical justification.
 
 
 def _ipi_ms_for_encoder(encoder_kbps: float, mtu_bytes: int) -> float:
     """Inter-packet interval (ms) implied by a given encoder rate
-    and packet size. Returns a large number for non-positive rates so
-    compute_k falls through to k_min."""
+    and packet size. Returns a large number for non-positive rates."""
     if encoder_kbps <= 0.0:
         return 1000.0
     mtu_bits = mtu_bytes * 8
@@ -612,21 +545,17 @@ def _ipi_ms_for_encoder(encoder_kbps: float, mtu_bytes: int) -> float:
 
 @dataclass
 class TrailingState:
-    recent_loss_windows: list[bool] = field(default_factory=list)
-    last_fec_change_ts: float = 0.0
     last_depth_change_ts: float = 0.0
     # Consecutive zero-loss windows since last loss; drives depth
     # step-down. Resets to 0 on any loss tick or after a step-down.
     consecutive_clean_windows: int = 0
-    # Stricter than consecutive_clean_windows: increments only when
-    # NO loss AND fec_work below the idle threshold. Drives FEC
-    # ladder step-down. Resets on any loss tick, on any tick with
-    # fec_work above the idle threshold, or after a step-down.
-    consecutive_clean_for_fec_windows: int = 0
+    # Last N windows' loss state, used by `sustained_loss()` for the
+    # depth=1 → depth=2 bootstrap trigger.
+    recent_loss_windows: list[bool] = field(default_factory=list)
 
 
 class TrailingLoop:
-    """Loss-driven protective escalation (§4.2)."""
+    """Depth bootstrap + step-down + IDR signalling (§4.2)."""
 
     def __init__(self, cfg: PolicyConfig):
         self.cfg = cfg
@@ -636,32 +565,18 @@ class TrailingLoop:
     def tick(
         self,
         signals: Signals,
-        current_n: int,
         current_depth: int,
         ts_ms: float,
-        n_lower: int,
-        n_upper: int,
-    ) -> tuple[int, int, bool]:
-        """Adjust n within [n_lower, n_upper] from observed signals.
+    ) -> tuple[int, bool]:
+        """Decide depth + IDR for this tick.
 
-        Returns (n, depth, idr_request). `k` is computed by `Policy.tick`
-        from MCS-driven inter-packet interval; the trailing loop only
-        moves `n` around. On residual_loss bumps n by `n_loss_step`
-        immediately (no cooldown, IDR requested). On fec_work above
-        the preempt threshold, bumps by `n_preempt_step` after the
-        FEC cooldown elapses. On sustained clean+idle, walks n down
-        by `n_recover_step` toward `n_lower`.
+        Returns `(depth, idr_request)`. `(k, n)` is supplied
+        deterministically by the radio profile row that the leading
+        loop selected — the trailing loop never moves it.
         """
         self._reasons = []
         st = self.state
         had_loss = signals.residual_loss_w > 0.0
-
-        # Trim window history to the configured look-back length.
-        st.recent_loss_windows.append(had_loss)
-        if len(st.recent_loss_windows) > self.cfg.sustained_loss_windows:
-            st.recent_loss_windows = st.recent_loss_windows[
-                -self.cfg.sustained_loss_windows:
-            ]
 
         # Track consecutive clean windows for depth step-down.
         if had_loss:
@@ -669,63 +584,28 @@ class TrailingLoop:
         else:
             st.consecutive_clean_windows += 1
 
-        # Track stricter clean+idle windows for FEC step-down. Resets
-        # on any loss tick OR on any tick where FEC was actively
-        # recovering (fec_work above the idle threshold).
-        if (not had_loss
-                and signals.fec_work < self.cfg.fec_work_idle_threshold):
-            st.consecutive_clean_for_fec_windows += 1
-        else:
-            st.consecutive_clean_for_fec_windows = 0
+        # Track recent loss windows for the depth=1 → 2 bootstrap.
+        st.recent_loss_windows.append(had_loss)
+        if len(st.recent_loss_windows) > self.cfg.sustained_loss_windows:
+            st.recent_loss_windows = st.recent_loss_windows[
+                -self.cfg.sustained_loss_windows:
+            ]
 
-        new_n, new_depth = current_n, current_depth
+        new_depth = current_depth
         idr = False
-        fec_bounds = self.cfg.fec
 
         if had_loss:
-            # Immediate escalation — bypass min_change_interval_ms_fec.
-            new_n = current_n + fec_bounds.n_loss_step
-            st.last_fec_change_ts = ts_ms
+            # IDR is the only same-tick action. The GOP is already
+            # corrupted by the lost primary, so the decoder needs a
+            # fresh keyframe. FEC `(k, n)` does NOT change here —
+            # if loss persists, the leading loop's emergency drop
+            # will move MCS and the new row's FEC follows.
             idr = True
             self._reasons.append(
-                f"residual_loss={signals.residual_loss_w:.3f} "
-                f"-> n={min(new_n, n_upper)} +IDR"
+                f"residual_loss={signals.residual_loss_w:.3f} +IDR"
             )
-        elif signals.fec_work > 0.05:
-            if (ts_ms - st.last_fec_change_ts
-                    >= self.cfg.cooldown.min_change_interval_ms_fec):
-                bumped = current_n + fec_bounds.n_preempt_step
-                if bumped > current_n and bumped <= n_upper:
-                    new_n = bumped
-                    st.last_fec_change_ts = ts_ms
-                    self._reasons.append(
-                        f"fec_work={signals.fec_work:.3f} "
-                        f"-> n={new_n} preemptive"
-                    )
 
-        # Step-down on sustained clean+idle. Same cooldown anchor as
-        # step-up — either direction blocks the other for the FEC
-        # cooldown. Don't fire if we're at or below the floor.
-        if (new_n > n_lower
-                and (ts_ms - st.last_fec_change_ts
-                     >= self.cfg.cooldown.min_change_interval_ms_fec)
-                and st.consecutive_clean_for_fec_windows
-                    >= self.cfg.clean_windows_for_fec_stepdown):
-            stepped = max(n_lower, new_n - fec_bounds.n_recover_step)
-            if stepped != new_n:
-                new_n = stepped
-                st.last_fec_change_ts = ts_ms
-                st.consecutive_clean_for_fec_windows = 0
-                self._reasons.append(
-                    f"clean*{self.cfg.clean_windows_for_fec_stepdown} "
-                    f"fec_work={signals.fec_work:.3f} "
-                    f"-> n={new_n} stepdown"
-                )
-
-        # Final clamp to the computed envelope.
-        new_n = max(n_lower, min(n_upper, new_n))
-
-        # Depth path (independent of FEC k/n path above). Two triggers:
+        # Depth path (independent of FEC `(k, n)`). Two triggers:
         #
         #   bootstrap  (depth=1 → 2): wfb-ng's burst/holdoff counters are
         #     interleaver-internal and structurally zero while depth==1
@@ -741,7 +621,7 @@ class TrailingLoop:
         cooled_depth = (ts_ms - st.last_depth_change_ts
                         >= self.cfg.cooldown.min_change_interval_ms_depth)
         depth_raised = False
-        if cooled_depth and new_depth < self.cfg.fec.depth_max:
+        if cooled_depth and current_depth < self.cfg.fec.depth_max:
             bootstrap = (
                 current_depth == 1
                 and self.sustained_loss()
@@ -751,7 +631,7 @@ class TrailingLoop:
                 signals.burst_rate > 1.0 and signals.holdoff_rate > 0.0
             )
             if bootstrap or refine:
-                new_depth = min(new_depth + 1, self.cfg.fec.depth_max)
+                new_depth = min(current_depth + 1, self.cfg.fec.depth_max)
                 st.last_depth_change_ts = ts_ms
                 depth_raised = True
                 if bootstrap:
@@ -782,7 +662,7 @@ class TrailingLoop:
                 f"-> depth={new_depth} (stepdown)"
             )
 
-        return new_n, new_depth, idr
+        return new_depth, idr
 
     @property
     def reasons(self) -> list[str]:
@@ -810,23 +690,6 @@ class PolicyState:
     bitrate_kbps: int
 
 
-def _fec_aware_bitrate_kbps(
-    bitrate_Mbps: float, k: int, n: int, safe_k: int, safe_n: int,
-) -> int:
-    """Scale a profile bitrate so total on-air rate stays bounded as the
-    trailing loop tightens FEC. The profile's `bitrate_Mbps` is treated
-    as the operator-validated video bitrate at the *default* FEC
-    `(safe_k, safe_n)`. As FEC efficiency drops below default, we scale
-    video bitrate down by the ratio of efficiencies so on-air bitrate
-    stays roughly constant. Capped at the profile value — never auto-
-    boost above what the operator tuned.
-    """
-    default_eff = safe_k / safe_n
-    current_eff = k / n
-    scale = min(1.0, current_eff / default_eff)
-    return int(bitrate_Mbps * 1000 * scale)
-
-
 class Policy:
     """Composes the dual-gate selector + trailing loop + latency-budget
     predictor."""
@@ -846,20 +709,18 @@ class Policy:
         # glitches). At 10 Hz, starvation_windows=5 = 0.5 s of below-
         # threshold packet rate before declaring blackout.
         self._starvation_count: int = 0
-        # Boot with safe_defaults — keeps the controller safe on a
-        # link that hasn't produced an RSSI reading yet.
+        # Boot at the leading selector's chosen row. `(k, n)` and
+        # `bitrate_kbps` come from the profile's `fec_table` for that
+        # row — no scaling, no compute.
         row = self.leading.current_row
         self.state = PolicyState(
             mcs=row.mcs,
             bandwidth=cfg.leading.bandwidth,
             tx_power_dBm=int(self.leading.state.tx_power_dBm),
-            k=cfg.safe.k,
-            n=cfg.safe.n,
+            k=row.k,
+            n=row.n,
             depth=cfg.safe.depth,
-            bitrate_kbps=_fec_aware_bitrate_kbps(
-                row.bitrate_Mbps, cfg.safe.k, cfg.safe.n,
-                cfg.safe.k, cfg.safe.n,
-            ),
+            bitrate_kbps=int(row.bitrate_Mbps * 1000),
         )
 
     def tick(self, signals: Signals) -> Decision:
@@ -880,9 +741,6 @@ class Policy:
         # Dual-gate selector picks MCS + computes inverse-coupled TX
         # power. Channel B (emergency) is owned by the selector; we
         # don't need to compute forced_drop here anymore.
-        # snr_raw (latest per-window max-of-avg across antennas) is
-        # used asymmetrically — only for downgrade decisions. Climbs
-        # still gate on smoothed snr_ema to avoid bouncing on noise.
         new_mcs, tx_power, mcs_changed = self.leading.select(
             snr_ema=signals.snr,
             snr_raw=signals.snr_max_w,
@@ -894,48 +752,31 @@ class Policy:
         )
         row = self.leading.current_row
 
-        # Compute (k, n) bounds from current MCS conditions. The
-        # encoder bitrate at this MCS is `row.bitrate_Mbps` (=
-        # data_rate * encoder_bitrate_frac), already in Mbps.
+        # `(k, n, bitrate)` are deterministic per-row lookups from the
+        # profile's `fec_table`. They change only when MCS crosses a
+        # row boundary — never reactively to loss / fec_work.
+        new_k = row.k
+        new_n = row.n
         encoder_kbps = row.bitrate_Mbps * 1000.0
-        bw_Mbps = row.bitrate_Mbps / self.profile.encoder_bitrate_frac
         ipi_ms = _ipi_ms_for_encoder(encoder_kbps, self.cfg.fec.mtu_bytes)
-        # Per-tick predictor cfg with the live ipi_ms (the static
-        # predictor cfg is anchored to the MCS7 reference; here we
-        # need the actual current rate).
+        # Per-tick predictor cfg with the live ipi_ms.
         predictor_cfg = PredictorConfig(
             per_packet_airtime_us=self.cfg.predictor.per_packet_airtime_us,
             inter_packet_interval_ms=ipi_ms,
             fec_decode_ms=self.cfg.predictor.fec_decode_ms,
             block_duration_ms=self.cfg.predictor.block_duration_ms,
         )
-        new_k = compute_k(
-            ipi_ms,
-            self.cfg.fec.fec_block_fill_ms_target,
-            self.cfg.fec.k_min,
-            self.cfg.fec.k_max,
-        )
-        n_lower, n_upper = compute_n_bounds(
-            new_k, encoder_kbps, bw_Mbps, self.cfg.fec,
-            self.cfg.max_latency_ms, self.state.depth, predictor_cfg,
+
+        new_depth, idr = self.trailing.tick(
+            signals, self.state.depth, ts_ms,
         )
 
-        # On MCS row change (or first tick after k recompute), rebase
-        # n to the new MCS's floor. Otherwise carry n forward and
-        # clamp into the freshly-computed envelope.
-        if mcs_changed or new_k != self.state.k:
-            self.state.n = n_lower
-        # Note: state.n may be outside [n_lower, n_upper] this tick if
-        # the bounds shifted; trailing.tick() will clamp.
-
-        new_n, new_depth, idr = self.trailing.tick(
-            signals, self.state.n, self.state.depth, ts_ms,
-            n_lower=n_lower, n_upper=n_upper,
-        )
-
-        # Latency-budget gate — defensive last-resort. compute_n_bounds
-        # already feeds max_n_for_latency into n_upper, so this should
-        # only fire if depth interleaver pushes us over.
+        # Latency-budget gate — defensive last-resort. The profile's
+        # `fec_table` is operator-validated for budget; this only
+        # fires if a deeper depth (interleaver) raise pushes the
+        # block over the cap. On budget exhaustion we hold the
+        # previous state rather than silently rewriting `(k, n)` —
+        # the bench showed reactive `(k, n)` rewrites are costly.
         proposal = Proposal(k=new_k, n=new_n, depth=new_depth)
         reason_budget = ""
         try:
@@ -959,10 +800,7 @@ class Policy:
         self.state.k = new_k
         self.state.n = new_n
         self.state.depth = new_depth
-        self.state.bitrate_kbps = _fec_aware_bitrate_kbps(
-            row.bitrate_Mbps, new_k, new_n,
-            self.cfg.safe.k, self.cfg.safe.n,
-        )
+        self.state.bitrate_kbps = int(row.bitrate_Mbps * 1000)
 
         # Assemble Decision.
         knobs_changed: list[str] = []
