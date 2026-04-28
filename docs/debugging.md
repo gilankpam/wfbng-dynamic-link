@@ -133,42 +133,207 @@ python -m gs.tools.dl_report --bundle flight.tar.gz -o report.html \
 
 The HTML is self-contained (~6 MB inline, ~1 MB with `--cdn`).
 
-Both formats share the same structure:
+#### Report layout
 
-- **TL;DR — diagnosis** — anomaly classifications grouped by
-  category. Answers "why did I see stutter?" up front:
+Both formats share three sections, in this order:
 
-      1× Drone TX silent
-      4× Encoder pipeline
-      4× Link congestion
-      11× Link stress (FEC absorbed)
-      6 emergency events in the controller log
+1. **TL;DR — diagnosis**: verdict counts + emergency / IDR list.
+2. **Summary stats**: one row per metric, percentiles for everything
+   distribution-shaped.
+3. **Anomaly leaderboard**: full top-N table with raw metrics.
 
-  Each verdict comes from a heuristic table mapping (RTT, drift,
-  loss, starvation, SSRC change) onto a likely cause. Thresholds
-  live in `classify_anomaly` if you need to tune them.
+The HTML adds two interactive panels:
 
-- **Summary** — duration, MCS time-distribution, RSSI/SNR/RTT
-  percentiles, video loss, drift range.
+4. **Linked timeline**: 8 stacked subplots, shared x-axis. Zoom/pan
+   on any panel and the others follow. Per-anomaly "why / felt"
+   reasoning is on the diamond markers in row 1 — hover any of them.
+5. **Distributions**: histograms (RTT, interarrival, drift) plus a
+   `fec_work` vs `residual_loss` scatter.
 
-- **Anomaly leaderboard** — top 20 1-second windows ranked by a
-  combined score (drift excursion × frame interarrival ×
-  (lost+1) × RTT factor). Each row carries a verdict + severity
-  marker.
+#### How to read the TL;DR
 
-- **Top events explained** — for each top anomaly, a "Why" and
-  "What you probably felt" block in plain language. This is the
-  bit that goes from "here's the data" to "here's what happened."
+Example output:
 
-The HTML report adds:
+    1× Drone TX silent
+    3× Encoder pipeline
+    2× Link congestion
+    14× Link stress (FEC absorbed)
 
-- **Linked timeline** — six stacked subplots sharing one x-axis
-  (MCS/bitrate, RSSI/SNR, loss/fec, RTT, video drift, frame
-  interarrival). Zoom or pan in any panel and the others follow.
-  Vertical red/orange dashed lines mark emergency events and
-  watchdog trips.
-- **Distributions** — RTT, interarrival, drift histograms with
-  p50/p95/p99 markers.
+    6 emergency events in the controller log
+    4 controller-requested IDR keyframes
+
+The verdict counts come from `classify_anomaly` (`gs/tools/dl_report.py`),
+which buckets each top-N 1-second anomaly window into one of the
+nine categories below based on `(rtt_factor, drift_excursion,
+lost, starved_ticks, ssrc_changed, max_interarrival_ms)`.
+
+Reading the *mix* tells you the high-level story:
+- Heavy on **Link stress (FEC absorbed)** + low loss → FEC is doing
+  its job; goggle-felt stutter is "frames are late" not "frames
+  are gone."
+- Heavy on **Link congestion** → FEC is being overrun; bump
+  redundancy or step MCS down sooner.
+- Heavy on **Encoder pipeline** with link metrics nominal →
+  drone-side encoder/codec is the bottleneck (CPU, IDR cadence,
+  bitrate ceiling).
+- Any **Drone TX silent** → upstream-of-link cause; investigate VTX
+  power, FW, RX desense, or jamming.
+- Any **Encoder restart** (SSRC change) → drone encoder process
+  crashed/restarted mid-flight.
+
+The emergency / IDR lists are taken straight off the controller
+log. They're independent of the anomaly classifier — see the IDR
+vs emergency note below.
+
+#### Verdict reference
+
+Evaluated in priority order, most-specific first. A window can only
+match one verdict.
+
+| # | Verdict                       | Severity | Trigger                                   | What it means |
+|---|-------------------------------|----------|-------------------------------------------|---------------|
+| 1 | **Drone TX silent**           | high     | `starved_ticks > 0`                       | Drone stopped sending decodable packets. Hard freeze; source-side cause (VTX off, FW crash, RX desense, jamming). |
+| 2 | **Encoder restart**           | medium   | RTP `SSRC` changed mid-window             | Drone encoder process restarted. Brief black/glitch; drift baseline resets. |
+| 3 | **Link congestion**           | high     | `rtt_hi & drift_hi & loss > 0`            | Link out of capacity, FEC overrun. Visible stutter/freeze with real packet loss. |
+| 4 | **Link stress (FEC absorbed)**| medium   | `rtt_hi & drift_hi & loss == 0`           | Same congestion shape, but FEC saved every packet. Pilot feels lateness only — no missing pixels. |
+| 5 | **Encoder pipeline**          | medium   | `drift_hi & !rtt_hi`                      | Drift jumped, link is fine. Drone-side encoder queue / codec stall / CPU hiccup. |
+| 6 | **Asymmetric link**           | low      | `rtt_hi` alone, no drift, no loss         | Forward link OK, return path slow. Pilot won't see it; the controller will react slower next time. |
+| 7 | **Random RF drop**            | low      | `loss > 0`, no RTT/drift signature        | Brief external interference. One missed frame, often FEC-masked. |
+| 8 | **Single-frame hiccup**       | low      | `interarrival > 50 ms` alone              | One late frame, easy to miss. |
+| 9 | **Mild anomaly (unclassified)**| low     | fallback                                  | Score elevated but no clean pattern. Inspect on the timeline manually. |
+
+Thresholds (`_TH_RTT_FACTOR=2.0`, `_TH_DRIFT_MAD=3.0`,
+`_TH_IA_VISIBLE=50ms`) live at the top of `classify_anomaly`. Tune
+per phase-3 design doc §B.2 after a few real flights — they're
+heuristic, not load-bearing.
+
+#### Anomaly score
+
+The leaderboard ranks 1-second windows by:
+
+    score = drift_excursion[MADs]
+          × (max_interarrival_ms / 16.7)
+          × (lost + 1)
+          × rtt_factor
+
+So a window with normal RTT but a 10-MAD drift jump scores like a
+window with 2× RTT and a 5-MAD jump. Loss is a multiplier — one
+lost packet doubles the score. The top 20 are kept by default
+(`--top-n` to override).
+
+The score is *only* a sort key. The classifier above is what tells
+you what kind of event each one is.
+
+#### Top event diamonds (HTML only)
+
+The top 8 anomalies show as diamond markers on the MCS panel,
+colored by severity (red=high, orange=medium, gray=low). Each
+marker sits at the time of the worst drift sample inside its
+1-second bucket — so the diamond aligns with the visible spike on
+the drift / interarrival / RTT panels rather than a bucket edge.
+
+Hover a diamond to see the full "Why / Felt" reasoning:
+
+> **#3: Link stress (FEC absorbed)** (medium)
+> score=348.4 · RTT×5.32 · drift 19.0 MAD · ia 57.5ms · lost=0
+>
+> **Why:** Control-plane RTT was 5.3× the flight median and video
+> drift jumped 19.0 MADs above baseline, but FEC recovered every
+> packet (decoded loss = 0).
+>
+> **Felt:** Visible jitter or stutter even though no frames were
+> actually lost — late arrival is enough to be felt.
+
+A thin gray dotted cross-panel rule is also drawn at each diamond's
+x, so you can eyeball each event against snr_slope, RTT, drift, and
+interarrival without zooming. Click `top event (high|medium|low)` in
+the legend to toggle a severity group.
+
+#### Linked timeline — what each panel shows
+
+| # | Panel                         | What you're looking at |
+|---|-------------------------------|------------------------|
+| 1 | MCS / bitrate                 | Step trace — controller's chosen MCS rung; orange line = encoder bitrate target. |
+| 2 | RSSI / SNR (alive windows)    | Best-antenna RSSI (dBm, blue) and SNR (dB, green). Goes to NaN during starved windows so the line breaks visibly. |
+| 3 | SNR slope                     | EWMA of per-tick ΔSNR. Negative = SNR collapsing. Dashed red rule at -0.3 marks the empirical predictive threshold for residual_loss spikes. |
+| 4 | residual_loss / fec_work      | residual_loss (red) is post-FEC loss — should be 0 most of the time. fec_work (purple) is the FEC recovery rate — non-zero means FEC is actively absorbing. |
+| 5 | FEC k / n                     | Step traces. k = data shards, n = total (data + parity). Redundancy = (n−k)/n. |
+| 6 | Control-plane RTT             | PING/PONG round-trip per sample. Red ×s = outliers (RTT > 3× recent median; smoothed offset wasn't moved). |
+| 7 | Video latency drift           | Per-frame drift relative to the post-warmup median. Positive = video falling behind real time. The headline goggle-felt-latency metric. |
+| 8 | Frame interarrival            | Wall-time gap between frame arrivals. Dotted reference at 16.67 ms (60 fps). Spikes correlate with link or encoder hiccups. |
+
+#### Marker convention (vertical lines across all panels)
+
+| Color  | Dash pattern  | Event |
+|--------|---------------|-------|
+| 🔴 red    | long-dash    | Emergency (controller log "emergency …") |
+| 🟠 orange | dash-dot     | Watchdog (failsafe 1 — GS-link silence) |
+| 🟢 green  | dot          | IDR request from the controller |
+| 🟣 purple | dash         | Drone-side failure (from `dl-events.jsonl`, re-stamped via PING/PONG offset) |
+
+Distinct dash patterns matter because **two events can fire on the
+same tick** — the most common case is an emergency that also
+triggers an IDR. With distinct patterns, both lines stay visible
+when overlapping.
+
+The markers also appear as triangles on the MCS panel with a clickable
+legend; toggling the legend hides every same-color triangle and rule
+together.
+
+#### IDR vs emergency — independent triggers
+
+It's easy to assume IDRs only fire on emergencies. They don't:
+
+- An **IDR** fires whenever `residual_loss_w > 0` (any FEC overrun
+  at all → bump n + request IDR + force a clean keyframe).
+- An **emergency** fires when `loss_rate >= emergency_loss_rate`
+  (default `0.05` = 5 %). Much higher bar.
+
+So in practice you'll see:
+- Below-emergency residual_loss bumps (e.g. 3 %) → IDR alone, no
+  emergency line at the same x.
+- Catastrophic loss (e.g. 44 %) → both an emergency *and* an IDR
+  at the same x (red long-dash + green dot together).
+- Starvation-driven emergencies (`emergency starved …`) → red line,
+  *no* green IDR. The controller doesn't request an IDR when the
+  link can't deliver — sending a giant keyframe into a starved link
+  would just queue behind the existing pile-up.
+
+Reading these together at a particular t value tells you whether
+the controller's recovery action was loss-driven, starvation-driven,
+or just precautionary FEC bumping.
+
+#### Distributions — what to look at
+
+Four panels:
+
+1. **RTT histogram** with p50 / p95 / p99 vlines. Long tail = a
+   congested return path, even if median is fine.
+2. **Frame interarrival histogram** with p50 / p95 / p99. Most
+   mass should sit near 16.67 ms (60 fps). Mass past 33 ms = the
+   pilot will see it.
+3. **Drift histogram** centred on the post-warmup median. Tails
+   on the positive side = the encoder fell behind during stalls.
+4. **fec_work vs residual_loss scatter**. Gray cloud = background
+   ticks (most points sit on the y=0 line). Red dots = ticks within
+   ±5 ticks of any `residual_loss > 0` event — the predictive
+   cluster. If red dots sit visibly to the right of the gray
+   cloud, `fec_work` is a usable leading indicator on this flight.
+
+#### Summary stats — what the numbers mean
+
+| Stat | Read it as |
+|------|------------|
+| Duration | Verbose-log span — *not* flight time if the GS daemon ran longer than the props were spinning. |
+| Verbose ticks | Number of decision rounds. ~10 Hz, so ~600/min. |
+| Starved windows | % of ticks where `link_starved_w` was true. > 5 % = link operating at capacity edge. |
+| MCS distribution | Time spent at each rung. Bimodal (lots of MCS0 + lots of top rung) = oscillation or aggressive transitions during obstacle traversal. |
+| RSSI / SNR percentiles | Computed from alive windows only (starved samples excluded) so you get the real channel, not zeros. |
+| RTT ms | p99 well above p95 = bursty congestion; p99 close to p95 = consistent congestion. |
+| Video loss | Decoded loss after FEC — should be < 0.1 % on a healthy flight. |
+| Video SSRCs | Should be 1. If > 1, the encoder restarted mid-flight (`⚠ encoder restarted` flag added). |
+| Drift range | (max − min) of post-warmup drift. Anything > 100 ms is felt. |
+| IDR requests / emergencies | Counts straight from the controller log; full lists in the TL;DR. |
 
 ### 3b. CLI review (when you know the moment and want raw data)
 

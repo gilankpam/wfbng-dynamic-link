@@ -437,7 +437,6 @@ def test_markdown_format_via_extension(tmp_path: Path):
     assert "# Flight report" in body
     assert "## TL;DR" in body
     assert "## Summary stats" in body
-    assert "## Top" in body
     assert "## Anomaly leaderboard" in body
     # Markdown table syntax present
     assert "| Metric | Value |" in body
@@ -469,17 +468,16 @@ def test_format_both_writes_two_files(tmp_path: Path):
     assert "# Flight report" in md.read_text()
 
 
-def test_markdown_has_per_event_explanations(tmp_path: Path):
-    """Each top event in the markdown should have Why and Felt blocks."""
+def test_markdown_has_no_per_event_section(tmp_path: Path):
+    """The per-event 'why / felt' blocks were moved onto the timeline
+    diamond markers; the markdown body must not re-render them."""
     bundle = _make_bundle(tmp_path)
     out = tmp_path / "r.md"
     dl_report.main(["--bundle", str(bundle), "-o", str(out)])
     body = out.read_text()
-    # The synthetic bundle's drift spike should classify as something
-    # and produce at least one numbered event subsection.
-    assert "### 1." in body
-    assert "**Why**" in body
-    assert "**What you probably felt**" in body
+    assert "events explained" not in body.lower()
+    assert "**Why**" not in body
+    assert "**What you probably felt**" not in body
 
 
 def test_html_has_diagnosis_section(tmp_path: Path):

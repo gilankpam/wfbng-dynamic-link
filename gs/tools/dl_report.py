@@ -184,6 +184,15 @@ def compute_summary(streams: Streams, axis: TimeAxis) -> dict:
             mcs_counts[r["mcs"]] = mcs_counts.get(r["mcs"], 0) + 1
         summary["mcs_distribution"] = dict(sorted(mcs_counts.items()))
 
+        # Controller-requested IDRs (encoder-emitted IDRs aren't logged
+        # here — they show up indirectly as oversized video frames).
+        summary["idr_requests"] = [
+            {"ts_wall": r["timestamp"],
+             "ts_rel_s": r["timestamp"] - t0,
+             "reason": r.get("reason", "")}
+            for r in streams.verbose if r.get("idr_request")
+        ]
+
         # RSSI / SNR percentiles (alive windows only)
         rssi = [r["signals_snapshot"]["rssi"] for r in streams.verbose
                 if r["signals_snapshot"].get("rssi") is not None
@@ -280,6 +289,7 @@ def compute_anomalies(streams: Streams, axis: TimeAxis,
         bucket = t // 1_000_000
         b = buckets.setdefault(bucket, {
             "ts_mono_us": int(bucket * 1_000_000),
+            "peak_ts_mono_us": int(bucket * 1_000_000),
             "frames": 0,
             "max_drift_excursion": 0.0,
             "max_interarrival_us": 0,
@@ -290,7 +300,14 @@ def compute_anomalies(streams: Streams, axis: TimeAxis,
         })
         b["frames"] += 1
         exc = abs(v["latency_drift_us"] - median_drift) / mad_drift
-        b["max_drift_excursion"] = max(b["max_drift_excursion"], exc)
+        # Track *when* the worst drift sample landed in the bucket so
+        # downstream markers / leaderboard rows align with the visible
+        # spike on the timeline rather than the bucket's left edge.
+        # Drift is the most pilot-relevant metric and dominates the
+        # score; we use its peak time as the representative `ts`.
+        if exc > b["max_drift_excursion"]:
+            b["max_drift_excursion"] = exc
+            b["peak_ts_mono_us"] = int(t)
         b["max_interarrival_us"] = max(b["max_interarrival_us"],
                                        v["frame_interarrival_us"])
         b["lost"] += v["lost_in_frame"]
@@ -323,8 +340,8 @@ def compute_anomalies(streams: Streams, axis: TimeAxis,
                  b["rtt_factor"])
         rows.append({
             "score": score,
-            "ts_mono_us": b["ts_mono_us"],
-            "ts_rel_s": axis.relative_seconds(b["ts_mono_us"]),
+            "ts_mono_us": b["peak_ts_mono_us"],
+            "ts_rel_s": axis.relative_seconds(b["peak_ts_mono_us"]),
             "max_drift_excursion": b["max_drift_excursion"],
             "max_interarrival_ms": b["max_interarrival_us"] / 1000,
             "lost": b["lost"],
@@ -533,10 +550,21 @@ def compute_diagnosis(streams: Streams, axis: TimeAxis,
     emerg = [r for r in streams.events
              if "emergency" in (r.get("reason") or "")]
 
+    # Controller-requested IDRs (read off the verbose log directly so we
+    # don't depend on what the events stream filters in).
+    t0 = streams.verbose[0]["timestamp"] if streams.verbose else 0.0
+    idrs = [
+        {"timestamp": r["timestamp"],
+         "ts_rel_s": r["timestamp"] - t0,
+         "reason": r.get("reason", "")}
+        for r in streams.verbose if r.get("idr_request")
+    ]
+
     return {
         "verdict_counts": dict(sorted(counts.items())),
         "classified": classified,
         "emergencies": emerg,
+        "idr_requests": idrs,
     }
 
 
@@ -544,11 +572,24 @@ def compute_diagnosis(streams: Streams, axis: TimeAxis,
 # Plotting
 # ----------------------------------------------------------------------
 
+# Per-color dash patterns for cross-panel marker rules. Different
+# patterns let two markers at the same x stay visually distinguishable
+# (an emergency that also triggered an IDR shows red long-dashes plus
+# green dots overlapping at the same vertical line).
+_DASH_FOR_COLOR = {
+    "red":    "longdash",  # emergencies — strong, easy to spot
+    "orange": "dashdot",   # watchdog
+    "green":  "dot",       # IDR — visible "through" any other marker
+    "purple": "dash",      # drone failure
+}
+
+
 def _event_markers(streams: Streams, axis: TimeAxis) -> list[dict]:
     """High-signal events worth a vertical line on every panel:
-    emergencies, watchdogs, drone-side failures. MCS up/down events
-    are skipped intentionally — there are dozens per flight and they're
-    already rendered as the MCS step trace in row 1."""
+    emergencies, watchdogs, controller IDR requests, drone-side
+    failures. MCS up/down events are skipped intentionally — there are
+    dozens per flight and they're already rendered as the MCS step
+    trace in row 1."""
     out = []
     for r in streams.events:
         reason = r.get("reason") or ""
@@ -561,6 +602,24 @@ def _event_markers(streams: Streams, axis: TimeAxis) -> list[dict]:
         x = axis.relative_seconds(mono)
         color = "red" if is_emergency else "orange"
         out.append({"x": x, "label": reason, "color": color})
+    # Controller IDR requests — not necessarily anomalies, but useful
+    # to align against video drift spikes (a tame IDR shouldn't visibly
+    # stress the link; an oversized encoder IDR with no marker here is
+    # a hint the encoder emitted one on its own schedule).
+    #
+    # When an emergency at the same tick also triggered the IDR
+    # (`+IDR` in the reason), both events get a marker. They're drawn
+    # with distinct dash patterns (see `_DASH_FOR_COLOR`) so coincident
+    # markers stay visually distinguishable instead of one clobbering
+    # the other.
+    for r in streams.verbose:
+        if not r.get("idr_request"):
+            continue
+        wall_us = int(r["timestamp"] * 1e6)
+        mono = axis.wall_to_mono(wall_us)
+        x = axis.relative_seconds(mono)
+        out.append({"x": x, "label": f"IDR: {r.get('reason','')}",
+                    "color": "green"})
     # Drone-side events (re-stamped onto GS-mono via offset). Skip if no
     # latency stream — we'd be plotting at raw drone-mono which lies.
     if streams.latency and streams.drone:
@@ -579,16 +638,29 @@ def _event_markers(streams: Streams, axis: TimeAxis) -> list[dict]:
     return out
 
 
-def make_timeline_figure(streams: Streams, axis: TimeAxis) -> go.Figure:
-    """Six stacked subplots, shared x-axis."""
+def make_timeline_figure(streams: Streams, axis: TimeAxis,
+                         diagnosis: dict | None = None,
+                         top_events_n: int = 8) -> go.Figure:
+    """Eight stacked subplots, shared x-axis.
+
+    If `diagnosis` is supplied, the top `top_events_n` classified
+    anomalies are overlaid as hoverable diamond markers on row 1
+    (color by severity) plus thin gray cross-panel rules. Hovering a
+    marker shows the verdict + score + why + felt blocks — this is
+    the only place the per-event "why / felt" reasoning appears in
+    the report; the markdown / HTML body keeps just the verdict
+    counts and the leaderboard.
+    """
     fig = make_subplots(
-        rows=6, cols=1, shared_xaxes=True,
-        vertical_spacing=0.025,
-        row_heights=[0.18, 0.16, 0.16, 0.16, 0.18, 0.16],
+        rows=8, cols=1, shared_xaxes=True,
+        vertical_spacing=0.020,
+        row_heights=[0.14, 0.13, 0.10, 0.13, 0.11, 0.13, 0.14, 0.12],
         subplot_titles=(
             "MCS / bitrate",
             "RSSI / SNR (alive windows)",
+            "SNR slope (dB/tick; negative = SNR collapsing)",
             "residual_loss / fec_work",
+            "FEC k / n (data shards / total shards)",
             "Control-plane RTT",
             "Video latency drift (relative to baseline)",
             "Frame interarrival",
@@ -596,6 +668,8 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis) -> go.Figure:
         specs=[
             [{"secondary_y": True}],
             [{"secondary_y": True}],
+            [{"secondary_y": False}],
+            [{"secondary_y": False}],
             [{"secondary_y": False}],
             [{"secondary_y": False}],
             [{"secondary_y": False}],
@@ -643,7 +717,25 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis) -> go.Figure:
                                  connectgaps=False),
                       row=2, col=1, secondary_y=True)
 
-        # Row 3: loss / fec
+        # Row 3: SNR slope. Reference lines at 0 and -0.3 (the
+        # empirical predictive threshold from the t=141 / t=312 / etc.
+        # residual_loss events on the bench flight).
+        slope = np.array([
+            r["signals_snapshot"].get("snr_slope") or 0
+            for r in streams.verbose
+        ])
+        fig.add_trace(go.Scatter(x=x, y=slope, mode="lines",
+                                 line={"color": "#2ca02c", "width": 1},
+                                 name="snr_slope"),
+                      row=3, col=1)
+        fig.add_hline(y=0, line={"width": 1, "dash": "dot",
+                                 "color": "rgba(0,0,0,0.3)"},
+                      row=3, col=1)
+        fig.add_hline(y=-0.3, line={"width": 1, "dash": "dash",
+                                    "color": "rgba(214,39,40,0.5)"},
+                      row=3, col=1)
+
+        # Row 4: loss / fec
         loss = np.array([
             r["signals_snapshot"].get("residual_loss_w") or 0
             for r in streams.verbose
@@ -654,12 +746,25 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis) -> go.Figure:
         ])
         fig.add_trace(go.Scatter(x=x, y=loss, mode="lines",
                                  line={"color": "#d62728"}, name="residual_loss"),
-                      row=3, col=1)
+                      row=4, col=1)
         fig.add_trace(go.Scatter(x=x, y=fec, mode="lines",
                                  line={"color": "#9467bd"}, name="fec_work"),
-                      row=3, col=1)
+                      row=4, col=1)
 
-    # Row 4: RTT (split outliers vs clean for color)
+        # Row 5: FEC shards. Step lines (shape="hv") so transitions are
+        # honest — k and n are integer ladder positions, not continuous.
+        k_vals = np.array([r["k"] for r in streams.verbose])
+        n_vals = np.array([r["n"] for r in streams.verbose])
+        fig.add_trace(go.Scatter(x=x, y=k_vals, mode="lines",
+                                 line={"shape": "hv", "color": "#1f77b4"},
+                                 name="k (data)"),
+                      row=5, col=1)
+        fig.add_trace(go.Scatter(x=x, y=n_vals, mode="lines",
+                                 line={"shape": "hv", "color": "#ff7f0e"},
+                                 name="n (data+fec)"),
+                      row=5, col=1)
+
+    # Row 6: RTT (split outliers vs clean for color)
     if streams.latency:
         x_lat = np.array([
             axis.relative_seconds(r["ts_gs_mono_us"]) for r in streams.latency
@@ -670,15 +775,15 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis) -> go.Figure:
             x=x_lat[~outlier], y=rtt_ms[~outlier],
             mode="markers", marker={"size": 4, "color": "#1f77b4"},
             name="RTT clean",
-        ), row=4, col=1)
+        ), row=6, col=1)
         if outlier.any():
             fig.add_trace(go.Scatter(
                 x=x_lat[outlier], y=rtt_ms[outlier],
                 mode="markers", marker={"size": 7, "color": "red", "symbol": "x"},
                 name="RTT outlier",
-            ), row=4, col=1)
+            ), row=6, col=1)
 
-    # Row 5: drift
+    # Row 7: drift
     if streams.video:
         x_v = np.array([
             axis.relative_seconds(r["ts_gs_mono_us"]) for r in streams.video
@@ -693,12 +798,12 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis) -> go.Figure:
             x=x_v, y=drift_ms - baseline, mode="lines",
             line={"color": "#17becf", "width": 1},
             name=f"drift − {baseline:+.0f}ms",
-        ), row=5, col=1)
+        ), row=7, col=1)
         fig.add_hline(y=0, line={"width": 1, "dash": "dot",
                                  "color": "rgba(0,0,0,0.3)"},
-                      row=5, col=1)
+                      row=7, col=1)
 
-        # Row 6: interarrival
+        # Row 8: interarrival
         ia_ms = np.array([r["frame_interarrival_us"] / 1000
                           for r in streams.video])
         ia_ms = np.where(ia_ms > 0, ia_ms, np.nan)
@@ -706,59 +811,180 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis) -> go.Figure:
             x=x_v, y=ia_ms, mode="lines",
             line={"color": "#8c564b", "width": 1},
             name="frame interarrival ms",
-        ), row=6, col=1)
+        ), row=8, col=1)
         # 60fps reference
         fig.add_hline(y=16.67, line={"width": 1, "dash": "dot",
                                      "color": "rgba(0,0,0,0.3)"},
-                      row=6, col=1)
+                      row=8, col=1)
 
     # Vertical event markers — batched as a single shapes list update
     # rather than 6 × N add_vline calls (each triggers a layout
     # rebuild). On a 4-min flight with 6 emergencies that's the
     # difference between 30s and <1s.
     markers = _event_markers(streams, axis)
+
+    # Layout shapes don't get a Plotly legend entry, so for each color
+    # group also emit one invisible-line + visible-marker scatter on
+    # the MCS panel. That gives a clickable legend and a hover label,
+    # while the dashed shapes stay as the actual cross-panel rule.
+    LEGEND_NAMES = {
+        "red":    "emergency",
+        "orange": "watchdog",
+        "green":  "IDR request",
+        "purple": "drone failure",
+    }
+    by_color: dict[str, list[dict]] = {}
+    for m in markers:
+        by_color.setdefault(m["color"], []).append(m)
+    for color, ms in by_color.items():
+        fig.add_trace(go.Scatter(
+            x=[m["x"] for m in ms],
+            y=[0] * len(ms),
+            mode="markers",
+            marker={"color": color, "symbol": "triangle-up", "size": 9,
+                    "line": {"color": color, "width": 1}},
+            text=[m["label"] for m in ms],
+            hovertemplate="t=%{x:.2f}s<br>%{text}<extra></extra>",
+            name=LEGEND_NAMES.get(color, color),
+            legendgroup=color,
+            showlegend=True,
+        ), row=1, col=1, secondary_y=False)
+
+    # Top events overlay — diamond markers per severity, plus thin
+    # gray dotted cross-panel rules. Hover any marker to see the
+    # classifier's verdict / why / felt for that 1-second window.
+    top_event_shapes: list[dict] = []
+    if diagnosis and diagnosis.get("classified"):
+        SEV_COLOR = {"high": "#d62728", "medium": "#ff7f0e", "low": "#888"}
+        SEV_RANK = {"high": 0, "medium": 1, "low": 2}
+        sev_buckets: dict[str, list[tuple[int, dict, dict]]] = {
+            "high": [], "medium": [], "low": []
+        }
+        for rank, (a, c) in enumerate(diagnosis["classified"][:top_events_n], 1):
+            sev = c.get("severity", "low")
+            if sev in sev_buckets:
+                sev_buckets[sev].append((rank, a, c))
+
+        for sev in sorted(sev_buckets, key=lambda s: SEV_RANK[s]):
+            entries = sev_buckets[sev]
+            if not entries:
+                continue
+            # Plain text in `text` field — Plotly's hovertemplate splits
+            # on <br>, so we pre-wrap the multi-line "why" / "felt"
+            # blocks at ~70 chars to keep the hover box readable.
+            def wrap(s: str, w: int = 70) -> str:
+                out, line = [], ""
+                for word in s.split():
+                    if line and len(line) + 1 + len(word) > w:
+                        out.append(line); line = word
+                    else:
+                        line = (line + " " + word) if line else word
+                if line: out.append(line)
+                return "<br>".join(out)
+
+            xs = [a["ts_rel_s"] for _, a, _ in entries]
+            txt = [
+                f"<b>#{rank}: {c['verdict']}</b> ({c['severity']})<br>"
+                f"score={a['score']:.1f} · "
+                f"RTT×{a['rtt_factor']:.2f} · "
+                f"drift {a['max_drift_excursion']:.1f} MAD · "
+                f"ia {a['max_interarrival_ms']:.1f}ms · "
+                f"lost={a['lost']}<br>"
+                f"<i>Why:</i><br>{wrap(c['why'])}<br>"
+                f"<i>Felt:</i><br>{wrap(c['felt'])}"
+                for rank, a, c in entries
+            ]
+            color = SEV_COLOR[sev]
+            fig.add_trace(go.Scatter(
+                x=xs, y=[0] * len(xs),
+                mode="markers",
+                marker={"color": color, "symbol": "diamond", "size": 11,
+                        "line": {"color": "#222", "width": 1}},
+                text=txt,
+                hovertemplate="t=%{x:.2f}s<br>%{text}<extra></extra>",
+                name=f"top event ({sev})",
+                legendgroup=f"top-{sev}",
+                showlegend=True,
+            ), row=1, col=1, secondary_y=False)
+
+            # Thin cross-panel rule per top event. Gray + dotted so
+            # they don't compete with emergency / IDR rules but stay
+            # alignable across all panels.
+            for x in xs:
+                top_event_shapes.append({"x": x, "color": "#888"})
+
     shapes = []
+    # Rows 1 and 2 each carry a secondary_y axis, so Plotly numbers the
+    # eight rows' primary y-axes y, y3, y5, y6, y7, y8, y9, y10 — not
+    # y1..y8. Mapping the wrong axis silently drops the rule on the
+    # drift / interarrival panels, where you most need it.
+    ROW_YREF = {1: "y", 2: "y3", 3: "y5", 4: "y6",
+                5: "y7", 6: "y8", 7: "y9", 8: "y10"}
     for m in markers:
         # `xref="x domain"` would lock to one subplot; we want full
         # vertical sweep, so use one shape per row with explicit yref.
-        for axis_n in range(1, 7):
-            yref = f"y{axis_n} domain" if axis_n > 1 else "y domain"
-            xref = f"x{axis_n}" if axis_n > 1 else "x"
+        dash = _DASH_FOR_COLOR.get(m["color"], "dash")
+        for row in range(1, 9):
+            yref = f"{ROW_YREF[row]} domain"
+            xref = "x" if row == 1 else f"x{row}"
             shapes.append({
                 "type": "line", "xref": xref, "yref": yref,
                 "x0": m["x"], "x1": m["x"],
                 "y0": 0, "y1": 1,
-                "line": {"color": m["color"], "width": 1, "dash": "dash"},
+                "line": {"color": m["color"], "width": 1, "dash": dash},
+            })
+    # Thin semi-transparent dotted rules for top events. Layout shapes
+    # don't accept an `opacity` property — bake the alpha into rgba.
+    for m in top_event_shapes:
+        for row in range(1, 9):
+            yref = f"{ROW_YREF[row]} domain"
+            xref = "x" if row == 1 else f"x{row}"
+            shapes.append({
+                "type": "line", "xref": xref, "yref": yref,
+                "x0": m["x"], "x1": m["x"],
+                "y0": 0, "y1": 1,
+                "line": {"color": "rgba(136,136,136,0.4)",
+                         "width": 1, "dash": "dot"},
             })
 
     fig.update_xaxes(title_text="Time (s, gs_mono since flight start)",
-                     row=6, col=1)
+                     row=8, col=1)
     fig.update_yaxes(title_text="MCS", row=1, col=1, secondary_y=False)
     fig.update_yaxes(title_text="kbps", row=1, col=1, secondary_y=True)
     fig.update_yaxes(title_text="dBm", row=2, col=1, secondary_y=False)
     fig.update_yaxes(title_text="dB", row=2, col=1, secondary_y=True)
-    fig.update_yaxes(title_text="rate", row=3, col=1)
-    fig.update_yaxes(title_text="ms", row=4, col=1)
-    fig.update_yaxes(title_text="Δ ms", row=5, col=1)
+    fig.update_yaxes(title_text="dB/tick", row=3, col=1)
+    fig.update_yaxes(title_text="rate", row=4, col=1)
+    fig.update_yaxes(title_text="shards", row=5, col=1)
     fig.update_yaxes(title_text="ms", row=6, col=1)
+    fig.update_yaxes(title_text="Δ ms", row=7, col=1)
+    fig.update_yaxes(title_text="ms", row=8, col=1)
 
+    # Plotly's update_layout(shapes=...) does a positional merge with
+    # the existing layout.shapes (the add_hline / add_vline rules
+    # registered above). If we pass the marker list straight in, the
+    # first N shapes get clobbered by the per-row hlines. Concatenate
+    # so both sets survive.
     fig.update_layout(
-        height=1200,
+        height=1550,
         margin={"l": 60, "r": 30, "t": 60, "b": 50},
         legend={"orientation": "h", "y": 1.04, "x": 0},
         hovermode="x unified",
-        shapes=shapes,
+        shapes=list(fig.layout.shapes) + shapes,
     )
     return fig
 
 
 def make_distribution_figure(streams: Streams) -> go.Figure:
-    """Three histograms with p50/p95/p99 marked."""
+    """Three histograms (RTT / interarrival / drift) plus a fec_work
+    vs residual_loss scatter that visualises whether FEC ramps up
+    *before* loss spills past it."""
     fig = make_subplots(
-        rows=1, cols=3,
+        rows=1, cols=4,
         subplot_titles=("RTT (ms)", "Frame interarrival (ms)",
-                        "Latency drift (ms)"),
-        horizontal_spacing=0.08,
+                        "Latency drift (ms)",
+                        "fec_work vs residual_loss"),
+        horizontal_spacing=0.07,
     )
 
     if streams.latency:
@@ -799,10 +1025,39 @@ def make_distribution_figure(streams: Streams) -> go.Figure:
                               annotation_text=f"{label}={v:.1f}",
                               row=1, col=3)
 
+    if streams.verbose:
+        fec = np.array([(r.get("signals_snapshot") or {}).get("fec_work") or 0
+                        for r in streams.verbose])
+        rl = np.array([(r.get("signals_snapshot") or {}).get("residual_loss_w") or 0
+                       for r in streams.verbose])
+        # Mark the ±5-tick neighbourhood of every residual_loss>0 sample
+        # so the predictive cluster around real loss events stands out
+        # visually against the background noise.
+        near = np.zeros(len(fec), dtype=bool)
+        for i in np.where(rl > 0)[0]:
+            near[max(0, i - 5):min(len(fec), i + 6)] = True
+        fig.add_trace(go.Scatter(
+            x=fec[~near], y=rl[~near],
+            mode="markers",
+            marker={"size": 4, "color": "rgba(120,120,120,0.35)"},
+            name="background tick",
+        ), row=1, col=4)
+        if near.any():
+            fig.add_trace(go.Scatter(
+                x=fec[near], y=rl[near],
+                mode="markers",
+                marker={"size": 7, "color": "#d62728",
+                        "line": {"color": "#7a1014", "width": 1}},
+                name="±5 ticks of loss",
+            ), row=1, col=4)
+
     fig.update_xaxes(title_text="ms", row=1, col=1)
     fig.update_xaxes(title_text="ms", row=1, col=2)
     fig.update_xaxes(title_text="Δms vs baseline", row=1, col=3)
-    fig.update_layout(height=420, showlegend=False,
+    fig.update_xaxes(title_text="fec_work", row=1, col=4)
+    fig.update_yaxes(title_text="residual_loss", row=1, col=4)
+    fig.update_layout(height=420,
+                      legend={"orientation": "h", "y": -0.15, "x": 0.55},
                       margin={"l": 50, "r": 30, "t": 50, "b": 50})
     return fig
 
@@ -847,6 +1102,9 @@ def _summary_html(summary: dict) -> str:
         rows.append(("Emergency events", str(summary["emergencies"])))
     if summary.get("mcs_changes"):
         rows.append(("MCS changes", str(summary["mcs_changes"])))
+    if summary.get("idr_requests"):
+        rows.append(("IDR requests (controller)",
+                     str(len(summary["idr_requests"]))))
     if "rtt_ms" in summary:
         r = summary["rtt_ms"]
         rows.append((
@@ -916,8 +1174,9 @@ def _anomalies_html(anomalies: list[dict]) -> str:
 
 
 def _diagnosis_html(diagnosis: dict, top_n: int = 8) -> str:
-    """Plain-language verdict + top events explained.
-    Mirrors the markdown output but rendered with the page's CSS."""
+    """Plain-language verdict counts + emergency / IDR lists.
+    The per-event "why / felt" blocks moved onto the timeline
+    (hover the diamond markers) — see `make_timeline_figure`."""
     out = []
     counts = diagnosis["verdict_counts"]
     if counts:
@@ -938,34 +1197,18 @@ def _diagnosis_html(diagnosis: dict, top_n: int = 8) -> str:
                        f"<code>{html.escape(r.get('reason',''))}</code></li>")
         out.append("</ul>")
 
-    classified = diagnosis["classified"][:top_n]
-    if classified:
-        out.append(f"<h3>Top {len(classified)} events explained</h3>")
-        for i, (a, c) in enumerate(classified, 1):
-            sev_class = f"sev-{c['severity'][:3]}"   # high/med/low → hig/med/low
-            out.append(f'<div class="event {sev_class}">')
-            out.append(
-                f"<h4>{i}. t={a['ts_rel_s']:.2f}s — "
-                f"{html.escape(c['verdict'])} "
-                f'<span class="severity">({c["severity"]})</span></h4>'
-            )
-            out.append("<ul>")
-            metrics = (
-                f"score={a['score']:.2f}, "
-                f"RTT factor={a['rtt_factor']:.2f}×, "
-                f"drift excursion={a['max_drift_excursion']:.1f} MAD, "
-                f"worst interarrival={a['max_interarrival_ms']:.1f}ms, "
-                f"lost={a['lost']}"
-                + (f", starved_ticks={a['starved_ticks']}"
-                   if a['starved_ticks'] else "")
-                + (", ssrc_changed=true" if a['ssrc_changed'] else "")
-            )
-            out.append(f"<li>{html.escape(metrics)}</li>")
-            out.append("</ul>")
-            out.append(f"<p><strong>Why:</strong> {html.escape(c['why'])}</p>")
-            out.append(f"<p><strong>What you probably felt:</strong> "
-                       f"{html.escape(c['felt'])}</p>")
-            out.append("</div>")
+    if diagnosis.get("idr_requests"):
+        out.append(f"<p>Controller requested <strong>"
+                   f"{len(diagnosis['idr_requests'])} IDR keyframes</strong> "
+                   f"(FEC ramp-up / emergency recovery). Encoder-emitted "
+                   f"IDRs are not in this list &mdash; they show up "
+                   f"indirectly as oversized video frames.</p>")
+        out.append('<ul class="idr-requests">')
+        for r in diagnosis["idr_requests"]:
+            out.append(f"<li>t={r['ts_rel_s']:.2f}s: "
+                       f"<code>{html.escape(r.get('reason',''))}</code></li>")
+        out.append("</ul>")
+
     return "\n".join(out)
 
 
@@ -1072,6 +1315,9 @@ def _md_summary(summary: dict) -> str:
         rows.append(("Emergency events", str(summary["emergencies"])))
     if summary.get("mcs_changes"):
         rows.append(("MCS changes", str(summary["mcs_changes"])))
+    if summary.get("idr_requests"):
+        rows.append(("IDR requests (controller)",
+                     str(len(summary["idr_requests"]))))
     if "rtt_ms" in summary:
         r = summary["rtt_ms"]
         rows.append((
@@ -1133,37 +1379,14 @@ def _md_diagnosis(diagnosis: dict) -> str:
             out.append(f"- t={r['timestamp']:.2f} (wall): "
                        f"`{r.get('reason','')}`")
         out.append("")
-    return "\n".join(out)
-
-
-def _md_per_event_diagnosis(diagnosis: dict, top_n: int = 8) -> str:
-    out = [f"## Top {top_n} events explained", ""]
-    classified = diagnosis["classified"][:top_n]
-    if not classified:
-        out.append("(no anomalies)")
+    if diagnosis.get("idr_requests"):
+        out.append(f"Controller requested **{len(diagnosis['idr_requests'])} "
+                   f"IDR keyframes** (FEC ramp-up after loss; emergency "
+                   f"recovery). Encoder-emitted IDRs are not in this list — "
+                   f"they show up indirectly as oversized video frames.")
         out.append("")
-        return "\n".join(out)
-    for i, (a, c) in enumerate(classified, 1):
-        sev_marker = {"high": "🔴", "medium": "🟠", "low": "🟡"}.get(
-            c["severity"], "⚪")
-        out.append(f"### {i}. t={a['ts_rel_s']:.2f}s — {c['verdict']} "
-                   f"{sev_marker} ({c['severity']})")
-        out.append("")
-        # Metric line — concise, agent-parseable
-        out.append(
-            f"- score={a['score']:.2f}, "
-            f"RTT factor={a['rtt_factor']:.2f}×, "
-            f"drift excursion={a['max_drift_excursion']:.1f} MAD, "
-            f"worst interarrival={a['max_interarrival_ms']:.1f}ms, "
-            f"lost={a['lost']}"
-            + (f", starved_ticks={a['starved_ticks']}"
-               if a['starved_ticks'] else "")
-            + (", ssrc_changed=true" if a['ssrc_changed'] else "")
-        )
-        out.append("")
-        out.append(f"**Why**: {c['why']}")
-        out.append("")
-        out.append(f"**What you probably felt**: {c['felt']}")
+        for r in diagnosis["idr_requests"]:
+            out.append(f"- t={r['ts_rel_s']:.2f}s: `{r.get('reason','')}`")
         out.append("")
     return "\n".join(out)
 
@@ -1200,7 +1423,6 @@ def render_markdown(streams: Streams, axis: TimeAxis, summary: dict,
         "",
         _md_diagnosis(diagnosis),
         _md_summary(summary),
-        _md_per_event_diagnosis(diagnosis),
         _md_anomaly_table(anomalies, diagnosis),
     ]
     out_path.write_text("\n".join(parts))
@@ -1214,7 +1436,7 @@ def render_html(streams: Streams, axis: TimeAxis, summary: dict,
                 anomalies: list[dict], diagnosis: dict,
                 bundle_path: Path,
                 out_path: Path, *, plotlyjs: str = "inline") -> None:
-    timeline = make_timeline_figure(streams, axis)
+    timeline = make_timeline_figure(streams, axis, diagnosis=diagnosis)
     dist = make_distribution_figure(streams)
 
     timeline_html = timeline.to_html(
