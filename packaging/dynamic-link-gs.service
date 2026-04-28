@@ -6,7 +6,7 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/dynamic-link-gs --config /etc/dynamic-link/gs.yaml --log-file /var/log/dynamic-link-gs.jsonl
+ExecStart=/usr/bin/dynamic-link-gs --config /etc/dynamic-link/gs.yaml --log-dir /var/log/dynamic-link/flights
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal

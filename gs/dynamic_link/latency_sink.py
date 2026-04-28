@@ -12,19 +12,32 @@ import json
 import logging
 import sys
 import time
-from typing import TextIO
+from typing import Callable, TextIO, Union
 
 from .timesync import LatencySample
 
 log = logging.getLogger(__name__)
 
+StreamSource = Union[TextIO, Callable[[], "TextIO | None"], None]
+
+
+def _resolve(src: StreamSource) -> "TextIO | None":
+    if src is None:
+        return None
+    if callable(src):
+        return src()
+    return src
+
 
 class LatencySink:
-    def __init__(self, stream: TextIO):
+    def __init__(self, stream: StreamSource):
         self._stream = stream
         self._written = 0
 
     def write(self, sample: LatencySample) -> None:
+        s = _resolve(self._stream)
+        if s is None:
+            return
         record = {
             "ts_gs_mono_us": sample.ts_gs_mono_us,
             "ts_gs_wall_us": int(time.time() * 1_000_000),
@@ -36,8 +49,8 @@ class LatencySink:
             "offset_stddev_us": sample.offset_stddev_us,
             "outlier": sample.outlier,
         }
-        self._stream.write(json.dumps(record, separators=(",", ":")) + "\n")
-        self._stream.flush()
+        s.write(json.dumps(record, separators=(",", ":")) + "\n")
+        s.flush()
         self._written += 1
 
     @property
@@ -45,10 +58,11 @@ class LatencySink:
         return {"written": self._written}
 
     def close(self) -> None:
-        s = self._stream
-        if s is None or s in (sys.stdout, sys.stderr):
+        if self._stream is None or callable(self._stream):
+            return
+        if self._stream in (sys.stdout, sys.stderr):
             return
         try:
-            s.close()
+            self._stream.close()
         except Exception:
             pass

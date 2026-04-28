@@ -19,6 +19,10 @@ class DebugConfig:
     latency_log: bool = False
     video_tap: bool = False
     video_tap_port: int = 5600
+    # Per-flight log rotation: close the current flight directory after
+    # this many seconds of empty rx_ant_stats. Only consulted when
+    # `--log-dir` is supplied on the CLI.
+    flight_gap_seconds: float = 10.0
 
     @classmethod
     def from_yaml(cls, raw: dict) -> "DebugConfig":
@@ -31,12 +35,16 @@ class DebugConfig:
                 return master
             return bool(v)
 
+        rotation = block.get("flight_rotation") or {}
+        gap_seconds = float(rotation.get("gap_seconds", 10.0))
+
         cfg = cls(
             enabled=master,
             ping_pong=_resolve("ping_pong"),
             latency_log=_resolve("latency_log"),
             video_tap=_resolve("video_tap"),
             video_tap_port=int(block.get("video_tap_port", 5600)),
+            flight_gap_seconds=gap_seconds,
         )
 
         if cfg.latency_log and not cfg.ping_pong:
@@ -51,7 +59,7 @@ class DebugConfig:
     def log_resolution(self) -> None:
         log.info(
             "debug flags: enabled=%s ping_pong=%s latency_log=%s "
-            "video_tap=%s video_tap_port=%d",
+            "video_tap=%s video_tap_port=%d flight_gap_seconds=%.1f",
             self.enabled, self.ping_pong, self.latency_log,
-            self.video_tap, self.video_tap_port,
+            self.video_tap, self.video_tap_port, self.flight_gap_seconds,
         )

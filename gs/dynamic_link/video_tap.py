@@ -254,14 +254,30 @@ class _Protocol(asyncio.DatagramProtocol):
 # ---- Sink ---------------------------------------------------------------
 
 class VideoRtpSink:
-    """JSONL writer for FrameRecord. Mirrors LatencySink's shape."""
+    """JSONL writer for FrameRecord. Mirrors LatencySink's shape.
+
+    ``stream`` may be a fixed TextIO, a zero-arg callable returning
+    a TextIO (or None to drop the write — used by the per-flight
+    rotator), or None to disable the sink entirely.
+    """
 
     def __init__(self, stream) -> None:
         self._stream = stream
         self._written = 0
 
+    def _resolve(self):
+        s = self._stream
+        if s is None:
+            return None
+        if callable(s):
+            return s()
+        return s
+
     def write(self, rec: FrameRecord) -> None:
         import json
+        s = self._resolve()
+        if s is None:
+            return
         record = {
             "ts_gs_mono_us": rec.ts_gs_mono_us,
             "ts_gs_wall_us": rec.ts_gs_wall_us,
@@ -275,8 +291,8 @@ class VideoRtpSink:
             "latency_drift_us": rec.latency_drift_us,
             "frame_interarrival_us": rec.frame_interarrival_us,
         }
-        self._stream.write(json.dumps(record, separators=(",", ":")) + "\n")
-        self._stream.flush()
+        s.write(json.dumps(record, separators=(",", ":")) + "\n")
+        s.flush()
         self._written += 1
 
     @property
@@ -286,7 +302,9 @@ class VideoRtpSink:
     def close(self) -> None:
         import sys as _sys
         s = self._stream
-        if s is None or s in (_sys.stdout, _sys.stderr):
+        if s is None or callable(s):
+            return
+        if s in (_sys.stdout, _sys.stderr):
             return
         try:
             s.close()

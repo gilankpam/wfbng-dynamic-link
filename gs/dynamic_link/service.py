@@ -13,6 +13,7 @@ import yaml
 
 from . import wire
 from .debug_config import DebugConfig
+from .flight_log import FlightDirRotator
 from .latency_sink import LatencySink
 from .policy import (
     CooldownConfig,
@@ -169,26 +170,25 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
             cooldown_raw.get("min_change_interval_ms_cross", 50.0)
         ),
     )
-    raw_max_red = fec_raw.get("max_redundancy_ratio", 1.0)
     fec = FECBounds(
-        n_min=int(fec_raw.get("n_min", 4)),
-        k_min=int(fec_raw.get("k_min", 2)),
-        k_max=int(fec_raw.get("k_max", 12)),
         depth_max=int(fec_raw.get("depth_max", 3)),
-        max_redundancy_ratio=(
-            None if raw_max_red is None else float(raw_max_red)
-        ),
-        base_redundancy_ratio=float(
-            fec_raw.get("base_redundancy_ratio", 0.5)
-        ),
-        fec_block_fill_ms_target=float(
-            fec_raw.get("fec_block_fill_ms_target", 12.0)
-        ),
-        n_loss_step=int(fec_raw.get("n_loss_step", 2)),
-        n_preempt_step=int(fec_raw.get("n_preempt_step", 1)),
-        n_recover_step=int(fec_raw.get("n_recover_step", 1)),
         mtu_bytes=int(fec_raw.get("mtu_bytes", 1400)),
     )
+    # `(k, n)` and bitrate now come from the radio profile's
+    # `fec_table` (`docs/knob-cadence-bench.md` rationale). Warn if
+    # the legacy escalation knobs are still in the YAML — they're
+    # silently ignored, but nice to nudge operators to clean up.
+    _legacy_fec_keys = (
+        "n_min", "k_min", "k_max", "max_redundancy_ratio",
+        "base_redundancy_ratio", "fec_block_fill_ms_target",
+        "n_loss_step", "n_preempt_step", "n_recover_step",
+    )
+    for k in _legacy_fec_keys:
+        if k in fec_raw:
+            log.warning(
+                "config: ignoring legacy fec.%s — `(k, n)` is now "
+                "set per-MCS by the radio profile's fec_table", k,
+            )
     safe_video = safe_raw.get("video", {})
     safe = SafeDefaults(
         k=int(safe_video.get("k", 8)),
@@ -241,28 +241,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to gs.yaml configuration.",
     )
     p.add_argument(
-        "--log-file",
+        "--log-dir",
         type=Path,
-        help="Path to write the decision-event log (only ticks where "
-             "a knob actually changed). Default: stdout.",
-    )
-    p.add_argument(
-        "--verbose-log-file",
-        type=Path,
-        help="Path to write the per-tick debug log (every tick, not "
-             "just events). Disabled if omitted.",
-    )
-    p.add_argument(
-        "--latency-log-file",
-        type=Path,
-        help="Path to write Phase-3 latency.jsonl (one JSON line per "
-             "PONG observation). Requires `debug.ping_pong: true`.",
-    )
-    p.add_argument(
-        "--video-rtp-log-file",
-        type=Path,
-        help="Path to write Phase-3 video_rtp.jsonl (per-frame RTP/H.265 "
-             "drift + jitter). Requires `debug.video_tap: true`.",
+        help="Per-flight log root. The service opens a fresh "
+             "flight-NNNN/ subdir on each drone reconnect and closes "
+             "it after `debug.flight_rotation.gap_seconds` of empty "
+             "rx_ant_stats. Each flight dir holds gs.jsonl, "
+             "gs.verbose.jsonl, latency.jsonl, video_rtp.jsonl, and a "
+             "flight.json manifest. If omitted, decisions go to "
+             "stdout and per-flight streams are disabled.",
     )
     p.add_argument(
         "--video-tap-host",
@@ -277,8 +264,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--verbose",
         action="store_true",
-        help="Log every tick on stdout when no --verbose-log-file is set. "
-             "Ignored if --verbose-log-file is supplied.",
+        help="Log every tick on stdout. Useful when --log-dir is "
+             "omitted; with --log-dir the verbose stream is already "
+             "written into the flight dir.",
     )
     p.add_argument(
         "--log-level",
@@ -307,23 +295,30 @@ async def _run(args: argparse.Namespace) -> int:
     policy = Policy(policy_cfg, profile)
     aggregator = _build_aggregator(raw)
 
-    events_stream = (
-        open(args.log_file, "a", buffering=1)
-        if args.log_file is not None else sys.stdout
-    )
-    if args.verbose_log_file is not None:
-        verbose_stream = open(args.verbose_log_file, "a", buffering=1)
-    elif args.verbose:
-        # Back-compat: --verbose without a dedicated file mirrors every
-        # tick to stdout (matches old behaviour).
-        verbose_stream = sys.stdout
-    else:
-        verbose_stream = None
-
     enabled = bool(raw.get("enabled", False))
 
     debug_cfg = DebugConfig.from_yaml(raw)
     debug_cfg.log_resolution()
+
+    # Per-flight rotator (Phase 3 forensics). Drives all four sinks
+    # via stream getters; between flights the getters return None
+    # and writes are dropped.
+    rotator: FlightDirRotator | None = None
+    if args.log_dir is not None:
+        rotator = FlightDirRotator(
+            args.log_dir, gap_seconds=debug_cfg.flight_gap_seconds,
+        )
+        log.info(
+            "flight rotation: log_dir=%s gap_seconds=%.1f",
+            args.log_dir, debug_cfg.flight_gap_seconds,
+        )
+
+    if rotator is not None:
+        events_stream = rotator.events_stream
+        verbose_stream = rotator.verbose_stream
+    else:
+        events_stream = sys.stdout
+        verbose_stream = sys.stdout if args.verbose else None
 
     # Phase 3 timesync: ping/pong over the existing tunnel UDP path.
     timesync: TimeSync | None = None
@@ -331,24 +326,21 @@ async def _run(args: argparse.Namespace) -> int:
     latency_sink: LatencySink | None = None
     if debug_cfg.ping_pong:
         timesync = TimeSync()
-    if debug_cfg.latency_log and args.latency_log_file is not None:
-        latency_stream = open(args.latency_log_file, "a", buffering=1)
-        latency_sink = LatencySink(latency_stream)
+    if debug_cfg.latency_log and rotator is not None:
+        latency_sink = LatencySink(rotator.latency_stream)
     elif debug_cfg.latency_log:
-        log.warning("debug.latency_log=true but --latency-log-file not "
-                    "supplied; latency samples will not be persisted")
+        log.warning("debug.latency_log=true but --log-dir not supplied; "
+                    "latency samples will not be persisted")
 
     # Phase 3 video tap (B.2).
     video_tap: VideoTap | None = None
     video_rtp_sink: VideoRtpSink | None = None
     if debug_cfg.video_tap:
-        if args.video_rtp_log_file is not None:
-            video_rtp_stream = open(args.video_rtp_log_file, "a", buffering=1)
-            video_rtp_sink = VideoRtpSink(video_rtp_stream)
+        if rotator is not None:
+            video_rtp_sink = VideoRtpSink(rotator.video_rtp_stream)
         else:
-            log.warning("debug.video_tap=true but --video-rtp-log-file "
-                        "not supplied; per-frame RTP records will not be "
-                        "persisted")
+            log.warning("debug.video_tap=true but --log-dir not supplied; "
+                        "per-frame RTP records will not be persisted")
 
     def _log_extras() -> dict:
         if timesync is None or timesync.offset_us is None:
@@ -462,6 +454,8 @@ async def _run(args: argparse.Namespace) -> int:
         if isinstance(ev, TxEvent):
             return
         if isinstance(ev, RxEvent):
+            if rotator is not None:
+                rotator.on_rx_event(ev)
             signals = aggregator.consume(ev)
             decision = policy.tick(signals)
             sink.write(decision)
@@ -528,6 +522,8 @@ async def _run(args: argparse.Namespace) -> int:
             return_link.close()
         if mavlink_reader is not None:
             mavlink_reader.stop()
+        if rotator is not None:
+            rotator.close()
 
     return 0
 
