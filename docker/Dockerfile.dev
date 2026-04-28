@@ -34,6 +34,20 @@ RUN cd /tmp && git clone --depth 1 -b v3.7.1 https://github.com/catchorg/Catch2.
  && cmake --build build/ --target install -j"$(nproc)" \
  && rm -rf /tmp/Catch2
 
+# musl ARMv7 cross-toolchain for the OpenIPC SSC338Q drone target
+# (drone/Makefile:ssc338q hardcodes CC=armv7l-unknown-linux-musleabihf-gcc).
+# Debian apt only ships the glibc cross — not ABI-compatible with the
+# musl-based drone OS. We grab the prebuilt from musl.cc, which uses the
+# `armv7l-linux-musleabihf-` prefix, and symlink to the `unknown` prefix
+# the Makefile expects (matches Nix's pkgsCross naming convention so a
+# future nix-shell build still works against the same Makefile target).
+RUN cd /tmp \
+ && curl -fsSL -o cross.tgz https://musl.cc/armv7l-linux-musleabihf-cross.tgz \
+ && tar -xzf cross.tgz -C /opt/ \
+ && ln -sf /opt/armv7l-linux-musleabihf-cross/bin/armv7l-linux-musleabihf-gcc \
+           /usr/local/bin/armv7l-unknown-linux-musleabihf-gcc \
+ && rm cross.tgz
+
 # ---- Node.js + Claude Code ---------------------------------------------------
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
