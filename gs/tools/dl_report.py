@@ -672,7 +672,7 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis,
             [{"secondary_y": False}],
             [{"secondary_y": False}],
             [{"secondary_y": False}],
-            [{"secondary_y": False}],
+            [{"secondary_y": True}],   # drift + bitrate overlay
             [{"secondary_y": False}],
         ],
     )
@@ -798,10 +798,23 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis,
             x=x_v, y=drift_ms - baseline, mode="lines",
             line={"color": "#17becf", "width": 1},
             name=f"drift − {baseline:+.0f}ms",
-        ), row=7, col=1)
+        ), row=7, col=1, secondary_y=False)
         fig.add_hline(y=0, line={"width": 1, "dash": "dot",
                                  "color": "rgba(0,0,0,0.3)"},
                       row=7, col=1)
+        # Overlay bitrate (kbps) on the drift panel's right axis so
+        # MCS/bitrate retargets line up visually with their drift
+        # consequences. Same data series as row 1's secondary y;
+        # repeated here purely for alignment.
+        if streams.verbose:
+            fig.add_trace(go.Scatter(
+                x=x, y=bitrate, mode="lines",
+                line={"color": "#ff7f0e", "width": 1},
+                name="bitrate (kbps)",
+                legendgroup="bitrate",
+                showlegend=False,    # already in legend from row 1
+                opacity=0.7,
+            ), row=7, col=1, secondary_y=True)
 
         # Row 8: interarrival
         ia_ms = np.array([r["frame_interarrival_us"] / 1000
@@ -919,7 +932,7 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis,
     # y1..y8. Mapping the wrong axis silently drops the rule on the
     # drift / interarrival panels, where you most need it.
     ROW_YREF = {1: "y", 2: "y3", 3: "y5", 4: "y6",
-                5: "y7", 6: "y8", 7: "y9", 8: "y10"}
+                5: "y7", 6: "y8", 7: "y9", 8: "y11"}
     for m in markers:
         # `xref="x domain"` would lock to one subplot; we want full
         # vertical sweep, so use one shape per row with explicit yref.
@@ -957,7 +970,8 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis,
     fig.update_yaxes(title_text="rate", row=4, col=1)
     fig.update_yaxes(title_text="shards", row=5, col=1)
     fig.update_yaxes(title_text="ms", row=6, col=1)
-    fig.update_yaxes(title_text="Δ ms", row=7, col=1)
+    fig.update_yaxes(title_text="Δ ms", row=7, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="kbps", row=7, col=1, secondary_y=True)
     fig.update_yaxes(title_text="ms", row=8, col=1)
 
     # Plotly's update_layout(shapes=...) does a positional merge with
