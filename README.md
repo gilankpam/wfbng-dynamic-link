@@ -202,7 +202,8 @@ gs/dynamic_link/         Python package
 gs/tools/                Dev-workstation post-flight tools (Phase 3)
   dl_replay.py           Replay GS verbose.jsonl to a bench drone
   dl_events_diff.py      Diff two SD failure logs
-  dl_review.py           Unified-timeline viewer
+  dl_review.py           Unified-timeline viewer (CLI)
+  dl_report.py           Self-contained HTML flight report (Plotly)
   dl-bundle              Tar GS-side logs into a flight bundle
 
 drone/

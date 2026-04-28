@@ -28,3 +28,7 @@ deploy/
 gs.jsonl
 gs.*.jsonl
 gs.log
+
+# Local flight bundles + dl-report output. The four JSONL streams plus
+# generated HTML/MD reports are large, transient, and operator-specific.
+debug/

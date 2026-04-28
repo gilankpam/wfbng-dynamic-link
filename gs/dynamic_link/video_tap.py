@@ -83,8 +83,21 @@ class VideoTap:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
             except OSError as e:
                 log.warning("video_tap: SO_REUSEPORT unsupported: %s", e)
+        # Bench observation (Apr 28 2026): 60 fps RTP/H.265 with the
+        # default ~200 KB recv buffer drops ~1% of packets under
+        # multi-frame bursts. 4 MiB is enough headroom for ≥100 ms of
+        # 12 Mbps video. Kernel caps at /proc/sys/net/core/rmem_max
+        # (run as root or set via sysctl if you need more).
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF,
+                            4 * 1024 * 1024)
+        except OSError as e:
+            log.warning("video_tap: SO_RCVBUF set failed: %s", e)
+        actual = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
         sock.setblocking(False)
         sock.bind((self.host, self.port))
+        log.info("video_tap: SO_RCVBUF = %d bytes (%.1f MiB)",
+                 actual, actual / (1024 * 1024))
         self._transport, _ = await loop.create_datagram_endpoint(
             lambda: _Protocol(self._on_frame),
             sock=sock,

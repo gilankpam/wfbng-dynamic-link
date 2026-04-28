@@ -61,31 +61,32 @@ static uint64_t now_monotonic_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
 }
 
-/* Open a connected UDP socket aimed at the GS for drone→GS tunnel
- * traffic (PONG packets). Returns -1 on failure (logged); a missing
- * socket is non-fatal and disables PONG emission for the session. */
-static int open_gs_tunnel_socket(const dl_config_t *cfg) {
+/* Open an unconnected UDP socket for drone→GS tunnel traffic (PONG
+ * packets) and resolve the GS endpoint into `out_dst`. Returns -1 on
+ * failure (logged); missing socket is non-fatal and disables PONG.
+ *
+ * Why no connect(): connect() on UDP triggers an immediate route
+ * lookup, and this applier may start before wfb-ng's TUN interface is
+ * up — the ENETUNREACH at that moment used to latch gs_tunnel_fd=-1
+ * for the rest of the process. With sendto() per packet, the route
+ * lookup happens fresh each call, so the path self-heals once the
+ * tunnel comes up. */
+static int open_gs_tunnel_socket(const dl_config_t *cfg,
+                                 struct sockaddr_in *out_dst) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
         dl_log_warn("gs_tunnel: socket: %s", strerror(errno));
         return -1;
     }
-    struct sockaddr_in dst = {0};
-    dst.sin_family = AF_INET;
-    dst.sin_port = htons(cfg->gs_tunnel_port);
-    if (inet_pton(AF_INET, cfg->gs_tunnel_addr, &dst.sin_addr) != 1) {
+    memset(out_dst, 0, sizeof(*out_dst));
+    out_dst->sin_family = AF_INET;
+    out_dst->sin_port = htons(cfg->gs_tunnel_port);
+    if (inet_pton(AF_INET, cfg->gs_tunnel_addr, &out_dst->sin_addr) != 1) {
         dl_log_warn("gs_tunnel: bad addr %s", cfg->gs_tunnel_addr);
         close(fd);
         return -1;
     }
-    if (connect(fd, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
-        dl_log_warn("gs_tunnel: connect %s:%u: %s",
-                    cfg->gs_tunnel_addr, cfg->gs_tunnel_port,
-                    strerror(errno));
-        close(fd);
-        return -1;
-    }
-    dl_log_info("gs_tunnel: ready %s:%u",
+    dl_log_info("gs_tunnel: ready %s:%u (sendto per PONG)",
                 cfg->gs_tunnel_addr, cfg->gs_tunnel_port);
     return fd;
 }
@@ -208,8 +209,9 @@ int main(int argc, char **argv) {
      * a closed socket means PINGs are silently dropped, which is fine
      * — production never sees a PING in the first place. */
     int gs_tunnel_fd = -1;
+    struct sockaddr_in gs_tunnel_dst = {0};
     if (cfg.debug_enable) {
-        gs_tunnel_fd = open_gs_tunnel_socket(&cfg);
+        gs_tunnel_fd = open_gs_tunnel_socket(&cfg, &gs_tunnel_dst);
     }
 
     uint32_t tick_ms = cfg.osd_update_interval_ms;
@@ -281,9 +283,11 @@ int main(int argc, char **argv) {
                     uint8_t out[DL_PONG_ON_WIRE_SIZE];
                     size_t n_out = dl_wire_encode_pong(&pong, out, sizeof(out));
                     if (n_out > 0) {
-                        ssize_t s = send(gs_tunnel_fd, out, n_out, 0);
+                        ssize_t s = sendto(gs_tunnel_fd, out, n_out, 0,
+                                           (struct sockaddr *)&gs_tunnel_dst,
+                                           sizeof(gs_tunnel_dst));
                         if (s < 0) {
-                            dl_log_debug("pong: send: %s", strerror(errno));
+                            dl_log_debug("pong: sendto: %s", strerror(errno));
                         }
                     }
                 }

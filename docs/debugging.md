@@ -114,7 +114,63 @@ workstation. (If the file rolled, also copy the `.1` and `.2`
 siblings — but in practice failures are sparse and you'll only
 ever have the active file.)
 
-### 3. Review on a unified timeline
+### 3a. Generate a flight report (recommended starting point)
+
+`dl-report` produces either an interactive HTML file or a Markdown
+text file (or both). Pick by output extension or `--format`:
+
+```bash
+# Interactive HTML (default)
+python -m gs.tools.dl_report --bundle flight.tar.gz -o report.html
+
+# Plain Markdown — agent-friendly, easy to paste into a chat or issue
+python -m gs.tools.dl_report --bundle flight.tar.gz -o report.md
+
+# Both at once
+python -m gs.tools.dl_report --bundle flight.tar.gz -o report.html \
+    --format both
+```
+
+The HTML is self-contained (~6 MB inline, ~1 MB with `--cdn`).
+
+Both formats share the same structure:
+
+- **TL;DR — diagnosis** — anomaly classifications grouped by
+  category. Answers "why did I see stutter?" up front:
+
+      1× Drone TX silent
+      4× Encoder pipeline
+      4× Link congestion
+      11× Link stress (FEC absorbed)
+      6 emergency events in the controller log
+
+  Each verdict comes from a heuristic table mapping (RTT, drift,
+  loss, starvation, SSRC change) onto a likely cause. Thresholds
+  live in `classify_anomaly` if you need to tune them.
+
+- **Summary** — duration, MCS time-distribution, RSSI/SNR/RTT
+  percentiles, video loss, drift range.
+
+- **Anomaly leaderboard** — top 20 1-second windows ranked by a
+  combined score (drift excursion × frame interarrival ×
+  (lost+1) × RTT factor). Each row carries a verdict + severity
+  marker.
+
+- **Top events explained** — for each top anomaly, a "Why" and
+  "What you probably felt" block in plain language. This is the
+  bit that goes from "here's the data" to "here's what happened."
+
+The HTML report adds:
+
+- **Linked timeline** — six stacked subplots sharing one x-axis
+  (MCS/bitrate, RSSI/SNR, loss/fec, RTT, video drift, frame
+  interarrival). Zoom or pan in any panel and the others follow.
+  Vertical red/orange dashed lines mark emergency events and
+  watchdog trips.
+- **Distributions** — RTT, interarrival, drift histograms with
+  p50/p95/p99 markers.
+
+### 3b. CLI review (when you know the moment and want raw data)
 
 ```bash
 python -m gs.tools.dl_review \
