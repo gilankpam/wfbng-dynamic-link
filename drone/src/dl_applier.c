@@ -17,6 +17,7 @@
 #include "dl_backend_tx.h"
 #include "dl_ceiling.h"
 #include "dl_config.h"
+#include "dl_dbg.h"
 #include "dl_dedup.h"
 #include "dl_log.h"
 #include "dl_mavlink.h"
@@ -193,6 +194,8 @@ int main(int argc, char **argv) {
         return 3;
     }
 
+    dl_dbg_init(&cfg);
+
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
     signal(SIGPIPE, SIG_IGN);
@@ -292,6 +295,10 @@ int main(int argc, char **argv) {
                                 (int)dr,
                                 inet_ntoa(src.sin_addr), ntohs(src.sin_port),
                                 got);
+                    char detail[64];
+                    snprintf(detail, sizeof(detail),
+                             "{\"code\":%d,\"len\":%zd}", (int)dr, got);
+                    dl_dbg_emit("DECODE_BAD", DL_DBG_SEV_WARN, detail);
                 } else if (dl_dedup_check(&dedup, d.sequence)) {
                     dl_log_debug("decode: duplicate seq=%u", d.sequence);
                 } else {
@@ -303,6 +310,11 @@ int main(int argc, char **argv) {
                         snprintf(text, sizeof(text), "DL REJECT %s", rsn);
                         dl_mavlink_emit(mav, "reject",
                                         DL_MAV_SEV_WARNING, text);
+                        char detail[96];
+                        snprintf(detail, sizeof(detail),
+                                 "{\"reason\":\"%s\",\"seq\":%u}",
+                                 rsn, d.sequence);
+                        dl_dbg_emit("CEILING_REJECT", DL_DBG_SEV_WARN, detail);
                     } else {
                         uint64_t now = now_monotonic_ms();
                         int drc = 0;
@@ -318,6 +330,10 @@ int main(int argc, char **argv) {
                             dl_mavlink_emit(mav, "apply_fail",
                                             DL_MAV_SEV_WARNING,
                                             "DL APPLY_FAIL backend");
+                            char detail[64];
+                            snprintf(detail, sizeof(detail),
+                                     "{\"seq\":%u}", d.sequence);
+                            dl_dbg_emit("APPLY_FAIL", DL_DBG_SEV_WARN, detail);
                         } else {
                             dl_log_debug("apply: seq=%u mcs=%u k=%u n=%u d=%u tx=%d br=%u",
                                          d.sequence, d.mcs, d.k, d.n, d.depth,
@@ -344,6 +360,11 @@ int main(int argc, char **argv) {
                 dl_osd_event_watchdog(osd);
                 dl_mavlink_emit(mav, "watchdog", DL_MAV_SEV_ERROR,
                                 "DL WATCHDOG safe_defaults");
+                char detail[64];
+                snprintf(detail, sizeof(detail),
+                         "{\"timeout_ms\":%u}",
+                         (unsigned)cfg.health_timeout_ms);
+                dl_dbg_emit("WATCHDOG_TRIPPED", DL_DBG_SEV_ERROR, detail);
                 /* Invalidate last-states so the next fresh decision emits
                  * everything. Reset dedup too so a GS that restarted with
                  * a lower seq baseline (or a wedged seq from a stray
@@ -365,5 +386,6 @@ int main(int argc, char **argv) {
     dl_backend_enc_close(be);
     dl_backend_radio_close(br);
     dl_backend_tx_close(bt);
+    dl_dbg_close();
     return 0;
 }

@@ -22,6 +22,7 @@ APPLIER_SRCS := \
     $(SRCDIR)/dl_backend_tx.c \
     $(SRCDIR)/dl_ceiling.c \
     $(SRCDIR)/dl_config.c \
+    $(SRCDIR)/dl_dbg.c \
     $(SRCDIR)/dl_dedup.c \
     $(SRCDIR)/dl_log.c \
     $(SRCDIR)/dl_mavlink.c \
@@ -40,12 +41,14 @@ TEST_SRCS := \
     $(TESTDIR)/test_wire.c \
     $(TESTDIR)/test_ceiling.c \
     $(TESTDIR)/test_config.c \
+    $(TESTDIR)/test_dbg.c \
     $(TESTDIR)/test_dedup.c \
     $(TESTDIR)/test_mavlink.c \
     $(TESTDIR)/test_watchdog.c \
     $(SRCDIR)/dl_wire.c \
     $(SRCDIR)/dl_ceiling.c \
     $(SRCDIR)/dl_config.c \
+    $(SRCDIR)/dl_dbg.c \
     $(SRCDIR)/dl_dedup.c \
     $(SRCDIR)/dl_log.c \
     $(SRCDIR)/dl_mavlink.c \

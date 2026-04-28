@@ -5,6 +5,7 @@
  * succeeded and move on.
  */
 #include "dl_backend_enc.h"
+#include "dl_dbg.h"
 #include "dl_log.h"
 
 #include <arpa/inet.h>
@@ -28,10 +29,30 @@ struct dl_backend_enc {
     bool     idr_ever_sent;
 };
 
+/* Parse "HTTP/1.x NNN " out of the first line of a response buffer.
+ * Returns the status code, or 0 if the buffer doesn't look like an
+ * HTTP reply (silent encoder, garbage, etc.). */
+static int parse_http_status(const char *buf, size_t len) {
+    if (len < 12) return 0;
+    if (memcmp(buf, "HTTP/", 5) != 0) return 0;
+    /* Skip past version: HTTP/1.0 or HTTP/1.1, both 8 chars. */
+    size_t i = 5;
+    while (i < len && buf[i] != ' ') i++;
+    if (i + 4 > len) return 0;
+    /* buf[i] == ' '; status follows. */
+    int s = 0;
+    for (size_t j = i + 1; j < i + 4 && j < len; ++j) {
+        if (buf[j] < '0' || buf[j] > '9') return 0;
+        s = s * 10 + (buf[j] - '0');
+    }
+    return s;
+}
+
 static int http_get(const char *host, uint16_t port, const char *path) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         dl_log_warn("enc: socket: %s", strerror(errno));
+        dl_dbg_emit_errno("ENC_APPLY_FAIL", errno);
         return -1;
     }
 
@@ -54,6 +75,7 @@ static int http_get(const char *host, uint16_t port, const char *path) {
         snprintf(portstr, sizeof(portstr), "%u", (unsigned)port);
         if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res) {
             dl_log_warn("enc: resolve %s: %s", host, strerror(errno));
+            dl_dbg_emit_errno("ENC_APPLY_FAIL", errno);
             close(fd);
             return -1;
         }
@@ -62,7 +84,13 @@ static int http_get(const char *host, uint16_t port, const char *path) {
     }
 
     if (connect(fd, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
-        dl_log_warn("enc: connect %s:%u: %s", host, port, strerror(errno));
+        int saved = errno;
+        dl_log_warn("enc: connect %s:%u: %s", host, port, strerror(saved));
+        char detail[160];
+        snprintf(detail, sizeof(detail),
+                 "{\"errno\":%d,\"host\":\"%s\",\"port\":%u}",
+                 saved, host, (unsigned)port);
+        dl_dbg_emit("ENC_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
         close(fd);
         return -1;
     }
@@ -76,33 +104,62 @@ static int http_get(const char *host, uint16_t port, const char *path) {
                      path, host);
     if (n < 0 || (size_t)n >= sizeof(req)) {
         dl_log_warn("enc: request too long");
+        dl_dbg_emit("ENC_APPLY_FAIL", DL_DBG_SEV_WARN,
+                    "{\"reason\":\"request too long\"}");
         close(fd);
         return -1;
     }
 
     ssize_t nsent = send(fd, req, (size_t)n, 0);
     if (nsent != n) {
-        dl_log_warn("enc: send: %s", strerror(errno));
+        int saved = errno;
+        dl_log_warn("enc: send: %s", strerror(saved));
+        dl_dbg_emit_errno("ENC_APPLY_FAIL", saved);
         close(fd);
         return -1;
     }
 
-    /* Drain (and discard) whatever reply we get. Short timeout — if the
-     * encoder dropped the connection that's fine, we moved on. */
-    char discard[256];
-    ssize_t total = 0;
-    while (total < 4096) {
-        ssize_t got = recv(fd, discard, sizeof(discard), 0);
+    /* Capture the first ~512B of the reply so we can parse the status
+     * line and surface a non-2xx body to the SD log. Anything beyond
+     * that is drained and discarded. */
+    char reply[512];
+    size_t reply_len = 0;
+    while (reply_len < sizeof(reply)) {
+        ssize_t got = recv(fd, reply + reply_len,
+                           sizeof(reply) - reply_len, 0);
         if (got <= 0) break;
-        total += got;
+        reply_len += (size_t)got;
     }
+    /* Drain the rest. */
+    char discard[256];
+    while (recv(fd, discard, sizeof(discard), 0) > 0) {}
     close(fd);
 
-    if (total <= 0) {
-        /* A silent encoder is suspicious but not fatal; GET might
-         * still have taken effect. Log once per call. */
-        dl_log_debug("enc: no HTTP reply from %s:%u for %s", host, port, path);
+    if (reply_len == 0) {
+        /* Silent encoder. Log at debug — could mean the GET took effect
+         * or could be a real failure. We don't escalate to dl_dbg here
+         * because there's nothing actionable to capture; if the user
+         * has a recurring silent-encoder problem, the log line above
+         * shows the path that's getting nothing. */
+        dl_log_debug("enc: no HTTP reply from %s:%u for %s",
+                     host, port, path);
+        return 0;
     }
+
+    int status = parse_http_status(reply, reply_len);
+    if (status >= 200 && status < 300) {
+        return 0;
+    }
+    /* Non-2xx (or unparseable): capture for the SD log so the
+     * specific failure stops being silent. We deliberately still
+     * return 0 — the legacy contract is "completed HTTP exchange
+     * succeeded", and changing it would re-route every weird encoder
+     * reply through the noisier MAVLink apply_fail path. The SD log
+     * is the right place for these. */
+    dl_log_warn("enc: http %d from %s:%u for %s",
+                status, host, port, path);
+    dl_dbg_emit_http("ENC_RESPONSE_BAD", DL_DBG_SEV_WARN,
+                     status, reply, reply_len);
     return 0;
 }
 

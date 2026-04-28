@@ -39,6 +39,7 @@ from .stats_client import (
 )
 from .timesync import TimeSync
 from .tunnel_listener import TunnelListener
+from .video_tap import VideoRtpSink, VideoTap
 from .wire import Encoder as WireEncoder
 
 log = logging.getLogger("dynamic_link")
@@ -258,6 +259,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "PONG observation). Requires `debug.ping_pong: true`.",
     )
     p.add_argument(
+        "--video-rtp-log-file",
+        type=Path,
+        help="Path to write Phase-3 video_rtp.jsonl (per-frame RTP/H.265 "
+             "drift + jitter). Requires `debug.video_tap: true`.",
+    )
+    p.add_argument(
+        "--video-tap-host",
+        default="0.0.0.0",
+        help="Bind address for the RTP video tap (default 0.0.0.0).",
+    )
+    p.add_argument(
         "--replay",
         type=Path,
         help="Replay from a captured JSONL file instead of connecting over TCP.",
@@ -326,6 +338,18 @@ async def _run(args: argparse.Namespace) -> int:
         log.warning("debug.latency_log=true but --latency-log-file not "
                     "supplied; latency samples will not be persisted")
 
+    # Phase 3 video tap (B.2).
+    video_tap: VideoTap | None = None
+    video_rtp_sink: VideoRtpSink | None = None
+    if debug_cfg.video_tap:
+        if args.video_rtp_log_file is not None:
+            video_rtp_stream = open(args.video_rtp_log_file, "a", buffering=1)
+            video_rtp_sink = VideoRtpSink(video_rtp_stream)
+        else:
+            log.warning("debug.video_tap=true but --video-rtp-log-file "
+                        "not supplied; per-frame RTP records will not be "
+                        "persisted")
+
     def _log_extras() -> dict:
         if timesync is None or timesync.offset_us is None:
             return {}
@@ -390,6 +414,23 @@ async def _run(args: argparse.Namespace) -> int:
                         gs_listen_addr, gs_listen_port, e)
             tunnel_listener = None
             timesync = None
+
+    if debug_cfg.video_tap:
+        def _on_frame(rec) -> None:
+            if video_rtp_sink is not None:
+                video_rtp_sink.write(rec)
+
+        video_tap = VideoTap(
+            args.video_tap_host, debug_cfg.video_tap_port,
+            on_frame=_on_frame,
+        )
+        try:
+            await video_tap.start()
+        except OSError as e:
+            log.warning("video_tap: bind %s:%d failed: %s; "
+                        "video tap disabled",
+                        args.video_tap_host, debug_cfg.video_tap_port, e)
+            video_tap = None
 
     mavlink_reader = None
     mav_local_addr = wfb.get("mavlink_local_addr", "127.0.0.1")
@@ -477,6 +518,10 @@ async def _run(args: argparse.Namespace) -> int:
         sink.close()
         if latency_sink is not None:
             latency_sink.close()
+        if video_tap is not None:
+            video_tap.stop()
+        if video_rtp_sink is not None:
+            video_rtp_sink.close()
         if tunnel_listener is not None:
             tunnel_listener.stop()
         if return_link is not None:

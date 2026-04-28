@@ -6,6 +6,7 @@
  * returns 0 on success; we wait for it and surface non-zero as -1.
  */
 #include "dl_backend_radio.h"
+#include "dl_dbg.h"
 #include "dl_log.h"
 
 #include <errno.h>
@@ -43,17 +44,30 @@ static int run_iw(const char *wlan, int8_t dBm) {
     int rc = posix_spawnp(&pid, "iw", NULL, NULL, argv, environ);
     if (rc != 0) {
         dl_log_warn("radio: posix_spawnp iw: %s", strerror(rc));
+        char detail[96];
+        snprintf(detail, sizeof(detail),
+                 "{\"errno\":%d,\"dBm\":%d}", rc, (int)dBm);
+        dl_dbg_emit("RADIO_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
         return -1;
     }
     int status;
     if (waitpid(pid, &status, 0) < 0) {
-        dl_log_warn("radio: waitpid: %s", strerror(errno));
+        int saved = errno;
+        dl_log_warn("radio: waitpid: %s", strerror(saved));
+        char detail[96];
+        snprintf(detail, sizeof(detail),
+                 "{\"errno\":%d,\"dBm\":%d}", saved, (int)dBm);
+        dl_dbg_emit("RADIO_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
         return -1;
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
         dl_log_warn("radio: iw exited with status %d (txpower=%d dBm)",
-                    WIFEXITED(status) ? WEXITSTATUS(status) : -1,
-                    (int)dBm);
+                    exit_code, (int)dBm);
+        char detail[96];
+        snprintf(detail, sizeof(detail),
+                 "{\"exit\":%d,\"dBm\":%d}", exit_code, (int)dBm);
+        dl_dbg_emit("RADIO_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
         return -1;
     }
     dl_log_info("radio: txpower %d dBm (iw dev %s)", (int)dBm, wlan);

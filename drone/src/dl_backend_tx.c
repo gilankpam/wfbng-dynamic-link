@@ -1,11 +1,13 @@
 /* dl_backend_tx.c — speak the wfb-ng tx_cmd.h protocol on UDP. */
 #include "dl_backend_tx.h"
+#include "dl_dbg.h"
 #include "dl_log.h"
 #include "vendored/tx_cmd.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -45,11 +47,21 @@ static int send_and_recv(int fd, const cmd_req_t *req, size_t req_len,
 
     ssize_t nsent = send(fd, req, req_len, 0);
     if (nsent < 0) {
-        dl_log_warn("tx_cmd %s: send: %s", label, strerror(errno));
+        int saved = errno;
+        dl_log_warn("tx_cmd %s: send: %s", label, strerror(saved));
+        char detail[128];
+        snprintf(detail, sizeof(detail),
+                 "{\"cmd\":\"%s\",\"errno\":%d}", label, saved);
+        dl_dbg_emit("TX_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
         return -1;
     }
     if ((size_t)nsent != req_len) {
         dl_log_warn("tx_cmd %s: short send %zd/%zu", label, nsent, req_len);
+        char detail[128];
+        snprintf(detail, sizeof(detail),
+                 "{\"cmd\":\"%s\",\"sent\":%zd,\"want\":%zu}",
+                 label, nsent, req_len);
+        dl_dbg_emit("TX_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
         return -1;
     }
 
@@ -59,11 +71,20 @@ static int send_and_recv(int fd, const cmd_req_t *req, size_t req_len,
     for (;;) {
         ssize_t nrecv = recv(fd, resp, sizeof(*resp), 0);
         if (nrecv < 0) {
-            dl_log_warn("tx_cmd %s: recv: %s", label, strerror(errno));
+            int saved = errno;
+            dl_log_warn("tx_cmd %s: recv: %s", label, strerror(saved));
+            char detail[128];
+            snprintf(detail, sizeof(detail),
+                     "{\"cmd\":\"%s\",\"errno\":%d}", label, saved);
+            dl_dbg_emit("TX_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
             return -1;
         }
         if ((size_t)nrecv < offsetof(cmd_resp_t, u)) {
             dl_log_warn("tx_cmd %s: short reply %zd bytes", label, nrecv);
+            char detail[128];
+            snprintf(detail, sizeof(detail),
+                     "{\"cmd\":\"%s\",\"reply_len\":%zd}", label, nrecv);
+            dl_dbg_emit("TX_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
             return -1;
         }
         if (ntohl(resp->req_id) == ntohl(req->req_id)) break;
@@ -77,6 +98,10 @@ static int send_and_recv(int fd, const cmd_req_t *req, size_t req_len,
     if (rc != 0) {
         dl_log_warn("tx_cmd %s: rc=%u (errno=%s)",
                     label, rc, strerror((int)rc));
+        char detail[128];
+        snprintf(detail, sizeof(detail),
+                 "{\"cmd\":\"%s\",\"rc\":%u}", label, rc);
+        dl_dbg_emit("TX_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
         return -1;
     }
     return 0;
