@@ -75,7 +75,7 @@ Packaged artifacts:
                                      +------------+
                                      |  LogSink   |  (Phase 0 terminus)
                                      |  JSONL →   |
-                                     |  --log-file|
+                                     |  --log-dir |
                                      +------------+
 ```
 
@@ -419,8 +419,8 @@ pip install -e '.[dev]'
 ### 8.2 Against a live wfb-ng
 
 ```
-dynamic-link-gs --config conf/gs.yaml.sample --log-file /tmp/dl.log
-tail -f /tmp/dl.log
+dynamic-link-gs --config conf/gs.yaml.sample --log-dir /tmp/dl-flights
+tail -f /tmp/dl-flights/flight-*/gs.jsonl
 ```
 
 Steady-state ticks are suppressed by default; pass `--verbose` to log
@@ -433,7 +433,7 @@ bench captures).
 nc 127.0.0.1 8103 > capture.jsonl               # one-time capture
 dynamic-link-gs --config conf/gs.yaml.sample \
                 --replay capture.jsonl \
-                --log-file /tmp/dl.log
+                --log-dir /tmp/dl-flights
 ```
 
 `ReplayClient` streams the file into the same `on_event` callback the

@@ -756,30 +756,45 @@ dynamic-link repo — see §6.1 for the file format and the
 
 **Default (M8812EU2, HT20, long GI), at `rssi_margin_db = 8`:**
 
-| Band (dBm)          | MCS | bitrate  | `k` (§4.2 band) |
-|---------------------|-----|----------|------------------|
-| `rssi >= -69`       | 7   | 26 Mbps  | 8                |
-| `-72 <= rssi < -69` | 6   | 23 Mbps  | 8                |
-| `-74 <= rssi < -72` | 5   | 21 Mbps  | 6                |
-| `-77 <= rssi < -74` | 4   | 16 Mbps  | 6                |
-| `-80 <= rssi < -77` | 3   | 10 Mbps  | 4                |
-| `-83 <= rssi < -80` | 2   |  8 Mbps  | 4                |
-| `-85 <= rssi < -83` | 1   |  5 Mbps  | 2                |
-| `-88 <= rssi < -85` | 0   |  3 Mbps  | 2                |
-| `rssi < -88`        | —   | —        | — (`budget_exhausted`, RTH) |
+| Band (dBm)          | MCS | `(k, n)`  | redundancy | bitrate    |
+|---------------------|-----|-----------|------------|------------|
+| `rssi >= -69`       | 7   | (12, 14)  | 17 %       | 25 Mbps    |
+| `-72 <= rssi < -69` | 6   | (10, 12)  | 20 %       | 22 Mbps    |
+| `-74 <= rssi < -72` | 5   | (8, 10)   | 25 %       | 18 Mbps    |
+| `-77 <= rssi < -74` | 4   | (6, 9)    | 33 %       | 13 Mbps    |
+| `-80 <= rssi < -77` | 3   | (4, 7)    | 43 %       | 7.5 Mbps   |
+| `-83 <= rssi < -80` | 2   | **(2, 5)**| 60 %       | 4.0 Mbps   |
+| `-85 <= rssi < -83` | 1   | **(2, 5)**| 60 %       | 2.5 Mbps   |
+| `-88 <= rssi < -85` | 0   | **(2, 5)**| 60 %       | 1.5 Mbps   |
+| `rssi < -88`        | —   | —         | —          | (`budget_exhausted`, RTH) |
 
-Boundaries are `sensitivity_dBm + rssi_margin_db` for each MCS.
-Bitrates are `data_rate_Mbps_LGI * 0.40` (see profile).
-Profile provenance (which rows came from the vendor datasheet
-vs. interpolation) lives in the profile file's header comment,
-not in this runtime table — operators are expected to
-field-validate the whole map per airframe regardless.
+`(k, n)` and bitrate per row come from the radio profile's
+`fec_table` block (§6.1) — operator-validated per airframe.
+**`(k, n)` is pinned per-MCS; the controller never moves it
+reactively.** That's the bench-driven choice from
+[`docs/knob-cadence-bench.md`](knob-cadence-bench.md): FEC
+`CMD_SET_FEC` reconfigs are the most expensive controller knob in
+the data plane, so we trade granular `n`-escalation response for
+fewer reconfigs and rely on MCS drops alone for loss-reactive
+escalation.
 
-`k` per row keeps block-fill time proportional to bitrate, so
-FEC latency stays ≲ 5–10 ms at every MCS row instead of running
-up to 32 ms at k=8 / 3 Mbps. See §4.2 "(k, n) ladder" for the
-per-k `n`-escalation ladders the trailing loop uses within each
-band.
+**MCS 0/1/2 share `(k=2, n=5)`** so MCS bouncing in the survival
+band (which happens during fade recovery) never fires a
+`CMD_SET_FEC`. The shared `(2, 5)` keeps block-fill latency ≲ 15 ms
+at MCS 0's 1.5 Mbps and ≲ 6 ms at MCS 2's 4 Mbps.
+
+**MCS 3–7 ramp `k` gradually** (4 → 6 → 8 → 10 → 12, capped at
+`k_max = 12`). Each step doubles the block size while PHY also
+climbs, so block-fill latency stays in the 5–6 ms band at every
+row. Redundancy decreases monotonically with MCS: cleaner link
+needs less parity.
+
+Bitrate at each row is sized for ≤ 50 % utilization of the row's
+goodput (`PHY × k/n`), leaving headroom for retransmits +
+telemetry + IDR bursts. Profile provenance (vendor datasheet vs.
+interpolation) lives in the profile file's header comment, not
+in this runtime table — operators are expected to field-validate
+the whole map per airframe regardless.
 
 **fps adjustment.** The values above are tuned for the 60 fps
 latency cap (50 ms). At 90 fps (33 ms cap) the latency-budget
@@ -827,19 +842,23 @@ an MCS drop without a matching bitrate drop queues airtime debt
 that becomes loss). TX-power changes are independent and can fly
 in their own decision packet.
 
-### §4.2 — Trailing loop: loss-driven protective escalation
+### §4.2 — Trailing loop: IDR signalling + depth bootstrap
 
 **Reaction is immediate, not hysteresis-delayed.** One 100 ms
 window with `residual_loss > 0` means the pilot already saw a
 glitch. The controller treats that as a ground-truth signal that
 the leading loop was too optimistic, and responds on the same
-tick:
+tick — but only with an IDR + the leading-loop's MCS drop.
+**FEC `(k, n)` is not adjusted on loss.** It is a deterministic
+per-MCS lookup against the radio profile's `fec_table` (see §4.1
+table); whenever the leading loop selects a row, that row's
+`(k, n, bitrate)` is what the decision packet carries.
 
-| Trigger (this 100 ms window) | Actions (all on the same decision packet)                                                    |
+| Trigger (this 100 ms window) | Actions (all on the same decision packet) |
 |---|---|
-| `residual_loss_w > 0`        | (a) raise FEC `n` one step **within the current `k`-band** (§4.2 ladder; e.g. at `k=8` the steps are `(8,12) → (8,14) → (8,16)`). If already at the top `n` of the band, drop into the next lower band at its floor (`(6, 12)` for `k=8`) — the "Step 3 drops k" transition.<br>(b) **request an IDR from the encoder** (GS → drone applier → encoder helper, §2): the current GOP is already corrupted by the lost primary, so the decoder needs a fresh keyframe to resync cleanly; waiting for the next scheduled IDR would extend the blocky patch.<br>Issued via `CMD_SET_FEC` with the new `(k, n)`. |
-| `residual_loss_w > 0` *and* last two windows also had loss | All of the above, *plus* step the leading loop down one MCS row (force-drop via `CMD_SET_RADIO`, inner TX-power loop stays frozen for `tx_power_freeze_after_mcs_ms`). If the new row sits in a lower `k`-band, the trailing loop rebases at the new band's floor rather than stacking escalations. Repeat-loss means the leading loop's calibration is wrong, not just a one-off. |
-| `fec_work` rising, `residual_loss_w == 0` | raise `n` one step within the current `k`-band, preemptively (waits for next `min_change_interval_ms_fec` boundary). No IDR — nothing has glitched yet. |
+| `residual_loss_w > 0` | **request an IDR** from the encoder (GS → drone applier → encoder helper, §2). The current GOP is already corrupted by the lost primary, so the decoder needs a fresh keyframe to resync cleanly. **No `CMD_SET_FEC`** — the bench (`docs/knob-cadence-bench.md`) showed reactive FEC reconfigs cost more in data-plane stalls than they save. |
+| `residual_loss_w > 0` *and* the leading loop's Channel B emergency thresholds met (`loss ≥ emergency_loss_rate`, default 5 %) | The leading loop force-drops one MCS row on its own (Channel B, §4.1). The new row's `(k, n, bitrate)` follows automatically because they're a per-MCS lookup. If the new row sits in the **MCS 0/1/2 survival band** the `(k, n)` is unchanged — same `(2, 5)` shared across the band — so no `CMD_SET_FEC` fires. |
+| `fec_work` rising, `residual_loss_w == 0` | **no-op.** Parity headroom is being consumed but no primary has glitched. The leading loop's stress-widened SNR margin (Channel A) accounts for `fec_work`; if the link character actually deteriorates the leading loop will drop MCS, and FEC follows. |
 
 **IDR-request mechanics.** The request flows:
 
@@ -857,55 +876,69 @@ is ~1 frame period (16.7 ms at 60 fps) plus the return-link RTT
 (typically < 10 ms). Well inside the "pilot just saw one blocky
 block" window — the next frame recovers.
 
-**Cooldown bypass.** The trailing loop's `residual_loss_w > 0`
-path **bypasses** `min_change_interval_ms_fec` (see §4 cooldown
-rules). A glitch is a glitch; we pay the 12 ms 1C refresh cost
-+ one frame of IDR bandwidth immediately rather than waiting
-out the cooldown. IDR flood is prevented separately by the
-drone applier's `min_idr_interval_ms` throttle (default 500 ms,
-§6 drone config, §10).
+**No FEC cooldown bypass needed.** The trailing loop no longer
+issues `CMD_SET_FEC` itself, so there is nothing to bypass. FEC
+`(k, n)` changes only when MCS crosses a row boundary and the new
+row's `(k, n)` differs — `min_change_interval_ms_radio` (default
+500 ms ≈ 2 Hz) already rate-limits that path. IDR flood is
+prevented by the drone applier's `min_idr_interval_ms` throttle
+(default 500 ms, §6 drone config, §10).
 
-**`(k, n)` ladder — per-MCS-row `k`, per-k `n` escalation.**
-`k` is set by the radio profile row (§6.1) for the current MCS;
-`n` escalates within that row in response to loss. Why split
-this way:
+**Why FEC is per-MCS, not loss-reactive.** The
+[knob-cadence bench](knob-cadence-bench.md) measured the cost of
+each controller knob:
 
-- **`k` is driven by bitrate, not by loss.** Block-fill time is
-  `k × MTU × 8 / bitrate`. At low bitrate, `k=8` fills so slowly
-  that even depth 1 blows the FPV latency cap. A per-row `k`
-  keeps block-fill proportional to frame period at every
-  operating point.
-- **`n` is driven by loss.** Within a given `k`, additional
-  parity is the cheap-on-latency, expensive-on-airtime knob that
-  responds to observed channel quality at that MCS row.
+- A `CMD_SET_FEC` reconfig flushes the in-progress FEC block and
+  rewrites the block structure. Stack a few per second and the
+  encoder's downstream queue has to drain through that flush
+  every time, producing multi-frame stalls (the bench saw single
+  drift swings up to 400 ms on a 10 Hz FEC ladder).
+- A `CMD_SET_RADIO` (MCS) reconfig stalls outbound airtime
+  briefly during the rate change but doesn't touch queue
+  contents — cost is a small RTT bump, not a video stall.
+- Bundling MCS + FEC at the same tick is multiplicative: at 10 Hz
+  the bench saw real packet loss and 800+ ms RTT tails, neither
+  of which appears with MCS thrash alone.
 
-Four steps per `k`-band, same shape across all bands (floor →
-+25% → +50% → drop `k`):
+Right cost split: **change MCS responsively, change FEC
+reluctantly.** Pin `(k, n)` per MCS row. If the link's character
+deteriorates, the leading loop drops MCS and the next row's
+FEC takes over — one transition, one decision packet, one
+`CMD_SET_FEC` (which the applier may even skip if the new row's
+`(k, n)` is unchanged, e.g. inside the MCS 0/1/2 survival band).
 
-| k  | Floor       | Step 1      | Step 2      | Step 3 (drop k) |
-|----|-------------|-------------|-------------|-----------------|
-| 8  | `(8, 12)`   | `(8, 14)`   | `(8, 16)`   | `(6, 12)`       |
-| 6  | `(6, 10)`   | `(6, 12)`   | `(6, 14)`   | `(4, 8)`        |
-| 4  | `(4, 8)`    | `(4, 10)`   | `(4, 12)`   | `(2, 6)`        |
-| 2  | `(2, 4)`    | `(2, 6)`    | `(2, 8)`    | `(1, 4)`        |
+**`(k, n)` per-MCS table — see §4.1 row table.** `(k, n)` is a
+deterministic per-MCS lookup against the radio profile's
+`fec_table`. Both `k` (block size) and `n` (parity count) are
+chosen at profile-load time per the rules:
 
-The `k=8` band matches master.cfg `[video]`'s existing floor of
-`(k=8, n=12)` and is the steady-state at MCS 6–7.
+- **`k` is sized for bitrate**, so block-fill time
+  (`k × MTU × 8 / bitrate`) stays in the 5–10 ms band at every
+  row. MCS 0/1/2 share `k = 2` because MCS 0's 1.5 Mbps bitrate
+  needs the smallest possible block to keep block-fill latency
+  reasonable.
+- **`n` is sized for the row's link quality.** Lower MCS = noisier
+  link = richer parity. Default profile spans 60 % redundancy at
+  MCS 0/1/2 down to 17 % at MCS 7.
 
-**Why Step 3 drops `k` (not just raises `n` further).** Once
-loss has escalated to the `n_max` row of a band and is still
-non-zero, the channel is too lossy for parity expansion alone;
-reducing `k` (i.e. the data-per-block ratio) buys finer-grained
-recovery. Step 3 is the transition into the next-lower band —
-typically the next MCS-row change follows it within seconds.
+Both move only when MCS crosses a row, never per-tick.
+
+**MCS 0/1/2 survival-band sharing.** All three rows carry
+`(k=2, n=5)`. When the leading loop bounces around inside that
+band during fade recovery, the decision packet's `(k, n)` is
+unchanged, so the drone applier's idempotent diff against
+`last_radio` skips the `CMD_SET_FEC` write entirely. Net
+`CMD_SET_FEC` count for an in-band MCS bounce: zero.
 
 **Band boundary crossings.** When the leading loop changes MCS
-row and the new row's preferred `k` differs from the current
-`k`, the trailing loop issues a `CMD_SET_FEC` to rebase at the
-new band's floor (or nearest equivalent protection level). Cost:
-one 1C refresh (~12 ms stall + (D−1) blocks discarded). With
-hysteresis on the leading loop, MCS-row changes are seconds
-apart at worst, so band crossings are not a busy path.
+row across a band where `(k, n)` differs (e.g. MCS 2 → MCS 3
+crosses from `(2, 5)` to `(4, 7)`), the decision packet carries
+the new row's `(k, n)` and the drone applier issues one
+`CMD_SET_FEC` — typical cost: one 1C refresh (~12 ms stall +
+(D−1) blocks discarded). With `min_change_interval_ms_radio`
+rate-limiting MCS changes to ≥ 500 ms apart, band crossings are
+at worst 2 Hz — well below the 5 Hz threshold where the bench
+saw stalls compound non-linearly.
 
 **Interleaver depth ladder.** Ceilings per the FPV latency
 budget in
@@ -920,10 +953,10 @@ at `(k=8, n=12)` adds ~12 ms; depth 3 total latency ~37 ms at
 the reference operating point — matches the `(k=8, n=14) d=3 =
 37 ms` row in §4.2's table, under the 50 ms cap.
 
-**Within a protective escalation, which FEC knob moves?**
+**Depth — the only knob the trailing loop still moves.** Since
+`(k, n)` is now a per-MCS lookup, the trailing loop's only
+runtime-adjustable knob is the interleaver depth:
 
-- `burst_rate` low (< 1 burst-recovery / s on the EWMA) → raise
-  `n`. Losses are uniform; FEC parity budget is the right answer.
 - `burst_rate` rising AND `holdoff_rate > 0` → raise depth.
   Losses clumping + RX missing deadlines = interleaver is sized
   too small. *(Refinement trigger; only valid once `depth >= 2`
@@ -938,13 +971,12 @@ the reference operating point — matches the `(k=8, n=14) d=3 =
   interleaver could disperse). Once depth ≥ 2 the interleaver is
   engaged, the original counters become live, and the refinement
   trigger takes over.
-- Both signals present → raise both one step.
 
-**On step-down** (multiple consecutive windows with
-`residual_loss_w == 0` *and* rising `rssi`), lower depth first
-(reclaims the most latency), then lower `n`. Never lower depth
-and `n` in the same tick. The leading loop drives its own
-step-up (MCS/bitrate) independently via §4.1's hysteresis.
+**On step-down** (`clean_windows_for_depth_stepdown` consecutive
+windows with `residual_loss_w == 0`), lower depth one step at a
+time. The leading loop drives its own step-up (MCS/bitrate)
+independently via §4.1's hysteresis, and `(k, n)` follows the
+new MCS row deterministically.
 
 ### Why the controller cadence can be fast (1C design)
 
@@ -1299,6 +1331,10 @@ cooldown:
   min_change_interval_ms_depth: 200   # cooldown on depth
   min_change_interval_ms_radio: 500   # cooldown on CMD_SET_RADIO (MCS)
   min_change_interval_ms_cross: 50    # between a SET_FEC and SET_DEPTH
+# These defaults are validated empirically in
+# `docs/knob-cadence-bench.md`: MCS thrash hurts the control
+# plane (RTT), FEC thrash hurts the data plane (drift / frame
+# stalls), and the two compound non-linearly above ~5 Hz.
 
 # IDR throttle is enforced by the drone applier (§10 / drone
 # config min_idr_interval_ms). The GS emits IDR requests freely

@@ -66,12 +66,22 @@ string works.)
 Run the controller:
 
 ```bash
-dynamic-link-gs --config /etc/dynamic-link/gs.yaml --log-file /var/log/dl.log
+dynamic-link-gs --config /etc/dynamic-link/gs.yaml --log-dir /var/log/dynamic-link/flights
 ```
 
+The service auto-rotates per flight: each time the drone reconnects
+(non-empty `rx_ant_stats` after a quiet period) it opens a fresh
+`flight-NNNN/` subdirectory holding `gs.jsonl`, `gs.verbose.jsonl`,
+`latency.jsonl`, `video_rtp.jsonl`, and a `flight.json` manifest. After
+`debug.flight_rotation.gap_seconds` of empty rx (default 10 s — drone
+power-off / battery swap), the directory is closed and writes pause
+until the next reconnect. `gs/tools/dl_report.py` consumes one such
+directory directly. Omit `--log-dir` to mirror decisions to stdout
+instead (useful for `--replay` smoke tests).
+
 Observer mode (Phase 0 behaviour — the default with `enabled: false`):
-decisions are computed and logged but never sent. Tail
-`/var/log/dl.log` to watch the policy engine work.
+decisions are computed and logged but never sent. Tail the latest
+`flight-*/gs.jsonl` to watch the policy engine work.
 
 End-to-end mode (flip `enabled: true` in gs.yaml): every decision is
 also serialised onto the wfb-ng tunnel stream and the drone applies it.
@@ -80,7 +90,7 @@ Replay a captured JSON stream offline:
 
 ```bash
 nc 127.0.0.1 8103 > capture.jsonl     # capture once from a flying wfb-ng
-dynamic-link-gs --config conf/gs.yaml.sample --replay capture.jsonl --log-file /tmp/dl.log
+dynamic-link-gs --config conf/gs.yaml.sample --replay capture.jsonl --log-dir /tmp/dl-flights
 ```
 
 ## Drone install and run

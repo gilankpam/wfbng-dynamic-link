@@ -56,7 +56,7 @@ wfb-ng/             Reference checkout (GITIGNORED — not our code)
 | Run C unit tests | `make -C drone test` |
 | Build C binaries | `make -C drone` → `drone/build/dl-applier`, `dl-inject` |
 | Cross-compile for ARM | `make -C drone CROSS_COMPILE=arm-linux-gnueabihf-` |
-| Smoke the GS service on a capture | `python3 -m dynamic_link.service --config conf/gs.yaml.sample --replay capture.jsonl --log-file /tmp/dl.log` |
+| Smoke the GS service on a capture | `python3 -m dynamic_link.service --config conf/gs.yaml.sample --replay capture.jsonl --log-dir /tmp/dl-flights` |
 | Smoke dl-inject | `drone/build/dl-inject --target 127.0.0.1:5800 --mcs 5 --bandwidth 20 --tx-power 18 --k 8 --n 14 --depth 2 --bitrate 12000 --fps 60` |
 | Dry-run dl-inject (hex bytes) | `drone/build/dl-inject --dry-run --mcs 5 ...` |
 

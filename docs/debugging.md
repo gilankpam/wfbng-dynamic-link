@@ -79,20 +79,26 @@ mounted, dl_dbg becomes a no-op and the applier keeps running.
 
 ### CLI flags (GS)
 
-The service writes its log files where the existing `--log-file`
-and `--verbose-log-file` flags point. Phase 3 adds two more:
+A single `--log-dir` flag drives all four streams plus per-flight
+rotation:
 
 ```
 dynamic-link-gs --config /etc/dynamic-link/gs.yaml \
-    --log-file         /var/log/dynamic-link/gs.jsonl \
-    --verbose-log-file /var/log/dynamic-link/gs.verbose.jsonl \
-    --latency-log-file /var/log/dynamic-link/latency.jsonl \
-    --video-rtp-log-file /var/log/dynamic-link/video_rtp.jsonl
+    --log-dir /var/log/dynamic-link/flights
 ```
 
-If `debug.latency_log: true` is set but `--latency-log-file` isn't
-supplied, the service warns and skips the latency log. Same for
-`video_rtp.jsonl`.
+The service opens `flight-NNNN/` subdirectories on each drone reconnect
+and closes the current one after `debug.flight_rotation.gap_seconds`
+of empty `rx_ant_stats` (drone power-off / battery swap). Each flight
+directory holds `gs.jsonl`, `gs.verbose.jsonl`, `latency.jsonl`,
+`video_rtp.jsonl`, and a `flight.json` manifest with start/stop
+timestamps and the close reason. `gs/tools/dl_report.py` consumes one
+flight directory at a time.
+
+If `debug.latency_log: true` or `debug.video_tap: true` is set but
+`--log-dir` isn't supplied, the service warns and skips the
+corresponding stream — the streams are only persisted when a flight
+directory is open.
 
 ## Post-flight workflow
 

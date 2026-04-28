@@ -172,10 +172,29 @@ itself.
    2/2.5 work (partial cover keeps `rx_ant_stats` non-empty on the
    uncovered antennas).
 
-## Why this is parked
+## Status: implemented (2026-04-28)
 
-The MCS-on-SNR + starvation + post-drop-hold work just landed; field
-testing those takes priority. Per-flight rotation is operationally
-nice-to-have; a single concatenated `gs.jsonl` is still usable for
-post-flight analysis with `jq` filters on timestamps. Revisit when
-flight cadence picks up and the unsplit logs become unwieldy.
+Shipped via Option C (rx-stream-gap heuristic). Lives at
+`gs/dynamic_link/flight_log.py` (`FlightDirRotator`); tests at
+`tests/test_flight_log.py`.
+
+**Divergence from the sketch above:** directory-per-flight rather
+than filename-prefixed file-per-flight. Each flight is a self-contained
+bundle dir (`flight-NNNN/`) holding all four JSONL streams and a
+`flight.json` manifest, matching what `gs/tools/dl_report.py` already
+consumes (and what the operator was producing manually as
+`debug-flight2/` etc.).
+
+**Naming:** incremental `flight-NNNN/` (4-digit, zero-padded), not
+GS-wall-clock — the GS box has no NTP guarantee at boot, and the
+counter resumes from disk by scanning existing dirs at startup.
+
+**Idle behavior:** writes are dropped entirely between flights (rather
+than spilling to a `bench/` dir). Continuing to log when
+`rx_ant_stats` is empty just records ghost RSSI/SNR from the last
+received packet — see `signals.py:135–137` — so dropping is the
+honest signal.
+
+**CLI:** the four `--log-file` / `--verbose-log-file` /
+`--latency-log-file` / `--video-rtp-log-file` flags were removed;
+a single `--log-dir DIR` replaces them.
