@@ -4,7 +4,8 @@ Adaptive link controller for wfb-ng — separate repo, pure consumer of
 wfb-ng's already-stable interfaces. See `docs/dynamic-link-design.md` for
 the full design. Implementation notes per phase live at
 `docs/phase0-implementation.md` (GS observer), `docs/phase1-implementation.md`
-(drone applier), `docs/phase2-implementation.md` (end-to-end wiring).
+(drone applier), `docs/phase2-implementation.md` (end-to-end wiring),
+`docs/phase3-implementation.md` (post-flight debug suite).
 
 Two components:
 
@@ -23,7 +24,8 @@ Two components:
 | 0 | GS observer (log-only) | ✅ |
 | 1 | Drone `dl-applier` + `dl-inject` CLI | ✅ |
 | 2 | GS → drone wire + drone → GS MAVLink status + oscillation detector | ✅ |
-| 3 | Airframe tuning + flight validation | pending |
+| 3 | Post-flight debug suite (timesync, latency log, RTP video tap, drone SD failure log, dev tools) | ✅ |
+| 4 | Airframe tuning + flight validation | pending |
 
 Through Phase 2 the end-to-end path works: flip `enabled: true` in
 `gs.yaml` and the GS starts shipping decisions to the drone over
@@ -132,6 +134,15 @@ in the code: `sendto()` on one side, `recvfrom()` on the other; the
 kernel routes via wfb-ng's `gs-wfb` / `drone-wfb` TUN interfaces.
 Details in `docs/phase2-implementation.md`.
 
+## Debugging
+
+Phase 3 adds a post-flight debug suite — clock-aligned cross-side
+timeline, control-plane RTT log, per-frame RTP/H.265 latency-drift
+metrics, and an SD-card failure log on the drone. Production
+deploys leave it off; flip `debug.enabled: true` in `gs.yaml` and
+`debug_enable = 1` in `drone.conf` for a debug flight. Operator
+how-to lives at [`docs/debugging.md`](docs/debugging.md).
+
 ## Status channel (drone → GS)
 
 Piggybacks on wfb-ng's existing `mavlink` stream. The drone applier
@@ -182,6 +193,17 @@ gs/dynamic_link/         Python package
   return_link.py         Phase 2: UDP writer to drone TUN IP
   oscillation.py         Phase 2: failsafe 2 (GS-side)
   mavlink_status.py      Phase 2: drone → GS STATUSTEXT reader
+  debug_config.py        Phase 3: feature-flag resolver
+  timesync.py            Phase 3: Cristian + EWMA offset estimator
+  tunnel_listener.py     Phase 3: async UDP listener for PONGs
+  latency_sink.py        Phase 3: latency.jsonl writer
+  video_tap.py           Phase 3: passive RTP/H.265 video tap
+
+gs/tools/                Dev-workstation post-flight tools (Phase 3)
+  dl_replay.py           Replay GS verbose.jsonl to a bench drone
+  dl_events_diff.py      Diff two SD failure logs
+  dl_review.py           Unified-timeline viewer
+  dl-bundle              Tar GS-side logs into a flight bundle
 
 drone/
   Makefile               Native + CROSS_COMPILE build
@@ -197,6 +219,7 @@ drone/
     dl_backend_enc.{c,h}    Raw HTTP GET to majestic/waybeam
     dl_osd.{c,h}         /tmp/MSPOSD.msg writer (§4B)
     dl_mavlink.{c,h}     Phase 2: MAVLink v1 STATUSTEXT emitter
+    dl_dbg.{c,h}         Phase 3: SD-card JSONL failure log
     dl_log.{c,h}         Tiny level-based logger (syslog + stderr)
     vendored/
       tx_cmd.h           Pinned copy of wfb-ng's control protocol

@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# dl-bundle — package a flight's GS-side debug logs into a tarball.
+#
+# Pure GS-side: the drone's failure log lives on the SD card and is
+# extracted physically. dl-review then takes both inputs (this tarball
+# + the SD log) and joins them on the unified timeline.
+#
+# Defaults assume the deploy-script log paths
+# (/var/log/dynamic-link/...) but the LOG_DIR override lets you bundle
+# from a non-standard location, e.g. a copy already pulled to a dev
+# workstation.
+set -euo pipefail
+
+LOG_DIR="${LOG_DIR:-/var/log/dynamic-link}"
+OUT_DIR="${OUT_DIR:-.}"
+TAG="${TAG:-flight-$(date -u +%Y%m%dT%H%M%SZ)}"
+
+usage() {
+    cat <<EOF >&2
+Usage: dl-bundle [TAG]
+
+Environment overrides:
+  LOG_DIR  source dir for GS logs (default $LOG_DIR)
+  OUT_DIR  destination dir for the tarball (default $OUT_DIR)
+  TAG      basename for the tarball (default flight-<UTC ISO>)
+
+Bundles, if present:
+  - gs.jsonl              (event log, knob changes)
+  - gs.verbose.jsonl      (per-tick log)
+  - latency.jsonl         (Pillar B.1 control-plane RTT)
+  - video_rtp.jsonl       (Pillar B.2 per-frame RTP)
+
+Drone SD log is NOT included — pass it separately to dl-review.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+if [[ ! -d "$LOG_DIR" ]]; then
+    echo "dl-bundle: LOG_DIR=$LOG_DIR does not exist" >&2
+    exit 2
+fi
+
+OUT="$OUT_DIR/$TAG.tar.gz"
+
+# Grab files that exist; tar would error on missing inputs.
+files=()
+for f in gs.jsonl gs.verbose.jsonl latency.jsonl video_rtp.jsonl; do
+    if [[ -f "$LOG_DIR/$f" ]]; then
+        files+=("$f")
+    fi
+done
+
+if [[ ${#files[@]} -eq 0 ]]; then
+    echo "dl-bundle: no log files found in $LOG_DIR" >&2
+    exit 2
+fi
+
+tar -C "$LOG_DIR" -czf "$OUT" "${files[@]}"
+echo "$OUT"

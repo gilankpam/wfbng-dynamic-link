@@ -158,8 +158,22 @@ static int http_get(const char *host, uint16_t port, const char *path) {
      * is the right place for these. */
     dl_log_warn("enc: http %d from %s:%u for %s",
                 status, host, port, path);
+    /* Find the start of the body (after the \r\n\r\n header
+     * separator). If we don't find it, fall back to the raw reply —
+     * something is better than nothing, and the status code is
+     * already captured separately. */
+    const char *body = reply;
+    size_t body_len = reply_len;
+    for (size_t i = 0; i + 3 < reply_len; ++i) {
+        if (reply[i] == '\r' && reply[i+1] == '\n' &&
+            reply[i+2] == '\r' && reply[i+3] == '\n') {
+            body = reply + i + 4;
+            body_len = reply_len - (i + 4);
+            break;
+        }
+    }
     dl_dbg_emit_http("ENC_RESPONSE_BAD", DL_DBG_SEV_WARN,
-                     status, reply, reply_len);
+                     status, body, body_len);
     return 0;
 }
 
