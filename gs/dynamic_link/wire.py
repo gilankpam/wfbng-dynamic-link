@@ -40,6 +40,15 @@ PAYLOAD_SIZE     = 28
 ON_WIRE_SIZE     = 32
 FLAG_IDR_REQUEST = 0x01
 
+# Phase 3 timesync packets carried over the same tunnel UDP socket.
+PING_MAGIC          = 0x444C5047    # 'DLPG'
+PING_PAYLOAD_SIZE   = 20
+PING_ON_WIRE_SIZE   = 24
+
+PONG_MAGIC          = 0x444C504E    # 'DLPN'
+PONG_PAYLOAD_SIZE   = 36
+PONG_ON_WIRE_SIZE   = 40
+
 
 def _crc32(data: bytes) -> int:
     """Reflected CRC-32 (IEEE 802.3 / zlib-compatible) — same as
@@ -146,3 +155,120 @@ def _encode_raw(
 def encode(decision: Decision, sequence: int) -> bytes:
     """Stateless convenience — encode with an explicit sequence."""
     return Encoder(seq=sequence).encode(decision, sequence=sequence)
+
+
+# ---- Phase 3 ping/pong --------------------------------------------------
+#
+# DL_PING (GS→drone, 24 bytes):
+#    0  4  magic = PING_MAGIC ('DLPG')
+#    4  1  version
+#    5  1  flags
+#    6  2  _pad
+#    8  4  gs_seq
+#   12  8  gs_mono_us
+#   20  4  crc32(bytes[0..19])
+#
+# DL_PONG (drone→GS, 40 bytes):
+#    0  4  magic = PONG_MAGIC ('DLPN')
+#    4  1  version
+#    5  1  flags
+#    6  2  _pad
+#    8  4  gs_seq
+#   12  8  gs_mono_us_echo
+#   20  8  drone_mono_recv_us
+#   28  8  drone_mono_send_us
+#   36  4  crc32(bytes[0..35])
+
+
+@dataclass(frozen=True)
+class Ping:
+    gs_seq: int
+    gs_mono_us: int
+    flags: int = 0
+
+
+@dataclass(frozen=True)
+class Pong:
+    gs_seq: int
+    gs_mono_us_echo: int
+    drone_mono_recv_us: int
+    drone_mono_send_us: int
+    flags: int = 0
+
+
+def encode_ping(p: Ping) -> bytes:
+    payload = bytearray(PING_PAYLOAD_SIZE)
+    struct.pack_into(">I", payload, 0, PING_MAGIC)
+    payload[4] = VERSION & 0xFF
+    payload[5] = p.flags & 0xFF
+    struct.pack_into(">I", payload, 8,  p.gs_seq & 0xFFFFFFFF)
+    struct.pack_into(">Q", payload, 12, p.gs_mono_us & 0xFFFFFFFFFFFFFFFF)
+    crc = _crc32(bytes(payload))
+    return bytes(payload) + struct.pack(">I", crc)
+
+
+def decode_ping(buf: bytes) -> Ping:
+    if len(buf) < PING_ON_WIRE_SIZE:
+        raise ValueError("ping: short buffer")
+    (magic,) = struct.unpack_from(">I", buf, 0)
+    if magic != PING_MAGIC:
+        raise ValueError(f"ping: bad magic 0x{magic:08x}")
+    if buf[4] != VERSION:
+        raise ValueError(f"ping: bad version {buf[4]}")
+    crc_wire = struct.unpack_from(">I", buf, 20)[0]
+    crc_calc = _crc32(bytes(buf[:PING_PAYLOAD_SIZE]))
+    if crc_wire != crc_calc:
+        raise ValueError("ping: bad crc")
+    return Ping(
+        flags=buf[5],
+        gs_seq=struct.unpack_from(">I", buf, 8)[0],
+        gs_mono_us=struct.unpack_from(">Q", buf, 12)[0],
+    )
+
+
+def encode_pong(p: Pong) -> bytes:
+    payload = bytearray(PONG_PAYLOAD_SIZE)
+    struct.pack_into(">I", payload, 0, PONG_MAGIC)
+    payload[4] = VERSION & 0xFF
+    payload[5] = p.flags & 0xFF
+    struct.pack_into(">I", payload, 8,  p.gs_seq & 0xFFFFFFFF)
+    struct.pack_into(">Q", payload, 12, p.gs_mono_us_echo & 0xFFFFFFFFFFFFFFFF)
+    struct.pack_into(">Q", payload, 20, p.drone_mono_recv_us & 0xFFFFFFFFFFFFFFFF)
+    struct.pack_into(">Q", payload, 28, p.drone_mono_send_us & 0xFFFFFFFFFFFFFFFF)
+    crc = _crc32(bytes(payload))
+    return bytes(payload) + struct.pack(">I", crc)
+
+
+def decode_pong(buf: bytes) -> Pong:
+    if len(buf) < PONG_ON_WIRE_SIZE:
+        raise ValueError("pong: short buffer")
+    (magic,) = struct.unpack_from(">I", buf, 0)
+    if magic != PONG_MAGIC:
+        raise ValueError(f"pong: bad magic 0x{magic:08x}")
+    if buf[4] != VERSION:
+        raise ValueError(f"pong: bad version {buf[4]}")
+    crc_wire = struct.unpack_from(">I", buf, 36)[0]
+    crc_calc = _crc32(bytes(buf[:PONG_PAYLOAD_SIZE]))
+    if crc_wire != crc_calc:
+        raise ValueError("pong: bad crc")
+    return Pong(
+        flags=buf[5],
+        gs_seq=struct.unpack_from(">I", buf, 8)[0],
+        gs_mono_us_echo=struct.unpack_from(">Q", buf, 12)[0],
+        drone_mono_recv_us=struct.unpack_from(">Q", buf, 20)[0],
+        drone_mono_send_us=struct.unpack_from(">Q", buf, 28)[0],
+    )
+
+
+def peek_kind(buf: bytes) -> str:
+    """Return 'decision' | 'ping' | 'pong' | 'unknown' based on the magic."""
+    if len(buf) < 4:
+        return "unknown"
+    (magic,) = struct.unpack_from(">I", buf, 0)
+    if magic == MAGIC:
+        return "decision"
+    if magic == PING_MAGIC:
+        return "ping"
+    if magic == PONG_MAGIC:
+        return "pong"
+    return "unknown"

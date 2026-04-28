@@ -111,3 +111,82 @@ DL_TEST(test_wire_signed_tx_power) {
     DL_ASSERT_EQ(dl_wire_decode(buf, sizeof(buf), &r), DL_DECODE_OK);
     DL_ASSERT_EQ(r.tx_power_dBm, -5);
 }
+
+DL_TEST(test_wire_ping_round_trip) {
+    dl_ping_t p = { .flags = 0, .gs_seq = 0xCAFEBABEu,
+                    .gs_mono_us = 0x0102030405060708ull };
+    uint8_t buf[DL_PING_ON_WIRE_SIZE];
+    DL_ASSERT_EQ(dl_wire_encode_ping(&p, buf, sizeof(buf)),
+                 DL_PING_ON_WIRE_SIZE);
+
+    /* Magic at [0..3] = 'DLPG' = 0x44 0x4C 0x50 0x47 */
+    DL_ASSERT_EQ(buf[0], 0x44);
+    DL_ASSERT_EQ(buf[1], 0x4C);
+    DL_ASSERT_EQ(buf[2], 0x50);
+    DL_ASSERT_EQ(buf[3], 0x47);
+
+    /* gs_mono_us at [12..19] big-endian */
+    DL_ASSERT_EQ(buf[12], 0x01);
+    DL_ASSERT_EQ(buf[19], 0x08);
+
+    dl_ping_t r;
+    DL_ASSERT_EQ(dl_wire_decode_ping(buf, sizeof(buf), &r), DL_DECODE_OK);
+    DL_ASSERT_EQ(r.gs_seq, p.gs_seq);
+    DL_ASSERT_EQ(r.gs_mono_us, p.gs_mono_us);
+}
+
+DL_TEST(test_wire_pong_round_trip) {
+    dl_pong_t p = {
+        .flags = 0,
+        .gs_seq = 7,
+        .gs_mono_us_echo    = 1000000ull,
+        .drone_mono_recv_us = 2000000ull,
+        .drone_mono_send_us = 2000050ull,
+    };
+    uint8_t buf[DL_PONG_ON_WIRE_SIZE];
+    DL_ASSERT_EQ(dl_wire_encode_pong(&p, buf, sizeof(buf)),
+                 DL_PONG_ON_WIRE_SIZE);
+
+    /* Magic 'DLPN' */
+    DL_ASSERT_EQ(buf[0], 0x44);
+    DL_ASSERT_EQ(buf[1], 0x4C);
+    DL_ASSERT_EQ(buf[2], 0x50);
+    DL_ASSERT_EQ(buf[3], 0x4E);
+
+    dl_pong_t r;
+    DL_ASSERT_EQ(dl_wire_decode_pong(buf, sizeof(buf), &r), DL_DECODE_OK);
+    DL_ASSERT_EQ(r.gs_seq, p.gs_seq);
+    DL_ASSERT_EQ(r.gs_mono_us_echo, p.gs_mono_us_echo);
+    DL_ASSERT_EQ(r.drone_mono_recv_us, p.drone_mono_recv_us);
+    DL_ASSERT_EQ(r.drone_mono_send_us, p.drone_mono_send_us);
+}
+
+DL_TEST(test_wire_peek_kind_dispatches) {
+    dl_decision_t d = {0};
+    uint8_t dbuf[DL_WIRE_ON_WIRE_SIZE];
+    dl_wire_encode(&d, dbuf, sizeof(dbuf));
+    DL_ASSERT_EQ(dl_wire_peek_kind(dbuf, sizeof(dbuf)), DL_PKT_DECISION);
+
+    dl_ping_t p = {0};
+    uint8_t pbuf[DL_PING_ON_WIRE_SIZE];
+    dl_wire_encode_ping(&p, pbuf, sizeof(pbuf));
+    DL_ASSERT_EQ(dl_wire_peek_kind(pbuf, sizeof(pbuf)), DL_PKT_PING);
+
+    dl_pong_t pong = {0};
+    uint8_t obuf[DL_PONG_ON_WIRE_SIZE];
+    dl_wire_encode_pong(&pong, obuf, sizeof(obuf));
+    DL_ASSERT_EQ(dl_wire_peek_kind(obuf, sizeof(obuf)), DL_PKT_PONG);
+
+    uint8_t junk[8] = { 0xDE, 0xAD, 0xBE, 0xEF };
+    DL_ASSERT_EQ(dl_wire_peek_kind(junk, sizeof(junk)), DL_PKT_UNKNOWN);
+    DL_ASSERT_EQ(dl_wire_peek_kind(junk, 2), DL_PKT_UNKNOWN);
+}
+
+DL_TEST(test_wire_ping_rejects_bad_crc) {
+    dl_ping_t p = { .gs_seq = 1, .gs_mono_us = 1 };
+    uint8_t buf[DL_PING_ON_WIRE_SIZE];
+    dl_wire_encode_ping(&p, buf, sizeof(buf));
+    buf[10] ^= 0xFF;
+    dl_ping_t r;
+    DL_ASSERT_EQ(dl_wire_decode_ping(buf, sizeof(buf), &r), DL_DECODE_BAD_CRC);
+}

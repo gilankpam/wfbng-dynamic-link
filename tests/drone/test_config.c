@@ -107,3 +107,67 @@ DL_TEST(test_config_bad_value_is_error) {
     DL_ASSERT_EQ(dl_config_load(path, &c), -1);
     unlink(path);
 }
+
+DL_TEST(test_config_debug_defaults_off) {
+    dl_config_t c;
+    dl_config_defaults(&c);
+    DL_ASSERT(!c.debug_enable);
+    DL_ASSERT_EQ(c.dbg_log_enable, -1);
+    DL_ASSERT_STR_EQ(c.gs_tunnel_addr, "10.5.0.1");
+    DL_ASSERT_EQ(c.gs_tunnel_port, 5801);
+    DL_ASSERT_STR_EQ(c.dbg_log_dir, "/sdcard/dl-events");
+    DL_ASSERT_EQ(c.dbg_max_bytes, 32u * 1024u * 1024u);
+    DL_ASSERT(!c.dbg_fsync_each);
+}
+
+DL_TEST(test_config_dbg_log_resolves_follow_master) {
+    dl_config_t c;
+    dl_config_defaults(&c);
+    c.dbg_log_enable = -1;
+    c.debug_enable = false;
+    DL_ASSERT(!dl_config_dbg_log_resolved(&c));
+    c.debug_enable = true;
+    DL_ASSERT(dl_config_dbg_log_resolved(&c));
+}
+
+DL_TEST(test_config_dbg_log_resolves_force_off) {
+    dl_config_t c;
+    dl_config_defaults(&c);
+    c.debug_enable = true;
+    c.dbg_log_enable = 0;
+    DL_ASSERT(!dl_config_dbg_log_resolved(&c));
+}
+
+DL_TEST(test_config_dbg_log_resolves_force_on) {
+    dl_config_t c;
+    dl_config_defaults(&c);
+    c.debug_enable = false;
+    c.dbg_log_enable = 1;
+    DL_ASSERT(dl_config_dbg_log_resolved(&c));
+}
+
+DL_TEST(test_config_parses_debug_block) {
+    const char *body =
+        "debug_enable   = 1\n"
+        "dbg_log_enable = 0\n"
+        "gs_tunnel_addr = 10.0.0.5\n"
+        "gs_tunnel_port = 5901\n"
+        "dbg_log_dir    = /mnt/sd/events\n"
+        "dbg_max_bytes  = 65536\n"
+        "dbg_fsync_each = 1\n";
+    char path[64];
+    DL_ASSERT_EQ(write_tmp(body, path, sizeof(path)), 0);
+    dl_config_t c;
+    dl_config_defaults(&c);
+    DL_ASSERT_EQ(dl_config_load(path, &c), 0);
+    DL_ASSERT(c.debug_enable);
+    DL_ASSERT_EQ(c.dbg_log_enable, 0);
+    DL_ASSERT_STR_EQ(c.gs_tunnel_addr, "10.0.0.5");
+    DL_ASSERT_EQ(c.gs_tunnel_port, 5901);
+    DL_ASSERT_STR_EQ(c.dbg_log_dir, "/mnt/sd/events");
+    DL_ASSERT_EQ(c.dbg_max_bytes, 65536);
+    DL_ASSERT(c.dbg_fsync_each);
+    /* tristate=0 forces off even if master says on */
+    DL_ASSERT(!dl_config_dbg_log_resolved(&c));
+    unlink(path);
+}

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from typing import TextIO
+from typing import Callable, TextIO
 
 from .decision import Decision
 
@@ -19,6 +19,11 @@ class LogSink:
     receives every tick — a debug/replay log. Either or both may
     be set; when neither is set the sink is a no-op.
 
+    `extras_provider`, when set, is called on each write and the
+    returned dict is merged into the JSON output. Phase 3 uses this
+    to stamp `offset_us` / `offset_stddev_us` from the timesync
+    estimator onto every log line.
+
     JSON is serialised once per write, so dual output is cheap.
     """
 
@@ -26,14 +31,21 @@ class LogSink:
         self,
         events_stream: TextIO | None = None,
         verbose_stream: TextIO | None = None,
+        extras_provider: Callable[[], dict] | None = None,
     ):
         self._events_stream = events_stream
         self._verbose_stream = verbose_stream
+        self._extras_provider = extras_provider
 
     def write(self, decision: Decision) -> None:
         if self._events_stream is None and self._verbose_stream is None:
             return
-        line = json.dumps(decision.to_dict(), separators=(",", ":")) + "\n"
+        record = decision.to_dict()
+        if self._extras_provider is not None:
+            extras = self._extras_provider()
+            if extras:
+                record.update(extras)
+        line = json.dumps(record, separators=(",", ":")) + "\n"
         if self._events_stream is not None and decision.knobs_changed:
             self._events_stream.write(line)
             self._events_stream.flush()

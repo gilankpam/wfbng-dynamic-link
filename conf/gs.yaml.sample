@@ -135,3 +135,22 @@ safe_defaults:
   depth: 1
   mcs: 1
   bitrate_kbps: 2000
+
+# ---- Debug suite (Phase 3) -----------------------------------------
+# Forensic tooling for post-flight latency / failure analysis.
+# Production flights pay zero cost when `debug.enabled: false`.
+#
+# - ping_pong:    bidirectional PING/PONG over the tunnel for the
+#                 drone↔GS clock-offset estimate.
+# - latency_log:  latency.jsonl with per-PONG RTT samples + offset.
+#                 Requires ping_pong (auto-disabled otherwise).
+# - video_tap:    passive RTP/H.265 tap on `video_tap_port` for
+#                 per-frame latency-drift / jitter / loss metrics.
+#
+# Per-feature flags accept null (= follow master), true, or false.
+debug:
+  enabled: false
+  ping_pong: null
+  latency_log: null
+  video_tap: null
+  video_tap_port: 5600

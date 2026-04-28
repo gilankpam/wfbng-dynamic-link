@@ -54,6 +54,41 @@ static uint64_t now_monotonic_ms(void) {
     return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)ts.tv_nsec / 1000000ull;
 }
 
+static uint64_t now_monotonic_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
+}
+
+/* Open a connected UDP socket aimed at the GS for drone→GS tunnel
+ * traffic (PONG packets). Returns -1 on failure (logged); a missing
+ * socket is non-fatal and disables PONG emission for the session. */
+static int open_gs_tunnel_socket(const dl_config_t *cfg) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        dl_log_warn("gs_tunnel: socket: %s", strerror(errno));
+        return -1;
+    }
+    struct sockaddr_in dst = {0};
+    dst.sin_family = AF_INET;
+    dst.sin_port = htons(cfg->gs_tunnel_port);
+    if (inet_pton(AF_INET, cfg->gs_tunnel_addr, &dst.sin_addr) != 1) {
+        dl_log_warn("gs_tunnel: bad addr %s", cfg->gs_tunnel_addr);
+        close(fd);
+        return -1;
+    }
+    if (connect(fd, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
+        dl_log_warn("gs_tunnel: connect %s:%u: %s",
+                    cfg->gs_tunnel_addr, cfg->gs_tunnel_port,
+                    strerror(errno));
+        close(fd);
+        return -1;
+    }
+    dl_log_info("gs_tunnel: ready %s:%u",
+                cfg->gs_tunnel_addr, cfg->gs_tunnel_port);
+    return fd;
+}
+
 static int open_listen_socket(const dl_config_t *cfg) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) {
@@ -165,6 +200,15 @@ int main(int argc, char **argv) {
     int listen_fd = open_listen_socket(&cfg);
     if (listen_fd < 0) return 4;
 
+    /* GS-side tunnel endpoint for PONG (and future debug back-channel
+     * packets). Opened only when the debug suite's master switch is on;
+     * a closed socket means PINGs are silently dropped, which is fine
+     * — production never sees a PING in the first place. */
+    int gs_tunnel_fd = -1;
+    if (cfg.debug_enable) {
+        gs_tunnel_fd = open_gs_tunnel_socket(&cfg);
+    }
+
     uint32_t tick_ms = cfg.osd_update_interval_ms;
     if (cfg.health_timeout_ms / 2 < tick_ms) tick_ms = cfg.health_timeout_ms / 2;
     if (tick_ms < 100) tick_ms = 100;
@@ -210,9 +254,35 @@ int main(int argc, char **argv) {
             socklen_t slen = sizeof(src);
             ssize_t got = recvfrom(listen_fd, buf, sizeof(buf), 0,
                                    (struct sockaddr *)&src, &slen);
+            /* T2 — captured as early as possible after the kernel handed
+             * us the datagram. Used only for PING; cheap to take always. */
+            uint64_t recv_us = now_monotonic_us();
             if (got < 0) {
                 if (errno != EAGAIN && errno != EINTR) {
                     dl_log_warn("recvfrom: %s", strerror(errno));
+                }
+            } else if (dl_wire_peek_kind(buf, (size_t)got) == DL_PKT_PING) {
+                dl_ping_t ping;
+                if (dl_wire_decode_ping(buf, (size_t)got, &ping) != DL_DECODE_OK) {
+                    dl_log_debug("ping: decode failed (%zd bytes from %s:%u)",
+                                 got, inet_ntoa(src.sin_addr),
+                                 ntohs(src.sin_port));
+                } else if (gs_tunnel_fd >= 0) {
+                    dl_pong_t pong = {
+                        .flags = 0,
+                        .gs_seq = ping.gs_seq,
+                        .gs_mono_us_echo = ping.gs_mono_us,
+                        .drone_mono_recv_us = recv_us,
+                        .drone_mono_send_us = now_monotonic_us(),
+                    };
+                    uint8_t out[DL_PONG_ON_WIRE_SIZE];
+                    size_t n_out = dl_wire_encode_pong(&pong, out, sizeof(out));
+                    if (n_out > 0) {
+                        ssize_t s = send(gs_tunnel_fd, out, n_out, 0);
+                        if (s < 0) {
+                            dl_log_debug("pong: send: %s", strerror(errno));
+                        }
+                    }
                 }
             } else {
                 dl_decision_t d;
@@ -289,6 +359,7 @@ int main(int argc, char **argv) {
     dl_log_info("dl-applier shutting down");
     close(listen_fd);
     close(tick_fd);
+    if (gs_tunnel_fd >= 0) close(gs_tunnel_fd);
     dl_mavlink_close(mav);
     dl_osd_close(osd);
     dl_backend_enc_close(be);

@@ -49,6 +49,12 @@ class ReturnLink:
                 log.debug("return_link: sendto: %s", e)
             return False
 
+    def send_ping(self, packet: bytes) -> bool:
+        """Send a Phase-3 PING packet to the same drone endpoint.
+        Reuses the same UDP socket; identical error semantics as
+        :meth:`send` (counted into the same totals)."""
+        return self.send(packet)
+
     def close(self) -> None:
         try:
             self._sock.close()

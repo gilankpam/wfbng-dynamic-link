@@ -22,8 +22,9 @@ static void usage(const char *prog) {
         "         --k N --n N --depth N \\\n"
         "         --bitrate KBPS [--roi-qp QP] [--fps FPS] \\\n"
         "         [--idr] [--sequence N]\n"
+        "       %s --ping --gs-seq N --gs-mono US [--target HOST:PORT]\n"
         "       %s --dry-run ... (prints hex bytes to stdout; no send)\n",
-        prog, prog);
+        prog, prog, prog);
 }
 
 static int parse_host_port(const char *s, char *host, size_t hostlen,
@@ -55,12 +56,18 @@ int main(int argc, char **argv) {
         { "idr",       no_argument,       0, 'I' },
         { "sequence",  required_argument, 0, 's' },
         { "dry-run",   no_argument,       0, 'D' },
+        { "ping",      no_argument,       0, 'p' },
+        { "gs-seq",    required_argument, 0, 'q' },
+        { "gs-mono",   required_argument, 0, 'm' },
         { "help",      no_argument,       0, 'h' },
         { 0 }
     };
 
     const char *target = NULL;
     bool dry_run = false;
+    bool ping_mode = false;
+    uint32_t ping_gs_seq = 0;
+    uint64_t ping_gs_mono_us = 0;
     dl_decision_t d = {
         .magic = DL_WIRE_MAGIC,
         .version = DL_WIRE_VERSION,
@@ -79,7 +86,7 @@ int main(int argc, char **argv) {
     bool have_seq = false;
 
     int c;
-    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:Is:Dh",
+    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:Is:Dpq:m:h",
                             opts, NULL)) != -1) {
         switch (c) {
             case 't': target = optarg; break;
@@ -96,11 +103,55 @@ int main(int argc, char **argv) {
             case 's': explicit_seq = (uint32_t)strtoul(optarg, NULL, 10);
                       have_seq = true; break;
             case 'D': dry_run = true; break;
+            case 'p': ping_mode = true; break;
+            case 'q': ping_gs_seq = (uint32_t)strtoul(optarg, NULL, 10); break;
+            case 'm': ping_gs_mono_us = strtoull(optarg, NULL, 10); break;
             case 'h': usage(argv[0]); return 0;
             default:  usage(argv[0]); return 2;
         }
     }
     if (!target && !dry_run) { usage(argv[0]); return 2; }
+
+    if (ping_mode) {
+        dl_ping_t p = {
+            .flags = 0,
+            .gs_seq = ping_gs_seq,
+            .gs_mono_us = ping_gs_mono_us,
+        };
+        uint8_t pbuf[DL_PING_ON_WIRE_SIZE];
+        size_t pn = dl_wire_encode_ping(&p, pbuf, sizeof(pbuf));
+        if (pn != DL_PING_ON_WIRE_SIZE) {
+            fprintf(stderr, "ping encode failed\n");
+            return 3;
+        }
+        if (dry_run) {
+            for (size_t i = 0; i < pn; ++i) printf("%02x", pbuf[i]);
+            printf("\n");
+            return 0;
+        }
+        char host[128] = {0};
+        uint16_t port = 0;
+        if (parse_host_port(target, host, sizeof(host), &port) != 0) {
+            fprintf(stderr, "bad --target %s\n", target);
+            return 2;
+        }
+        int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0) { perror("socket"); return 4; }
+        struct sockaddr_in dst = {0};
+        dst.sin_family = AF_INET;
+        dst.sin_port = htons(port);
+        if (inet_pton(AF_INET, host, &dst.sin_addr) != 1) {
+            fprintf(stderr, "bad host: %s\n", host);
+            return 4;
+        }
+        ssize_t s = sendto(fd, pbuf, pn, 0,
+                           (struct sockaddr *)&dst, sizeof(dst));
+        if (s != (ssize_t)pn) { perror("sendto"); close(fd); return 5; }
+        close(fd);
+        fprintf(stderr, "sent ping seq=%u gs_mono_us=%llu -> %s:%u\n",
+                ping_gs_seq, (unsigned long long)ping_gs_mono_us, host, port);
+        return 0;
+    }
 
     char host[128] = {0};
     uint16_t port = 0;

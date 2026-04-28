@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from dynamic_link.decision import Decision
-from dynamic_link.wire import encode
+from dynamic_link.wire import Ping, encode, encode_ping
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DL_INJECT = REPO_ROOT / "drone" / "build" / "dl-inject"
@@ -116,3 +116,39 @@ def test_contract_magic_and_version():
     assert py_bytes[:4] == b"DLK1"
     # Byte 4 = version 1
     assert py_bytes[4] == 1
+
+
+def _dl_inject_ping_hex(*, gs_seq: int, gs_mono_us: int) -> bytes:
+    out = subprocess.check_output(
+        [str(DL_INJECT), "--dry-run", "--ping",
+         "--gs-seq", str(gs_seq),
+         "--gs-mono", str(gs_mono_us)],
+        text=True,
+    ).strip()
+    # PING is 24 bytes → 48 hex chars.
+    assert len(out) == 48, f"expected 48 hex chars, got {len(out)}: {out!r}"
+    return bytes.fromhex(out)
+
+
+def test_contract_ping_zero():
+    c = _dl_inject_ping_hex(gs_seq=0, gs_mono_us=0)
+    py = encode_ping(Ping(gs_seq=0, gs_mono_us=0))
+    assert c == py
+
+
+def test_contract_ping_typical():
+    c = _dl_inject_ping_hex(gs_seq=1234567, gs_mono_us=1_700_000_000_000_000)
+    py = encode_ping(Ping(gs_seq=1234567, gs_mono_us=1_700_000_000_000_000))
+    assert c == py
+
+
+def test_contract_ping_max_values():
+    c = _dl_inject_ping_hex(gs_seq=0xFFFFFFFF, gs_mono_us=(1 << 64) - 1)
+    py = encode_ping(Ping(gs_seq=0xFFFFFFFF, gs_mono_us=(1 << 64) - 1))
+    assert c == py
+
+
+def test_contract_ping_magic():
+    py = encode_ping(Ping(gs_seq=1, gs_mono_us=1))
+    assert py[:4] == b"DLPG"
+    assert py[4] == 1   # version

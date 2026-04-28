@@ -77,3 +77,24 @@ mavlink_addr     = 127.0.0.1
 mavlink_port     = 14560
 mavlink_sysid    = 250
 mavlink_compid   = 191
+
+# ---- Debug suite (Phase 3) ------------------------------------------
+# Master switch and per-feature overrides for the post-flight debug
+# tooling. Production flights leave debug_enable = 0.
+#
+# Per-feature flags use a tristate: -1 = follow debug_enable,
+# 0 = force off, 1 = force on.
+debug_enable     = 0
+dbg_log_enable   = -1
+
+# GS-side endpoint for drone→GS tunnel traffic (PONG packets, future
+# debug back-channel). Mirrors the GS's `wfb_ng.drone_addr/drone_port`
+# pair: GS at 10.5.0.1 listens on `gs_tunnel_port` for tunnel traffic.
+gs_tunnel_addr   = 10.5.0.1
+gs_tunnel_port   = 5801
+
+# SD-card failure log. Append-only JSONL. No-op if the directory is not
+# mounted/writable (logged once at startup).
+dbg_log_dir      = /sdcard/dl-events
+dbg_max_bytes    = 33554432
+dbg_fsync_each   = 0

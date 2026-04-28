@@ -54,6 +54,14 @@ void dl_config_defaults(dl_config_t *cfg) {
     cfg->mavlink_port = 14560;
     cfg->mavlink_sysid = 250;   /* unassigned range; won't collide with FC sysid=1 */
     cfg->mavlink_compid = 191;  /* MAV_COMPONENT_ID_USER1 */
+
+    cfg->debug_enable = false;
+    cfg->dbg_log_enable = -1;   /* follow master */
+    strncpy(cfg->gs_tunnel_addr, "10.5.0.1", DL_CONF_MAX_STR - 1);
+    cfg->gs_tunnel_port = 5801;
+    strncpy(cfg->dbg_log_dir, "/sdcard/dl-events", DL_CONF_MAX_STR - 1);
+    cfg->dbg_max_bytes = 32 * 1024 * 1024;
+    cfg->dbg_fsync_each = false;
 }
 
 static void trim(char *s) {
@@ -177,6 +185,13 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "mavlink_port") == 0)       SET_INT_RANGED(mavlink_port, uint16_t, 1, 65535);
         else if (strcmp(key, "mavlink_sysid") == 0)      SET_INT_RANGED(mavlink_sysid, uint8_t, 0, 255);
         else if (strcmp(key, "mavlink_compid") == 0)     SET_INT_RANGED(mavlink_compid, uint8_t, 0, 255);
+        else if (strcmp(key, "debug_enable") == 0)       SET_BOOL(debug_enable);
+        else if (strcmp(key, "dbg_log_enable") == 0)     SET_INT_RANGED(dbg_log_enable, int8_t, -1, 1);
+        else if (strcmp(key, "gs_tunnel_addr") == 0)     SET_STR(gs_tunnel_addr);
+        else if (strcmp(key, "gs_tunnel_port") == 0)     SET_INT_RANGED(gs_tunnel_port, uint16_t, 1, 65535);
+        else if (strcmp(key, "dbg_log_dir") == 0)        SET_STR(dbg_log_dir);
+        else if (strcmp(key, "dbg_max_bytes") == 0)      SET_INT_RANGED(dbg_max_bytes, uint32_t, 4096, 1 << 30);
+        else if (strcmp(key, "dbg_fsync_each") == 0)     SET_BOOL(dbg_fsync_each);
         else {
             dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
         }
@@ -237,4 +252,9 @@ int dl_config_validate(const dl_config_t *cfg) {
         rc = -1;
     }
     return rc;
+}
+
+bool dl_config_dbg_log_resolved(const dl_config_t *cfg) {
+    if (cfg->dbg_log_enable < 0) return cfg->debug_enable;
+    return cfg->dbg_log_enable != 0;
 }

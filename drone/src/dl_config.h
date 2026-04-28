@@ -64,6 +64,22 @@ typedef struct {
     uint16_t mavlink_port;
     uint8_t  mavlink_sysid;
     uint8_t  mavlink_compid;
+
+    /* ---- Debug suite (Phase 3) ---- */
+    /* Master switch. False in production. */
+    bool     debug_enable;
+    /* Per-feature override. -1 = follow master, 0 = force off, 1 = force on. */
+    int8_t   dbg_log_enable;
+
+    /* GS-side endpoint for drone→GS tunnel traffic (PONG packets;
+     * symmetric peer of `listen_addr`/`listen_port` on the GS). */
+    char     gs_tunnel_addr[DL_CONF_MAX_STR];
+    uint16_t gs_tunnel_port;
+
+    /* SD-card failure log. */
+    char     dbg_log_dir[DL_CONF_MAX_STR];
+    uint32_t dbg_max_bytes;
+    bool     dbg_fsync_each;
 } dl_config_t;
 
 /* Populate `cfg` with built-in defaults. */
@@ -79,3 +95,8 @@ int dl_config_load(const char *path, dl_config_t *cfg);
  * depth_max ≤ 8 (wfb-ng MAX_INTERLEAVE_DEPTH); depth_max > 1 implies
  * video_n_max ≤ 32. Returns 0 on success, -1 on violation (logged). */
 int dl_config_validate(const dl_config_t *cfg);
+
+/* Resolve the dbg_log feature flag against the master switch.
+ * `dbg_log_enable` is a tristate: -1 follows debug_enable, 0 forces
+ * off, 1 forces on. */
+bool dl_config_dbg_log_resolved(const dl_config_t *cfg);

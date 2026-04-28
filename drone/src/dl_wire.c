@@ -54,6 +54,26 @@ static uint32_t get_u32(const uint8_t *p) {
          | ((uint32_t)p[2] << 8)
          |  (uint32_t)p[3];
 }
+static void put_u64(uint8_t *p, uint64_t v) {
+    p[0] = (uint8_t)(v >> 56);
+    p[1] = (uint8_t)(v >> 48);
+    p[2] = (uint8_t)(v >> 40);
+    p[3] = (uint8_t)(v >> 32);
+    p[4] = (uint8_t)(v >> 24);
+    p[5] = (uint8_t)(v >> 16);
+    p[6] = (uint8_t)(v >> 8);
+    p[7] = (uint8_t)(v & 0xFF);
+}
+static uint64_t get_u64(const uint8_t *p) {
+    return ((uint64_t)p[0] << 56)
+         | ((uint64_t)p[1] << 48)
+         | ((uint64_t)p[2] << 40)
+         | ((uint64_t)p[3] << 32)
+         | ((uint64_t)p[4] << 24)
+         | ((uint64_t)p[5] << 16)
+         | ((uint64_t)p[6] << 8)
+         |  (uint64_t)p[7];
+}
 
 /* Table-free CRC-32 (IEEE 802.3). Small, slow — we process <32 bytes
  * per packet at ≤ 10 Hz, so a table buys nothing meaningful. */
@@ -124,4 +144,102 @@ dl_decode_result_t dl_wire_decode(const uint8_t *buf, size_t len,
     d->roi_qp       = buf[24];
     d->fps          = buf[25];
     return DL_DECODE_OK;
+}
+
+/* ---- Ping/pong --------------------------------------------------------
+ *
+ * DL_PING (GS→drone, 24 bytes on-wire):
+ *    0  4  magic        = DL_PING_MAGIC
+ *    4  1  version      = DL_WIRE_VERSION
+ *    5  1  flags
+ *    6  2  _pad
+ *    8  4  gs_seq
+ *   12  8  gs_mono_us
+ *   20  4  crc32(bytes[0..19])
+ *
+ * DL_PONG (drone→GS, 40 bytes on-wire):
+ *    0  4  magic        = DL_PONG_MAGIC
+ *    4  1  version      = DL_WIRE_VERSION
+ *    5  1  flags
+ *    6  2  _pad
+ *    8  4  gs_seq
+ *   12  8  gs_mono_us_echo
+ *   20  8  drone_mono_recv_us
+ *   28  8  drone_mono_send_us
+ *   36  4  crc32(bytes[0..35])
+ */
+
+size_t dl_wire_encode_ping(const dl_ping_t *p, uint8_t *buf, size_t buflen) {
+    if (buflen < DL_PING_ON_WIRE_SIZE) return 0;
+    memset(buf, 0, DL_PING_ON_WIRE_SIZE);
+    put_u32(&buf[0], DL_PING_MAGIC);
+    buf[4] = DL_WIRE_VERSION;
+    buf[5] = p->flags;
+    put_u32(&buf[8],  p->gs_seq);
+    put_u64(&buf[12], p->gs_mono_us);
+    uint32_t crc = dl_wire_crc32(buf, DL_PING_PAYLOAD_SIZE);
+    put_u32(&buf[20], crc);
+    return DL_PING_ON_WIRE_SIZE;
+}
+
+dl_decode_result_t dl_wire_decode_ping(const uint8_t *buf, size_t len,
+                                       dl_ping_t *p) {
+    if (len < DL_PING_ON_WIRE_SIZE) return DL_DECODE_SHORT;
+    if (get_u32(&buf[0]) != DL_PING_MAGIC) return DL_DECODE_BAD_MAGIC;
+    if (buf[4] != DL_WIRE_VERSION) return DL_DECODE_BAD_VERSION;
+    uint32_t crc_wire = get_u32(&buf[20]);
+    uint32_t crc_calc = dl_wire_crc32(buf, DL_PING_PAYLOAD_SIZE);
+    if (crc_wire != crc_calc) return DL_DECODE_BAD_CRC;
+
+    memset(p, 0, sizeof(*p));
+    p->magic      = DL_PING_MAGIC;
+    p->version    = buf[4];
+    p->flags      = buf[5];
+    p->gs_seq     = get_u32(&buf[8]);
+    p->gs_mono_us = get_u64(&buf[12]);
+    return DL_DECODE_OK;
+}
+
+size_t dl_wire_encode_pong(const dl_pong_t *p, uint8_t *buf, size_t buflen) {
+    if (buflen < DL_PONG_ON_WIRE_SIZE) return 0;
+    memset(buf, 0, DL_PONG_ON_WIRE_SIZE);
+    put_u32(&buf[0], DL_PONG_MAGIC);
+    buf[4] = DL_WIRE_VERSION;
+    buf[5] = p->flags;
+    put_u32(&buf[8],  p->gs_seq);
+    put_u64(&buf[12], p->gs_mono_us_echo);
+    put_u64(&buf[20], p->drone_mono_recv_us);
+    put_u64(&buf[28], p->drone_mono_send_us);
+    uint32_t crc = dl_wire_crc32(buf, DL_PONG_PAYLOAD_SIZE);
+    put_u32(&buf[36], crc);
+    return DL_PONG_ON_WIRE_SIZE;
+}
+
+dl_decode_result_t dl_wire_decode_pong(const uint8_t *buf, size_t len,
+                                       dl_pong_t *p) {
+    if (len < DL_PONG_ON_WIRE_SIZE) return DL_DECODE_SHORT;
+    if (get_u32(&buf[0]) != DL_PONG_MAGIC) return DL_DECODE_BAD_MAGIC;
+    if (buf[4] != DL_WIRE_VERSION) return DL_DECODE_BAD_VERSION;
+    uint32_t crc_wire = get_u32(&buf[36]);
+    uint32_t crc_calc = dl_wire_crc32(buf, DL_PONG_PAYLOAD_SIZE);
+    if (crc_wire != crc_calc) return DL_DECODE_BAD_CRC;
+
+    memset(p, 0, sizeof(*p));
+    p->magic              = DL_PONG_MAGIC;
+    p->version            = buf[4];
+    p->flags              = buf[5];
+    p->gs_seq             = get_u32(&buf[8]);
+    p->gs_mono_us_echo    = get_u64(&buf[12]);
+    p->drone_mono_recv_us = get_u64(&buf[20]);
+    p->drone_mono_send_us = get_u64(&buf[28]);
+    return DL_DECODE_OK;
+}
+
+dl_packet_kind_t dl_wire_peek_kind(const uint8_t *buf, size_t len) {
+    if (len < 4) return DL_PKT_UNKNOWN;
+    uint32_t m = get_u32(buf);
+    if (m == DL_WIRE_MAGIC) return DL_PKT_DECISION;
+    if (m == DL_PING_MAGIC) return DL_PKT_PING;
+    if (m == DL_PONG_MAGIC) return DL_PKT_PONG;
+    return DL_PKT_UNKNOWN;
 }

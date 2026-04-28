@@ -6,10 +6,14 @@ import asyncio
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 
 import yaml
 
+from . import wire
+from .debug_config import DebugConfig
+from .latency_sink import LatencySink
 from .policy import (
     CooldownConfig,
     FECBounds,
@@ -33,6 +37,8 @@ from .stats_client import (
     StatsClient,
     TxEvent,
 )
+from .timesync import TimeSync
+from .tunnel_listener import TunnelListener
 from .wire import Encoder as WireEncoder
 
 log = logging.getLogger("dynamic_link")
@@ -246,6 +252,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
              "just events). Disabled if omitted.",
     )
     p.add_argument(
+        "--latency-log-file",
+        type=Path,
+        help="Path to write Phase-3 latency.jsonl (one JSON line per "
+             "PONG observation). Requires `debug.ping_pong: true`.",
+    )
+    p.add_argument(
         "--replay",
         type=Path,
         help="Replay from a captured JSONL file instead of connecting over TCP.",
@@ -295,22 +307,89 @@ async def _run(args: argparse.Namespace) -> int:
         verbose_stream = sys.stdout
     else:
         verbose_stream = None
-    sink = LogSink(events_stream=events_stream, verbose_stream=verbose_stream)
 
     enabled = bool(raw.get("enabled", False))
+
+    debug_cfg = DebugConfig.from_yaml(raw)
+    debug_cfg.log_resolution()
+
+    # Phase 3 timesync: ping/pong over the existing tunnel UDP path.
+    timesync: TimeSync | None = None
+    tunnel_listener: TunnelListener | None = None
+    latency_sink: LatencySink | None = None
+    if debug_cfg.ping_pong:
+        timesync = TimeSync()
+    if debug_cfg.latency_log and args.latency_log_file is not None:
+        latency_stream = open(args.latency_log_file, "a", buffering=1)
+        latency_sink = LatencySink(latency_stream)
+    elif debug_cfg.latency_log:
+        log.warning("debug.latency_log=true but --latency-log-file not "
+                    "supplied; latency samples will not be persisted")
+
+    def _log_extras() -> dict:
+        if timesync is None or timesync.offset_us is None:
+            return {}
+        return {
+            "offset_us": timesync.offset_us,
+            "offset_stddev_us": timesync.offset_stddev_us,
+        }
+
+    sink = LogSink(
+        events_stream=events_stream,
+        verbose_stream=verbose_stream,
+        extras_provider=_log_extras,
+    )
 
     # ---- Phase 2 wiring ----
     return_link: ReturnLink | None = None
     wire_encoder: WireEncoder | None = None
+    drone_addr = wfb.get("drone_addr", "10.5.0.2")
+    drone_port = int(wfb.get("drone_port", 5800))
     if enabled:
-        drone_addr = wfb.get("drone_addr", "10.5.0.2")
-        drone_port = int(wfb.get("drone_port", 5800))
         return_link = ReturnLink(drone_addr, drone_port)
         wire_encoder = WireEncoder(seq=1)
         log.info("enabled=true; emitting decisions to %s:%d",
                  drone_addr, drone_port)
     else:
         log.info("enabled=false; observer mode (no wire emit)")
+
+    # ---- Phase 3 ping/pong wiring ----
+    if debug_cfg.ping_pong:
+        # We need a return_link to send pings, even if Phase-2 emit is
+        # disabled (debugging an observer-only deploy is valid).
+        if return_link is None:
+            return_link = ReturnLink(drone_addr, drone_port)
+        gs_listen_addr = wfb.get("gs_tunnel_listen_addr", "0.0.0.0")
+        gs_listen_port = int(wfb.get("gs_tunnel_listen_port", 5801))
+
+        def _on_pong(pong: wire.Pong, t4_us: int) -> None:
+            assert timesync is not None
+            sample = timesync.observe(
+                gs_seq=pong.gs_seq,
+                gs_mono_us_t1=pong.gs_mono_us_echo,
+                drone_mono_recv_us_t2=pong.drone_mono_recv_us,
+                drone_mono_send_us_t3=pong.drone_mono_send_us,
+                gs_mono_us_t4=t4_us,
+            )
+            if latency_sink is not None:
+                latency_sink.write(sample)
+            log.debug(
+                "pong: seq=%d rtt_us=%d offset_us=%s outlier=%s",
+                sample.gs_seq, sample.rtt_us,
+                sample.offset_us, sample.outlier,
+            )
+
+        tunnel_listener = TunnelListener(
+            gs_listen_addr, gs_listen_port, on_pong=_on_pong,
+        )
+        try:
+            await tunnel_listener.start()
+        except OSError as e:
+            log.warning("tunnel_listener: bind %s:%d failed: %s; "
+                        "ping/pong disabled",
+                        gs_listen_addr, gs_listen_port, e)
+            tunnel_listener = None
+            timesync = None
 
     mavlink_reader = None
     mav_local_addr = wfb.get("mavlink_local_addr", "127.0.0.1")
@@ -357,6 +436,24 @@ async def _run(args: argparse.Namespace) -> int:
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
 
+    pinger_task: asyncio.Task | None = None
+    if tunnel_listener is not None and return_link is not None:
+        async def _pinger() -> None:
+            seq = 0
+            interval_s = 1.0 / 5.0  # 5 Hz
+            while not stop_event.is_set():
+                seq = (seq + 1) & 0xFFFFFFFF
+                t1 = time.monotonic_ns() // 1000
+                pkt = wire.encode_ping(
+                    wire.Ping(gs_seq=seq, gs_mono_us=t1)
+                )
+                return_link.send_ping(pkt)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval_s)
+                except asyncio.TimeoutError:
+                    pass
+        pinger_task = asyncio.create_task(_pinger(), name="dl-pinger")
+
     def _handle_signal():
         log.info("shutdown signal received")
         client.stop()
@@ -371,7 +468,17 @@ async def _run(args: argparse.Namespace) -> int:
     try:
         await client.run()
     finally:
+        stop_event.set()
+        if pinger_task is not None:
+            try:
+                await asyncio.wait_for(pinger_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                pinger_task.cancel()
         sink.close()
+        if latency_sink is not None:
+            latency_sink.close()
+        if tunnel_listener is not None:
+            tunnel_listener.stop()
         if return_link is not None:
             return_link.close()
         if mavlink_reader is not None:
