@@ -490,3 +490,98 @@ def test_html_has_diagnosis_section(tmp_path: Path):
     assert "TL;DR — diagnosis" in body
     # Verdict column should be present in the leaderboard
     assert "verdict" in body.lower()
+
+
+# ------------------------------------------------------------------
+# Lag pairing (intended vs observed)
+# ------------------------------------------------------------------
+
+def _vrow(ts: float, *, mcs: int, k: int, n: int,
+          obs_mcs: int | None = None,
+          obs_fec_k: int | None = None,
+          obs_fec_n: int | None = None) -> dict:
+    row = {"timestamp": ts, "mcs": mcs, "k": k, "n": n}
+    obs = {}
+    if obs_mcs is not None:
+        obs["mcs"] = obs_mcs
+    if obs_fec_k is not None:
+        obs["fec_k"] = obs_fec_k
+    if obs_fec_n is not None:
+        obs["fec_n"] = obs_fec_n
+    if obs:
+        row["observed"] = obs
+    return row
+
+
+def test_lag_pairing_basic_catch_up():
+    """Intent flips, observation catches up two ticks later."""
+    verbose = [
+        _vrow(0.0, mcs=4, k=8, n=12, obs_mcs=4, obs_fec_k=8, obs_fec_n=12),
+        _vrow(0.1, mcs=5, k=8, n=10, obs_mcs=4, obs_fec_k=8, obs_fec_n=12),
+        _vrow(0.2, mcs=5, k=8, n=10, obs_mcs=4, obs_fec_k=8, obs_fec_n=12),
+        _vrow(0.3, mcs=5, k=8, n=10, obs_mcs=5, obs_fec_k=8, obs_fec_n=10),
+    ]
+    lag = dl_report.compute_lag(verbose)
+    assert lag["mcs"]["n_paired"] == 1
+    assert lag["mcs"]["n_unmatched"] == 0
+    # Intent changed at t=0.1, observed caught up at t=0.3 -> 200 ms.
+    assert lag["mcs"]["events"][0]["lag_ms"] == pytest.approx(200.0)
+    assert lag["mcs"]["events"][0]["intent_old"] == 4
+    assert lag["mcs"]["events"][0]["intent_new"] == 5
+    # FEC n changed 12 -> 10 at the same intent tick, also caught up at t=0.3.
+    assert lag["fec_n"]["n_paired"] == 1
+    assert lag["fec_n"]["events"][0]["lag_ms"] == pytest.approx(200.0)
+
+
+def test_lag_pairing_unmatched_when_log_ends():
+    """Intent flips, observation never catches up before EOF."""
+    verbose = [
+        _vrow(0.0, mcs=4, k=8, n=12, obs_mcs=4, obs_fec_k=8, obs_fec_n=12),
+        _vrow(0.1, mcs=5, k=8, n=10, obs_mcs=4, obs_fec_k=8, obs_fec_n=12),
+        _vrow(0.2, mcs=5, k=8, n=10, obs_mcs=4, obs_fec_k=8, obs_fec_n=12),
+    ]
+    lag = dl_report.compute_lag(verbose)
+    assert lag["mcs"]["n_paired"] == 0
+    assert lag["mcs"]["n_unmatched"] == 1
+    assert lag["mcs"]["events"][0]["matched"] is False
+    # Pending close-out at last_ts (0.2) - t_intent (0.1) = 100 ms.
+    assert lag["mcs"]["events"][0]["lag_ms"] == pytest.approx(100.0)
+
+
+def test_lag_pairing_intent_flips_again_before_catch_up():
+    """First intent change closed as unmatched when intent flips again."""
+    verbose = [
+        _vrow(0.0, mcs=4, k=8, n=12, obs_mcs=4, obs_fec_k=8, obs_fec_n=12),
+        _vrow(0.1, mcs=5, k=8, n=12, obs_mcs=4, obs_fec_k=8, obs_fec_n=12),
+        _vrow(0.2, mcs=2, k=8, n=12, obs_mcs=4, obs_fec_k=8, obs_fec_n=12),
+        _vrow(0.3, mcs=2, k=8, n=12, obs_mcs=2, obs_fec_k=8, obs_fec_n=12),
+    ]
+    lag = dl_report.compute_lag(verbose)
+    # First flip (4->5) closed as unmatched at t=0.2 (lag = 100 ms).
+    # Second flip (5->2) matched at t=0.3 (lag = 100 ms).
+    assert lag["mcs"]["n_paired"] == 1
+    assert lag["mcs"]["n_unmatched"] == 1
+    matched = [e for e in lag["mcs"]["events"] if e["matched"]][0]
+    unmatched = [e for e in lag["mcs"]["events"] if not e["matched"]][0]
+    assert matched["intent_new"] == 2
+    assert matched["lag_ms"] == pytest.approx(100.0)
+    assert unmatched["intent_new"] == 5
+    assert unmatched["lag_ms"] == pytest.approx(100.0)
+
+
+def test_lag_no_observed_data_returns_empty():
+    """Older bundles without an observed block produce no lag dict."""
+    verbose = [
+        {"timestamp": 0.0, "mcs": 4, "k": 8, "n": 12},
+        {"timestamp": 0.1, "mcs": 5, "k": 8, "n": 12},
+    ]
+    assert dl_report.compute_lag(verbose) == {}
+
+
+def test_lag_section_skipped_when_no_observed(tmp_path: Path):
+    """Markdown report omits the lag section entirely if no
+    observed data is present."""
+    bundle = _make_bundle(tmp_path)
+    out = tmp_path / "r.md"
+    dl_report.main(["--bundle", str(bundle), "-o", str(out)])
+    assert "Intended vs observed lag" not in out.read_text()

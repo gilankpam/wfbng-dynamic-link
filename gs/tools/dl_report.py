@@ -693,6 +693,35 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis,
                                  name="bitrate (kbps)"),
                       row=1, col=1, secondary_y=True)
 
+        # Observed RX-side traces (dashed, same hue) on row 1 and row 5.
+        # NaN-filled when no observed block on that row, so older bundles
+        # produce empty traces (Plotly hides them from view but they show
+        # in the legend; that's acceptable noise for a feature-flagged
+        # field). Skip the add_trace entirely when zero observed rows
+        # exist so older reports stay visually unchanged.
+        has_observed = any(r.get("observed") for r in streams.verbose)
+        if has_observed:
+            obs_mcs = np.array([
+                (r.get("observed") or {}).get("mcs", np.nan)
+                for r in streams.verbose
+            ], dtype=float)
+            obs_br = np.array([
+                (r.get("observed") or {}).get("bitrate_kbps", np.nan)
+                for r in streams.verbose
+            ], dtype=float)
+            fig.add_trace(go.Scatter(
+                x=x, y=obs_mcs, mode="lines",
+                line={"shape": "hv", "color": "#1f77b4",
+                      "dash": "dash", "width": 1},
+                name="MCS (observed)", connectgaps=False, opacity=0.7,
+            ), row=1, col=1, secondary_y=False)
+            fig.add_trace(go.Scatter(
+                x=x, y=obs_br, mode="lines",
+                line={"color": "#ff7f0e", "dash": "dash", "width": 1},
+                name="bitrate observed (kbps)", connectgaps=False,
+                opacity=0.7,
+            ), row=1, col=1, secondary_y=True)
+
         # Row 2: RSSI / SNR (NaN out starved windows so the line breaks)
         rssi_y = np.array([
             r["signals_snapshot"]["rssi"]
@@ -763,6 +792,27 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis,
                                  line={"shape": "hv", "color": "#ff7f0e"},
                                  name="n (data+fec)"),
                       row=5, col=1)
+        if has_observed:
+            obs_k = np.array([
+                (r.get("observed") or {}).get("fec_k", np.nan)
+                for r in streams.verbose
+            ], dtype=float)
+            obs_n = np.array([
+                (r.get("observed") or {}).get("fec_n", np.nan)
+                for r in streams.verbose
+            ], dtype=float)
+            fig.add_trace(go.Scatter(
+                x=x, y=obs_k, mode="lines",
+                line={"shape": "hv", "color": "#1f77b4",
+                      "dash": "dash", "width": 1},
+                name="k (observed)", connectgaps=False, opacity=0.7,
+            ), row=5, col=1)
+            fig.add_trace(go.Scatter(
+                x=x, y=obs_n, mode="lines",
+                line={"shape": "hv", "color": "#ff7f0e",
+                      "dash": "dash", "width": 1},
+                name="n (observed)", connectgaps=False, opacity=0.7,
+            ), row=5, col=1)
 
     # Row 6: RTT (split outliers vs clean for color)
     if streams.latency:
@@ -1275,6 +1325,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <h2>Summary</h2>
 {summary_table}
 
+<h2>Intended vs observed lag</h2>
+{lag_html}
+
 <h2>Anomaly leaderboard (top {top_n})</h2>
 <p class="meta">Score = drift_excursion × interarrival_factor × (lost+1) × rtt_factor.
 Verdict is heuristic — see <code>classify_anomaly</code> for thresholds.</p>
@@ -1427,9 +1480,135 @@ def _md_anomaly_table(anomalies: list[dict], diagnosis: dict) -> str:
     return "\n".join(out)
 
 
+def compute_lag(verbose: list[dict]) -> dict:
+    """Pair intended-knob changes with first matching observed value.
+
+    For each tracked knob, walks `verbose` once and emits a list of
+    pairing events. Each entry has a `lag_ms` and a `matched` flag —
+    matched=False means observation never caught up before the next
+    intent change (or before the log ended), and `lag_ms` then carries
+    the pending lag at close-out.
+
+    The mapping below is `intent_key_in_row -> observed_key_in_block`.
+    They differ on the FEC knobs because the verbose row uses `k`/`n`
+    while the wfb-ng `SessionInfo` exposes `fec_k`/`fec_n`.
+    """
+    knob_map = {"mcs": "mcs", "k": "fec_k", "n": "fec_n"}
+
+    has_observed = any(row.get("observed") for row in verbose)
+    if not has_observed:
+        return {}
+
+    result: dict[str, dict] = {}
+    for intent_key, obs_key in knob_map.items():
+        events: list[dict] = []
+        prev_intent = None
+        pending: dict | None = None
+        last_ts: float | None = None
+        for row in verbose:
+            ts = row.get("timestamp")
+            if ts is None:
+                continue
+            last_ts = ts
+            cur_intent = row.get(intent_key)
+            obs_block = row.get("observed") or {}
+            cur_observed = obs_block.get(obs_key)
+
+            if prev_intent is not None and cur_intent != prev_intent:
+                if pending is not None:
+                    events.append({
+                        **pending,
+                        "lag_ms": (ts - pending["t_intent_s"]) * 1000.0,
+                        "matched": False,
+                    })
+                pending = {
+                    "t_intent_s": ts,
+                    "intent_old": prev_intent,
+                    "intent_new": cur_intent,
+                }
+            prev_intent = cur_intent
+
+            if pending is not None and cur_observed == pending["intent_new"]:
+                events.append({
+                    **pending,
+                    "lag_ms": (ts - pending["t_intent_s"]) * 1000.0,
+                    "matched": True,
+                })
+                pending = None
+
+        if pending is not None and last_ts is not None:
+            events.append({
+                **pending,
+                "lag_ms": (last_ts - pending["t_intent_s"]) * 1000.0,
+                "matched": False,
+            })
+
+        matched = [e["lag_ms"] for e in events if e["matched"]]
+        result[obs_key] = {
+            "events": events,
+            "n_paired": len(matched),
+            "n_unmatched": sum(1 for e in events if not e["matched"]),
+            "p50": st.median(matched) if matched else None,
+            "p95": (st.quantiles(matched, n=20)[-1]
+                    if len(matched) >= 20 else
+                    (max(matched) if matched else None)),
+            "max": max(matched) if matched else None,
+        }
+    return result
+
+
+def _md_lag(lag: dict) -> str:
+    total = sum(v["n_paired"] + v["n_unmatched"] for v in lag.values())
+    if total == 0:
+        return ""  # no observed data — skip the section entirely
+    out = ["## Intended vs observed lag", ""]
+    out.append("Lag between when the controller's intended knob "
+               "changed and when the first observed RX-side change "
+               "reflects the new value. In observer mode the values "
+               "reflect intent-vs-reality decoupling rather than "
+               "reconfig latency.")
+    out.append("")
+    out.append("| knob | paired | unmatched | p50 ms | p95 ms | max ms |")
+    out.append("|---|---:|---:|---:|---:|---:|")
+    for knob in ("mcs", "fec_k", "fec_n"):
+        v = lag.get(knob)
+        if v is None:
+            continue
+        def f(x):
+            return f"{x:.1f}" if isinstance(x, (int, float)) else "—"
+        out.append(f"| {knob} | {v['n_paired']} | {v['n_unmatched']} | "
+                   f"{f(v['p50'])} | {f(v['p95'])} | {f(v['max'])} |")
+    out.append("")
+
+    # Outliers and unmatched: list the worst 5 + any unmatched events.
+    for knob in ("mcs", "fec_k", "fec_n"):
+        v = lag.get(knob)
+        if v is None or not v["events"]:
+            continue
+        outliers = sorted(
+            (e for e in v["events"] if e["matched"]),
+            key=lambda e: -e["lag_ms"],
+        )[:5]
+        unmatched = [e for e in v["events"] if not e["matched"]]
+        if not outliers and not unmatched:
+            continue
+        out.append(f"### {knob} — outliers and unmatched")
+        out.append("")
+        out.append("| t (s) | old → new | lag ms | matched |")
+        out.append("|---:|---|---:|:---:|")
+        for e in outliers + unmatched:
+            mark = "✓" if e["matched"] else "—"
+            out.append(f"| {e['t_intent_s']:.2f} "
+                       f"| {e['intent_old']} → {e['intent_new']} "
+                       f"| {e['lag_ms']:.1f} | {mark} |")
+        out.append("")
+    return "\n".join(out)
+
+
 def render_markdown(streams: Streams, axis: TimeAxis, summary: dict,
                     anomalies: list[dict], diagnosis: dict,
                     bundle_path: Path, out_path: Path) -> None:
+    lag = compute_lag(streams.verbose)
     parts = [
         f"# Flight report — {bundle_path.name}",
         "",
@@ -1437,6 +1616,7 @@ def render_markdown(streams: Streams, axis: TimeAxis, summary: dict,
         "",
         _md_diagnosis(diagnosis),
         _md_summary(summary),
+        _md_lag(lag),
         _md_anomaly_table(anomalies, diagnosis),
     ]
     out_path.write_text("\n".join(parts))
@@ -1446,12 +1626,71 @@ def render_markdown(streams: Streams, axis: TimeAxis, summary: dict,
 # HTML rendering
 # ----------------------------------------------------------------------
 
+def _lag_html(lag: dict) -> str:
+    total = sum(v["n_paired"] + v["n_unmatched"] for v in lag.values())
+    if total == 0:
+        return ("<p class='meta'>No observed RX-side data in this bundle. "
+                "Re-run with a GS that emits the <code>observed</code> "
+                "block in <code>gs.verbose.jsonl</code>.</p>")
+    rows = [
+        "<table>",
+        "<thead><tr><th>knob</th><th>paired</th><th>unmatched</th>"
+        "<th>p50 ms</th><th>p95 ms</th><th>max ms</th></tr></thead>",
+        "<tbody>",
+    ]
+    def f(x):
+        return f"{x:.1f}" if isinstance(x, (int, float)) else "—"
+    for knob in ("mcs", "fec_k", "fec_n"):
+        v = lag.get(knob)
+        if v is None:
+            continue
+        rows.append(
+            f"<tr><td>{knob}</td><td>{v['n_paired']}</td>"
+            f"<td>{v['n_unmatched']}</td><td>{f(v['p50'])}</td>"
+            f"<td>{f(v['p95'])}</td><td>{f(v['max'])}</td></tr>"
+        )
+    rows.append("</tbody></table>")
+    parts = ["<p class='meta'>Lag between when the controller's intended "
+             "knob changed and when the first observed RX-side change "
+             "reflects the new value. In observer mode the values reflect "
+             "intent-vs-reality decoupling rather than reconfig latency.</p>",
+             "\n".join(rows)]
+
+    for knob in ("mcs", "fec_k", "fec_n"):
+        v = lag.get(knob)
+        if v is None or not v["events"]:
+            continue
+        outliers = sorted(
+            (e for e in v["events"] if e["matched"]),
+            key=lambda e: -e["lag_ms"],
+        )[:5]
+        unmatched = [e for e in v["events"] if not e["matched"]]
+        if not outliers and not unmatched:
+            continue
+        parts.append(f"<h3>{knob} — outliers and unmatched</h3>")
+        sub = ["<table>",
+               "<thead><tr><th>t (s)</th><th>old → new</th>"
+               "<th>lag ms</th><th>matched</th></tr></thead>",
+               "<tbody>"]
+        for e in outliers + unmatched:
+            mark = "✓" if e["matched"] else "—"
+            sub.append(
+                f"<tr><td>{e['t_intent_s']:.2f}</td>"
+                f"<td>{e['intent_old']} → {e['intent_new']}</td>"
+                f"<td>{e['lag_ms']:.1f}</td><td>{mark}</td></tr>"
+            )
+        sub.append("</tbody></table>")
+        parts.append("\n".join(sub))
+    return "\n".join(parts)
+
+
 def render_html(streams: Streams, axis: TimeAxis, summary: dict,
                 anomalies: list[dict], diagnosis: dict,
                 bundle_path: Path,
                 out_path: Path, *, plotlyjs: str = "inline") -> None:
     timeline = make_timeline_figure(streams, axis, diagnosis=diagnosis)
     dist = make_distribution_figure(streams)
+    lag = compute_lag(streams.verbose)
 
     timeline_html = timeline.to_html(
         full_html=False, include_plotlyjs=plotlyjs, div_id="timeline")
@@ -1463,6 +1702,7 @@ def render_html(streams: Streams, axis: TimeAxis, summary: dict,
         bundle_path=html.escape(str(bundle_path)),
         diagnosis_html=_diagnosis_html(diagnosis),
         summary_table=_summary_html(summary),
+        lag_html=_lag_html(lag),
         top_n=len(anomalies),
         anomaly_table=_anomalies_html(anomalies),
         timeline_html=timeline_html,

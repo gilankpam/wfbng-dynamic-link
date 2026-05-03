@@ -15,6 +15,7 @@ from . import wire
 from .debug_config import DebugConfig
 from .flight_log import FlightDirRotator
 from .latency_sink import LatencySink
+from .observed import derive_observed
 from .policy import (
     CooldownConfig,
     FECBounds,
@@ -342,13 +343,20 @@ async def _run(args: argparse.Namespace) -> int:
             log.warning("debug.video_tap=true but --log-dir not supplied; "
                         "per-frame RTP records will not be persisted")
 
+    # 1-slot holder for the latest RxEvent — populated in on_event,
+    # read by _log_extras to derive the observed block. List used as
+    # mutable cell so the closure can rebind without `nonlocal`.
+    latest_rx: list[RxEvent | None] = [None]
+
     def _log_extras() -> dict:
-        if timesync is None or timesync.offset_us is None:
-            return {}
-        return {
-            "offset_us": timesync.offset_us,
-            "offset_stddev_us": timesync.offset_stddev_us,
-        }
+        out: dict = {}
+        if timesync is not None and timesync.offset_us is not None:
+            out["offset_us"] = timesync.offset_us
+            out["offset_stddev_us"] = timesync.offset_stddev_us
+        observed = derive_observed(latest_rx[0])
+        if observed:
+            out["observed"] = observed
+        return out
 
     sink = LogSink(
         events_stream=events_stream,
@@ -456,6 +464,7 @@ async def _run(args: argparse.Namespace) -> int:
         if isinstance(ev, RxEvent):
             if rotator is not None:
                 rotator.on_rx_event(ev)
+            latest_rx[0] = ev
             signals = aggregator.consume(ev)
             decision = policy.tick(signals)
             sink.write(decision)
