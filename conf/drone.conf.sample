@@ -36,6 +36,16 @@ tx_power_max_dBm = 20
 # keyframes, but longer corruption window after a missed primary.
 min_idr_interval_ms = 500
 
+# ---- Direction-aware apply stagger ----------------------------------
+# When a decision changes the encoder bitrate, the applier splits the
+# apply into two phases separated by this many milliseconds:
+#   bitrate up   -> tx_cmd + iw first, then encoder.
+#   bitrate down -> encoder first, then tx_cmd + iw.
+# The bottleneck is widened before the producer expands (and narrowed
+# after the producer is throttled), avoiding a queue burst at the
+# wfb-tx boundary during transitions. Set to 0 to disable.
+apply_stagger_ms = 50
+
 # ---- OSD sink (msposd) ----------------------------------------------
 osd_enable              = 1
 osd_msg_path            = /tmp/MSPOSD.msg

@@ -34,6 +34,10 @@ typedef struct {
     /* IDR throttle. */
     uint32_t min_idr_interval_ms;
 
+    /* Inter-stage gap for direction-aware staggered apply. 0 disables
+     * staggering (all backends fire in one shot, legacy behaviour). */
+    uint32_t apply_stagger_ms;
+
     /* OSD sink (§4B). */
     bool     osd_enable;
     char     osd_msg_path[DL_CONF_MAX_STR];

@@ -30,6 +30,8 @@ void dl_config_defaults(dl_config_t *cfg) {
 
     cfg->min_idr_interval_ms = 500;
 
+    cfg->apply_stagger_ms = 50;
+
     cfg->osd_enable = true;
     strncpy(cfg->osd_msg_path, "/tmp/MSPOSD.msg", DL_CONF_MAX_STR - 1);
     cfg->osd_update_interval_ms = 1000;
@@ -164,6 +166,7 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "tx_power_min_dBm") == 0)   SET_INT_RANGED(tx_power_min_dBm, int8_t, -10, 30);
         else if (strcmp(key, "tx_power_max_dBm") == 0)   SET_INT_RANGED(tx_power_max_dBm, int8_t, -10, 30);
         else if (strcmp(key, "min_idr_interval_ms") == 0) SET_INT_RANGED(min_idr_interval_ms, uint32_t, 0, 60000);
+        else if (strcmp(key, "apply_stagger_ms") == 0)   SET_INT_RANGED(apply_stagger_ms, uint32_t, 0, 500);
         else if (strcmp(key, "osd_enable") == 0)         SET_BOOL(osd_enable);
         else if (strcmp(key, "osd_msg_path") == 0)       SET_STR(osd_msg_path);
         else if (strcmp(key, "osd_update_interval_ms") == 0) SET_INT_RANGED(osd_update_interval_ms, uint32_t, 100, 60000);

@@ -57,6 +57,7 @@ CMD_SET_INTERLEAVE_DEPTH = 5
 class FakeWfbTx:
     port: int = 0
     received: list[dict] = field(default_factory=list)
+    recv_times: list[float] = field(default_factory=list)
     _sock: socket.socket | None = None
     _thread: threading.Thread | None = None
     _stop: bool = False
@@ -89,6 +90,7 @@ class FakeWfbTx:
             if parsed is None:
                 continue
             self.received.append(parsed)
+            self.recv_times.append(time.monotonic())
             # Reply with rc=0 echo (req_id + rc), 8 bytes.
             reply = struct.pack(">II", parsed["req_id_raw"], 0)
             self._sock.sendto(reply, addr)
@@ -127,6 +129,7 @@ class FakeWfbTx:
 class _RecordingHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.server.recorded.append(self.path)  # type: ignore[attr-defined]
+        self.server.recv_times.append(time.monotonic())  # type: ignore[attr-defined]
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", "2")
@@ -140,6 +143,7 @@ class _RecordingHandler(BaseHTTPRequestHandler):
 def make_encoder_server() -> HTTPServer:
     srv = HTTPServer(("127.0.0.1", 0), _RecordingHandler)
     srv.recorded = []  # type: ignore[attr-defined]
+    srv.recv_times = []  # type: ignore[attr-defined]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     srv._thread = t  # type: ignore[attr-defined]
@@ -452,3 +456,139 @@ def test_duplicate_sequence_dropped(tmp_path: Path):
                 k=8, n=14, depth=2, bitrate=9000, sequence=100)
         time.sleep(0.25)
         assert len(s["wfb"].received) == n_after_first, s["wfb"].received
+
+
+# -----------------------------------------------------------------
+# Direction-aware staggered apply.
+#
+# The cold-start decision is always single-shot (first-decision rule),
+# so each test warms up first, then snapshots baselines and verifies
+# the second decision lands in two phases ~50 ms apart.
+# -----------------------------------------------------------------
+
+# Loose timing window: includes the configured 50 ms gap, plus
+# scheduling jitter, plus the iw posix_spawn+waitpid blocking on the
+# nonexistent wlan dev that the sandbox uses.
+STAGGER_GAP_MIN_S = 0.030
+STAGGER_GAP_MAX_S = 0.300
+
+
+def test_apply_stagger_up_after_warmup(tmp_path: Path):
+    """Bitrate up: tx_cmd lands first, encoder ~50 ms later."""
+    with _sandbox(tmp_path) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target, mcs=3, bandwidth=20, tx_power=15,
+                k=8, n=12, depth=1, bitrate=6000, sequence=1)
+        assert _wait_until(lambda: len(s["wfb"].received) >= 3 and
+                                   len(s["encoder"].recorded) >= 1)
+        wfb_n0 = len(s["wfb"].received)
+        enc_n0 = len(s["encoder"].recorded)
+
+        _inject(target, mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2, bitrate=12000, sequence=2)
+        # Phase 2 is the encoder; wait for it.
+        assert _wait_until(
+            lambda: len(s["encoder"].recorded) >= enc_n0 + 1,
+            timeout_s=2.0,
+        )
+        # All 3 phase-1 tx_cmd messages must be in by now too.
+        assert len(s["wfb"].received) >= wfb_n0 + 3, s["wfb"].received
+        last_wfb_t = max(s["wfb"].recv_times[wfb_n0:])
+        first_enc_t = s["encoder"].recv_times[enc_n0]
+        gap = first_enc_t - last_wfb_t
+        assert STAGGER_GAP_MIN_S <= gap <= STAGGER_GAP_MAX_S, \
+            f"UP gap was {gap:.3f}s"
+
+
+def test_apply_stagger_down_after_warmup(tmp_path: Path):
+    """Bitrate down: encoder lands first, tx_cmd ~50 ms later."""
+    with _sandbox(tmp_path) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target, mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2, bitrate=12000, sequence=1)
+        assert _wait_until(lambda: len(s["wfb"].received) >= 3 and
+                                   len(s["encoder"].recorded) >= 1)
+        wfb_n0 = len(s["wfb"].received)
+        enc_n0 = len(s["encoder"].recorded)
+
+        _inject(target, mcs=3, bandwidth=20, tx_power=15,
+                k=8, n=12, depth=1, bitrate=6000, sequence=2)
+        # Phase 2 is tx_cmd (3 messages).
+        assert _wait_until(
+            lambda: len(s["wfb"].received) >= wfb_n0 + 3,
+            timeout_s=2.0,
+        )
+        assert len(s["encoder"].recorded) >= enc_n0 + 1, s["encoder"].recorded
+        last_enc_t = max(s["encoder"].recv_times[enc_n0:])
+        first_wfb_t = min(s["wfb"].recv_times[wfb_n0:wfb_n0 + 3])
+        gap = first_wfb_t - last_enc_t
+        assert STAGGER_GAP_MIN_S <= gap <= STAGGER_GAP_MAX_S, \
+            f"DOWN gap was {gap:.3f}s"
+
+
+def test_apply_stagger_equal_is_single_shot(tmp_path: Path):
+    """Same bitrate, other knobs differ: tx_cmd fires in one tight
+    burst with no 50 ms gap, and the encoder isn't called at all
+    (its internal diff sees no bitrate/roi/fps change)."""
+    with _sandbox(tmp_path) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target, mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2, bitrate=10000, sequence=1)
+        assert _wait_until(lambda: len(s["wfb"].received) >= 3 and
+                                   len(s["encoder"].recorded) >= 1)
+        wfb_n0 = len(s["wfb"].received)
+        enc_n0 = len(s["encoder"].recorded)
+
+        _inject(target, mcs=3, bandwidth=20, tx_power=15,
+                k=8, n=12, depth=1, bitrate=10000, sequence=2)
+        assert _wait_until(
+            lambda: len(s["wfb"].received) >= wfb_n0 + 3,
+            timeout_s=1.0,
+        )
+        wfb_burst = s["wfb"].recv_times[wfb_n0:wfb_n0 + 3]
+        spread = max(wfb_burst) - min(wfb_burst)
+        assert spread < STAGGER_GAP_MIN_S, \
+            f"EQUAL tx_cmd spread {spread:.3f}s should be < {STAGGER_GAP_MIN_S}s"
+        # Wait past the would-be gap; encoder must remain untouched.
+        time.sleep(0.150)
+        assert len(s["encoder"].recorded) == enc_n0, \
+            f"encoder should be untouched: {s['encoder'].recorded}"
+
+
+def test_apply_stagger_cancel_replaces_pending(tmp_path: Path):
+    """A new decision in the gap window cancels the queued phase 2."""
+    with _sandbox(tmp_path) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target, mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2, bitrate=12000, sequence=1)
+        assert _wait_until(lambda: len(s["wfb"].received) >= 3 and
+                                   len(s["encoder"].recorded) >= 1)
+        wfb_n0 = len(s["wfb"].received)
+        enc_n0 = len(s["encoder"].recorded)
+
+        # First DOWN — encoder fires, tx_cmd phase 2 queued.
+        _inject(target, mcs=4, bandwidth=20, tx_power=18,
+                k=8, n=12, depth=1, bitrate=8000, sequence=2)
+        assert _wait_until(
+            lambda: len(s["encoder"].recorded) >= enc_n0 + 1,
+            timeout_s=1.0,
+        )
+        # Within the 50 ms gap, a second DOWN supersedes — phase 2 of
+        # the first decision must NOT fire on its own.
+        time.sleep(0.020)
+        _inject(target, mcs=3, bandwidth=20, tx_power=15,
+                k=8, n=12, depth=1, bitrate=6000, sequence=3)
+        # Wait long enough for both phase-1 encoder + phase-2 tx_cmd.
+        time.sleep(0.300)
+        new_enc = len(s["encoder"].recorded) - enc_n0
+        new_wfb = len(s["wfb"].received) - wfb_n0
+        # One encoder request per decision (2 total) — the cancelled
+        # decision's phase 2 was the tx_cmd batch, not a second encoder.
+        assert new_enc == 2, \
+            f"expected 2 enc reqs, got {new_enc}: {s['encoder'].recorded}"
+        # tx_cmd should fire only once, for the second decision's
+        # phase 2 (cancelled first one never reached phase 2). The diff
+        # against last_tx (still at warmup state mcs=5, n=14, depth=2)
+        # finds mcs/n/depth all changed -> 3 messages.
+        assert new_wfb == 3, \
+            f"expected 3 tx_cmd reqs, got {new_wfb}: {s['wfb'].received}"
