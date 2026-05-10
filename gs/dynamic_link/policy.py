@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from .bitrate import BitrateConfig, compute_bitrate_kbps
 from .decision import Decision
 from .predictor import (
     BudgetExhausted,
@@ -138,7 +139,6 @@ class SafeDefaults:
     n: int = 12
     depth: int = 1
     mcs: int = 1
-    bitrate_kbps: int = 2000
 
 
 @dataclass
@@ -151,6 +151,11 @@ class PolicyConfig:
     cooldown: CooldownConfig = field(default_factory=CooldownConfig)
     fec: FECBounds = field(default_factory=FECBounds)
     safe: SafeDefaults = field(default_factory=SafeDefaults)
+    bitrate: BitrateConfig = field(default_factory=lambda: BitrateConfig(
+        utilization_factor=0.8,
+        min_bitrate_kbps=1000,
+        max_bitrate_kbps=24000,
+    ))
     predictor: PredictorConfig = field(default_factory=PredictorConfig)
     max_latency_ms: float = 50.0
     # Trailing-loop depth=1 → 2 bootstrap requires the last N windows
@@ -720,7 +725,10 @@ class Policy:
             k=row.k,
             n=row.n,
             depth=cfg.safe.depth,
-            bitrate_kbps=int(row.bitrate_Mbps * 1000),
+            bitrate_kbps=compute_bitrate_kbps(
+                profile, cfg.leading.bandwidth, row.mcs,
+                row.k, row.n, cfg.bitrate,
+            ),
         )
 
     def tick(self, signals: Signals) -> Decision:
@@ -752,12 +760,15 @@ class Policy:
         )
         row = self.leading.current_row
 
-        # `(k, n, bitrate)` are deterministic per-row lookups from the
-        # profile's `fec_table`. They change only when MCS crosses a
-        # row boundary — never reactively to loss / fec_work.
+        # `(k, n, bitrate)` change only when MCS crosses a row boundary
+        # — never reactively to loss / fec_work.
         new_k = row.k
         new_n = row.n
-        encoder_kbps = row.bitrate_Mbps * 1000.0
+        new_bitrate_kbps = compute_bitrate_kbps(
+            self.profile, self.state.bandwidth, row.mcs,
+            row.k, row.n, self.cfg.bitrate,
+        )
+        encoder_kbps = float(new_bitrate_kbps)
         ipi_ms = _ipi_ms_for_encoder(encoder_kbps, self.cfg.fec.mtu_bytes)
         # Per-tick predictor cfg with the live ipi_ms.
         predictor_cfg = PredictorConfig(
@@ -800,7 +811,7 @@ class Policy:
         self.state.k = new_k
         self.state.n = new_n
         self.state.depth = new_depth
-        self.state.bitrate_kbps = int(row.bitrate_Mbps * 1000)
+        self.state.bitrate_kbps = new_bitrate_kbps
 
         # Assemble Decision.
         knobs_changed: list[str] = []

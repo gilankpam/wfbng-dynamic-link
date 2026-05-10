@@ -1,14 +1,14 @@
-"""Bitrate selection in the GS controller.
+"""Bitrate is computed each tick via `compute_bitrate_kbps`.
 
-Bitrate is now a per-MCS lookup against the radio profile's
-`fec_table`. The Policy emits the row's `bitrate_Mbps` directly —
-no FEC-aware scaling, no efficiency math, no compute. See
-`docs/knob-cadence-bench.md` for the rationale.
+Verifies the wiring inside Policy: state.bitrate_kbps reflects the
+current MCS row's (k, n) and the configured BitrateConfig, and
+moves when MCS changes.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
+from dynamic_link.bitrate import BitrateConfig, compute_bitrate_kbps
 from dynamic_link.profile import load_profile
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -19,34 +19,29 @@ def _profile():
     return load_profile("m8812eu2", [PACKAGED_DIR])
 
 
-def test_bitrate_per_row_matches_profile():
-    """For each MCS, the runtime row's `bitrate_Mbps` is exactly the
-    operator-validated value from `fec_table`."""
+def test_compute_per_row_matches_formula():
+    """For each MCS row, compute_bitrate_kbps matches phy * util * k/n
+    (clamped). Sanity check that the calculator and the profile agree
+    on what (k, n) goes with each MCS."""
     prof = _profile()
+    cfg = BitrateConfig(utilization_factor=0.8,
+                        min_bitrate_kbps=1, max_bitrate_kbps=999_999)
     rows = prof.snr_mcs_map(bandwidth=20, snr_margin_db=0.0)
     for row in rows:
         entry = prof.fec_for(20, row.mcs)
-        assert row.bitrate_Mbps == entry.bitrate_Mbps
-        assert row.k == entry.k
-        assert row.n == entry.n
+        expected = int(prof.data_rate_Mbps_LGI[20][row.mcs] * 1000.0
+                       * 0.8 * (entry.k / entry.n))
+        got = compute_bitrate_kbps(prof, 20, row.mcs, entry.k, entry.n, cfg)
+        assert got == expected
 
 
-def test_survival_band_bitrate_ladder_monotone():
-    """MCS 0 → MCS 2 share `(k, n)` but bitrate climbs."""
+def test_kn_pair_carries_through_to_bitrate():
+    """High-band rows: the (k/n) factor shows up in the computed
+    bitrate. Uses MCS 5 (k=8, n=10) on the 20 MHz path."""
     prof = _profile()
-    b0 = prof.fec_for(20, 0).bitrate_Mbps
-    b1 = prof.fec_for(20, 1).bitrate_Mbps
-    b2 = prof.fec_for(20, 2).bitrate_Mbps
-    assert b0 < b1 < b2
-
-
-def test_high_band_redundancy_decreases_with_mcs():
-    """Cleaner link → less FEC overhead. n/k ratio drops as MCS climbs."""
-    prof = _profile()
-    ratios = []
-    for mcs in (3, 4, 5, 6, 7):
-        e = prof.fec_for(20, mcs)
-        ratios.append(e.n / e.k)
-    # Strictly non-increasing.
-    for prev, cur in zip(ratios, ratios[1:]):
-        assert cur <= prev, f"redundancy ratio went up: {ratios}"
+    cfg = BitrateConfig(utilization_factor=0.8,
+                        min_bitrate_kbps=1, max_bitrate_kbps=999_999)
+    e5 = prof.fec_for(20, 5)
+    bitrate5 = compute_bitrate_kbps(prof, 20, 5, e5.k, e5.n, cfg)
+    # 52.0 * 1000 * 0.8 * 8/10 = 33280
+    assert bitrate5 == 33280

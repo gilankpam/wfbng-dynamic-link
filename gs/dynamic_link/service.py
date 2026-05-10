@@ -196,7 +196,6 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         n=int(safe_video.get("n", 12)),
         depth=int(safe_raw.get("depth", 1)),
         mcs=int(safe_raw.get("mcs", 1)),
-        bitrate_kbps=int(safe_raw.get("bitrate_kbps", 2000)),
     )
     predictor = PredictorConfig(
         per_packet_airtime_us=float(video_raw.get("per_packet_airtime_us", 80.0)),
