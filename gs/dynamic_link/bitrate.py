@@ -20,9 +20,9 @@ from .profile import RadioProfile
 
 @dataclass(frozen=True)
 class BitrateConfig:
-    utilization_factor: float
-    min_bitrate_kbps: int
-    max_bitrate_kbps: int
+    utilization_factor: float = 0.8
+    min_bitrate_kbps: int = 1000
+    max_bitrate_kbps: int = 24000
 
 
 def compute_bitrate_kbps(

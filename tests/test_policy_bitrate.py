@@ -1,8 +1,8 @@
 """Bitrate is computed each tick via `compute_bitrate_kbps`.
 
-Verifies the wiring inside Policy: state.bitrate_kbps reflects the
-current MCS row's (k, n) and the configured BitrateConfig, and
-moves when MCS changes.
+Verifies the calculator directly: output matches `phy *
+utilization * (k/n)`, clamped, for every row in the packaged
+profile.
 """
 from __future__ import annotations
 

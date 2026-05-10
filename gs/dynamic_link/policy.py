@@ -151,11 +151,7 @@ class PolicyConfig:
     cooldown: CooldownConfig = field(default_factory=CooldownConfig)
     fec: FECBounds = field(default_factory=FECBounds)
     safe: SafeDefaults = field(default_factory=SafeDefaults)
-    bitrate: BitrateConfig = field(default_factory=lambda: BitrateConfig(
-        utilization_factor=0.8,
-        min_bitrate_kbps=1000,
-        max_bitrate_kbps=24000,
-    ))
+    bitrate: BitrateConfig = field(default_factory=BitrateConfig)
     predictor: PredictorConfig = field(default_factory=PredictorConfig)
     max_latency_ms: float = 50.0
     # Trailing-loop depth=1 → 2 bootstrap requires the last N windows
@@ -714,9 +710,10 @@ class Policy:
         # glitches). At 10 Hz, starvation_windows=5 = 0.5 s of below-
         # threshold packet rate before declaring blackout.
         self._starvation_count: int = 0
-        # Boot at the leading selector's chosen row. `(k, n)` and
-        # `bitrate_kbps` come from the profile's `fec_table` for that
-        # row — no scaling, no compute.
+        # Boot at the leading selector's chosen row. `(k, n)` come
+        # from the row; `bitrate_kbps` is computed from those plus
+        # `policy.bitrate.utilization_factor` via
+        # `compute_bitrate_kbps`.
         row = self.leading.current_row
         self.state = PolicyState(
             mcs=row.mcs,
@@ -768,8 +765,7 @@ class Policy:
             self.profile, self.state.bandwidth, row.mcs,
             row.k, row.n, self.cfg.bitrate,
         )
-        encoder_kbps = float(new_bitrate_kbps)
-        ipi_ms = _ipi_ms_for_encoder(encoder_kbps, self.cfg.fec.mtu_bytes)
+        ipi_ms = _ipi_ms_for_encoder(float(new_bitrate_kbps), self.cfg.fec.mtu_bytes)
         # Per-tick predictor cfg with the live ipi_ms.
         predictor_cfg = PredictorConfig(
             per_packet_airtime_us=self.cfg.predictor.per_packet_airtime_us,
