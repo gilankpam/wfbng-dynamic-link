@@ -24,6 +24,23 @@ class BitrateConfig:
     min_bitrate_kbps: int = 1000
     max_bitrate_kbps: int = 24000
 
+    def __post_init__(self) -> None:
+        if not (0.0 < self.utilization_factor <= 1.0):
+            raise ValueError(
+                f"utilization_factor must be in (0, 1]; "
+                f"got {self.utilization_factor}"
+            )
+        if self.min_bitrate_kbps <= 0:
+            raise ValueError(
+                f"min_bitrate_kbps must be > 0; "
+                f"got {self.min_bitrate_kbps}"
+            )
+        if self.max_bitrate_kbps < self.min_bitrate_kbps:
+            raise ValueError(
+                f"max_bitrate_kbps ({self.max_bitrate_kbps}) "
+                f"< min_bitrate_kbps ({self.min_bitrate_kbps})"
+            )
+
 
 def compute_bitrate_kbps(
     profile: RadioProfile,

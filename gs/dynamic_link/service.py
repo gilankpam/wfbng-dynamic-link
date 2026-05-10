@@ -203,26 +203,18 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     )
     policy_raw = raw.get("policy", {})
     bitrate_raw = policy_raw.get("bitrate", {})
-    bitrate = BitrateConfig(
-        utilization_factor=float(bitrate_raw.get("utilization_factor", 0.8)),
-        min_bitrate_kbps=int(bitrate_raw.get("min_bitrate_kbps", 1000)),
-        max_bitrate_kbps=int(bitrate_raw.get("max_bitrate_kbps", 24000)),
-    )
-    if not (0.0 < bitrate.utilization_factor <= 1.0):
-        raise ValueError(
-            f"policy.bitrate.utilization_factor must be in (0, 1]; "
-            f"got {bitrate.utilization_factor}"
+    try:
+        bitrate = BitrateConfig(
+            **{
+                k: (float if k == "utilization_factor" else int)(v)
+                for k, v in bitrate_raw.items()
+                if k in {"utilization_factor",
+                         "min_bitrate_kbps",
+                         "max_bitrate_kbps"}
+            }
         )
-    if bitrate.min_bitrate_kbps <= 0:
-        raise ValueError(
-            f"policy.bitrate.min_bitrate_kbps must be > 0; "
-            f"got {bitrate.min_bitrate_kbps}"
-        )
-    if bitrate.max_bitrate_kbps < bitrate.min_bitrate_kbps:
-        raise ValueError(
-            f"policy.bitrate.max_bitrate_kbps ({bitrate.max_bitrate_kbps}) "
-            f"< min_bitrate_kbps ({bitrate.min_bitrate_kbps})"
-        )
+    except ValueError as e:
+        raise ValueError(f"policy.bitrate.{e}") from e
     return PolicyConfig(
         leading=leading,
         gate=gate,
