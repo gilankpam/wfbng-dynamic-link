@@ -118,6 +118,16 @@ policy:
     utilization_factor: 0.8
     min_bitrate_kbps: 1000
     max_bitrate_kbps: 24000
+  # On any tick where the policy requests an IDR (residual_loss > 0),
+  # send `count` total IDR-flagged decision packets at `interval_ms`
+  # spacing — burst the regular tick packet plus count-1 fast repeats
+  # so a single UDP loss on the return link doesn't swallow the IDR.
+  # Drone-side dl_backend_enc throttle collapses duplicate arrivals
+  # to one camera HTTP call. Defaults from alink_gs.conf [keyframe].
+  idr_burst:
+    enabled: true
+    count: 4
+    interval_ms: 20
 
 health_timeout_ms: 10000
 

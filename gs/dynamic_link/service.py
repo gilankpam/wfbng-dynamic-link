@@ -27,6 +27,7 @@ from .policy import (
     SafeDefaults,
 )
 from .bitrate import BitrateConfig
+from .idr_burst import IdrBurstConfig, IdrBurster
 from .predictor import PredictorConfig
 from .profile import load_profile
 from .return_link import ReturnLink
@@ -229,6 +230,25 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     )
 
 
+def _build_idr_burst_config(raw: dict) -> IdrBurstConfig:
+    policy_raw = raw.get("policy", {})
+    burst_raw = policy_raw.get("idr_burst", {})
+    cfg = IdrBurstConfig(
+        enabled=bool(burst_raw.get("enabled", True)),
+        count=int(burst_raw.get("count", 4)),
+        interval_ms=int(burst_raw.get("interval_ms", 20)),
+    )
+    if cfg.count < 1:
+        raise ValueError(
+            f"policy.idr_burst.count must be >= 1; got {cfg.count}"
+        )
+    if cfg.interval_ms <= 0:
+        raise ValueError(
+            f"policy.idr_burst.interval_ms must be > 0; got {cfg.interval_ms}"
+        )
+    return cfg
+
+
 def _build_aggregator(raw: dict) -> SignalAggregator:
     s = raw.get("smoothing", {})
     gate = raw.get("gate", {})
@@ -391,6 +411,16 @@ async def _run(args: argparse.Namespace) -> int:
     else:
         log.info("enabled=false; observer mode (no wire emit)")
 
+    idr_burst_cfg = _build_idr_burst_config(raw)
+    idr_burster: IdrBurster | None = None
+    if enabled and return_link is not None and wire_encoder is not None:
+        idr_burster = IdrBurster(idr_burst_cfg, return_link, wire_encoder)
+        log.info(
+            "idr_burst: enabled=%s count=%d interval_ms=%d",
+            idr_burst_cfg.enabled, idr_burst_cfg.count,
+            idr_burst_cfg.interval_ms,
+        )
+
     # ---- Phase 3 ping/pong wiring ----
     if debug_cfg.ping_pong:
         # We need a return_link to send pings, even if Phase-2 emit is
@@ -485,6 +515,8 @@ async def _run(args: argparse.Namespace) -> int:
             if enabled and return_link is not None and wire_encoder is not None:
                 packet = wire_encoder.encode(decision)
                 return_link.send(packet)
+                if decision.idr_request and idr_burster is not None:
+                    idr_burster.trigger(decision)
 
     if args.replay is not None:
         client = ReplayClient(str(args.replay), on_event)
