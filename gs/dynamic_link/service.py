@@ -26,6 +26,7 @@ from .policy import (
     ProfileSelectionConfig,
     SafeDefaults,
 )
+from .bitrate import BitrateConfig
 from .predictor import PredictorConfig
 from .profile import load_profile
 from .return_link import ReturnLink
@@ -201,6 +202,27 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         per_packet_airtime_us=float(video_raw.get("per_packet_airtime_us", 80.0)),
     )
     policy_raw = raw.get("policy", {})
+    bitrate_raw = policy_raw.get("bitrate", {})
+    bitrate = BitrateConfig(
+        utilization_factor=float(bitrate_raw.get("utilization_factor", 0.8)),
+        min_bitrate_kbps=int(bitrate_raw.get("min_bitrate_kbps", 1000)),
+        max_bitrate_kbps=int(bitrate_raw.get("max_bitrate_kbps", 24000)),
+    )
+    if not (0.0 < bitrate.utilization_factor <= 1.0):
+        raise ValueError(
+            f"policy.bitrate.utilization_factor must be in (0, 1]; "
+            f"got {bitrate.utilization_factor}"
+        )
+    if bitrate.min_bitrate_kbps <= 0:
+        raise ValueError(
+            f"policy.bitrate.min_bitrate_kbps must be > 0; "
+            f"got {bitrate.min_bitrate_kbps}"
+        )
+    if bitrate.max_bitrate_kbps < bitrate.min_bitrate_kbps:
+        raise ValueError(
+            f"policy.bitrate.max_bitrate_kbps ({bitrate.max_bitrate_kbps}) "
+            f"< min_bitrate_kbps ({bitrate.min_bitrate_kbps})"
+        )
     return PolicyConfig(
         leading=leading,
         gate=gate,
@@ -208,6 +230,7 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         cooldown=cooldown,
         fec=fec,
         safe=safe,
+        bitrate=bitrate,
         predictor=predictor,
         max_latency_ms=float(video_raw.get("max_latency_ms", 50.0)),
         starvation_windows=int(policy_raw.get("starvation_windows", 5)),
