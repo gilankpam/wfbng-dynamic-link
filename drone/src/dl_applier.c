@@ -373,6 +373,8 @@ int main(int argc, char **argv) {
                             last_enc.bitrate_kbps, d.bitrate_kbps, first);
 
                         int drc = 0;
+                        useconds_t sub_pace_us =
+                            (useconds_t)cfg.apply_sub_pace_ms * 1000u;
                         if (cfg.apply_stagger_ms == 0 ||
                             dir == DL_APPLY_DIR_EQUAL) {
                             if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
@@ -382,17 +384,25 @@ int main(int argc, char **argv) {
                                 dl_backend_enc_request_idr(be, now);
                             }
                         } else if (dir == DL_APPLY_DIR_UP) {
-                            /* Widen capacity first, then producer expands
-                             * after the gap. */
-                            if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
+                            /* Power up BEFORE MCS up so the new (higher)
+                             * MCS rate has the headroom on the very first
+                             * frame transmitted at it. Then tx (FEC/depth/
+                             * MCS) — paced from the iw exit so wfb_tx's
+                             * radiotap update lands on a steady-state
+                             * power level. Encoder bitrate expands after
+                             * the outer gap. */
                             if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
+                            if (sub_pace_us > 0) usleep(sub_pace_us);
+                            if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
                             apply_pending = d;
                             apply_state   = APPLY_UP_GAP;
                             arm_gap(gap_fd, cfg.apply_stagger_ms);
                         } else {  /* DL_APPLY_DIR_DOWN */
                             /* Throttle producer first, then narrow
                              * capacity after the gap. IDR rides with
-                             * the encoder phase. */
+                             * the encoder phase. tx (MCS down) before
+                             * radio (power down) so we don't transmit
+                             * the old high MCS at reduced power. */
                             if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
                             if (d.flags & DL_FLAG_IDR_REQUEST) {
                                 dl_backend_enc_request_idr(be, now);
@@ -474,6 +484,9 @@ int main(int argc, char **argv) {
             } else if (apply_state == APPLY_DOWN_GAP) {
                 if (bt && dl_backend_tx_apply(bt, &apply_pending, &last_tx) < 0)
                     drc = -1;
+                if (cfg.apply_sub_pace_ms > 0) {
+                    usleep((useconds_t)cfg.apply_sub_pace_ms * 1000u);
+                }
                 if (br && dl_backend_radio_apply(br, &apply_pending, &last_radio) < 0)
                     drc = -1;
             }
