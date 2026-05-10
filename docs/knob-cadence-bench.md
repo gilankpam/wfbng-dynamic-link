@@ -295,7 +295,11 @@ Practical guidance for tick-level decision logic:
   do this implicitly via independent timers per knob; the
   bench validates the choice.
 - **Bitrate is the cheap knob** — change it as often as the
-  encoder will tolerate, regardless of MCS/FEC state.
+  encoder will tolerate, regardless of MCS/FEC state. In the
+  current implementation bitrate is derived from the selected
+  `(k, n)` and `policy.bitrate.utilization_factor` at each
+  tick, so it tracks FEC ratio changes automatically without a
+  separate operator-pinned value per row.
 
 ## Reproducing
 

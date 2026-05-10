@@ -735,10 +735,9 @@ trailing loop. They're a pure link-margin adjustment.
 #### Outer loop — MCS / bitrate table
 
 The operating-point table maps `rssi` (EWMA-smoothed min across
-antennas, §3) to a target `(mcs, bitrate_Mbps)`. Per-card radio
-profile loaded at startup from `conf/radios/<name>.yaml` in the
-dynamic-link repo — see §6.1 for the file format and the
-`m8812eu2` default.
+antennas, §3) to a target MCS. Per-card radio profile loaded at
+startup from `conf/radios/<name>.yaml` in the dynamic-link repo
+— see §6.1 for the file format and the `m8812eu2` default.
 
 **Design rules common to all profiles:**
 
@@ -747,29 +746,33 @@ dynamic-link repo — see §6.1 for the file format and the
   to drive them would need per-antenna path-loss tracking, which
   the current RX_ANT pipeline doesn't surface cleanly. Single
   stream is enough for FPV video bandwidth.
-- Bitrate number at each row is ~40–50 % of the nominal LGI
-  throughput for that (bandwidth, MCS), leaving headroom for FEC
-  parity (`(k, n) = (8, 12)` baseline = 50 % overhead) plus
-  telemetry + re-tx margin.
+- Encoder bitrate is computed at runtime as
+  `data_rate_Mbps_LGI[bw][mcs] * 1000 * utilization_factor * (k/n)`,
+  clamped to `[min_bitrate_kbps, max_bitrate_kbps]`. The `(k/n)`
+  factor folds in FEC overhead so the encoder fills what the link
+  can carry after parity. See `gs/dynamic_link/bitrate.py` and
+  the `policy.bitrate` block in `gs.yaml`.
 - Sensitivity + `rssi_margin_db` determines the row's lower
   bound: `row_rssi_min_dBm = sensitivity_dBm + rssi_margin_db`.
 
 **Default (M8812EU2, HT20, long GI), at `rssi_margin_db = 8`:**
 
-| Band (dBm)          | MCS | `(k, n)`  | redundancy | bitrate    |
-|---------------------|-----|-----------|------------|------------|
-| `rssi >= -69`       | 7   | (12, 14)  | 17 %       | 25 Mbps    |
-| `-72 <= rssi < -69` | 6   | (10, 12)  | 20 %       | 22 Mbps    |
-| `-74 <= rssi < -72` | 5   | (8, 10)   | 25 %       | 18 Mbps    |
-| `-77 <= rssi < -74` | 4   | (6, 9)    | 33 %       | 13 Mbps    |
-| `-80 <= rssi < -77` | 3   | (4, 7)    | 43 %       | 7.5 Mbps   |
-| `-83 <= rssi < -80` | 2   | **(2, 5)**| 60 %       | 4.0 Mbps   |
-| `-85 <= rssi < -83` | 1   | **(2, 5)**| 60 %       | 2.5 Mbps   |
-| `-88 <= rssi < -85` | 0   | **(2, 5)**| 60 %       | 1.5 Mbps   |
-| `rssi < -88`        | —   | —         | —          | (`budget_exhausted`, RTH) |
+| Band (dBm)          | MCS | `(k, n)`  | redundancy | bitrate (illustrative, `utilization_factor=0.8`) |
+|---------------------|-----|-----------|------------|--------------------------------------------------|
+| `rssi >= -69`       | 7   | (12, 14)  | 17 %       | ~25 Mbps                                         |
+| `-72 <= rssi < -69` | 6   | (10, 12)  | 20 %       | ~22 Mbps                                         |
+| `-74 <= rssi < -72` | 5   | (8, 10)   | 25 %       | ~18 Mbps                                         |
+| `-77 <= rssi < -74` | 4   | (6, 9)    | 33 %       | ~13 Mbps                                         |
+| `-80 <= rssi < -77` | 3   | (4, 7)    | 43 %       | ~7.5 Mbps                                        |
+| `-83 <= rssi < -80` | 2   | **(2, 5)**| 60 %       | ~4.0 Mbps                                        |
+| `-85 <= rssi < -83` | 1   | **(2, 5)**| 60 %       | ~2.5 Mbps                                        |
+| `-88 <= rssi < -85` | 0   | **(2, 5)**| 60 %       | ~1.5 Mbps                                        |
+| `rssi < -88`        | —   | —         | —          | (`budget_exhausted`, RTH)                        |
 
-`(k, n)` and bitrate per row come from the radio profile's
-`fec_table` block (§6.1) — operator-validated per airframe.
+The radio profile's `fec_table[bw][mcs]` (§6.1) carries the
+operator-validated `(k, n)` for each MCS row. Encoder bitrate is
+computed at runtime each tick via `compute_bitrate_kbps`; the
+bitrate column above is illustrative at `utilization_factor=0.8`.
 **`(k, n)` is pinned per-MCS; the controller never moves it
 reactively.** That's the bench-driven choice from
 [`docs/knob-cadence-bench.md`](knob-cadence-bench.md): FEC
@@ -789,12 +792,14 @@ climbs, so block-fill latency stays in the 5–6 ms band at every
 row. Redundancy decreases monotonically with MCS: cleaner link
 needs less parity.
 
-Bitrate at each row is sized for ≤ 50 % utilization of the row's
-goodput (`PHY × k/n`), leaving headroom for retransmits +
-telemetry + IDR bursts. Profile provenance (vendor datasheet vs.
-interpolation) lives in the profile file's header comment, not
-in this runtime table — operators are expected to field-validate
-the whole map per airframe regardless.
+Encoder bitrate tracks FEC ratio automatically: as `k/n` tightens
+(higher redundancy at lower MCS) the computed bitrate shrinks
+proportionally, leaving headroom for retransmits + telemetry +
+IDR bursts without a separate per-row bitrate entry. Profile
+provenance (vendor datasheet vs. interpolation) lives in the
+profile file's header comment, not in this runtime table —
+operators are expected to field-validate the whole map per
+airframe regardless.
 
 **fps adjustment.** The values above are tuned for the 60 fps
 latency cap (50 ms). At 90 fps (33 ms cap) the latency-budget
@@ -823,9 +828,13 @@ power saturates at the regulatory max and the fade continues, or
 the inner loop's 1 s cooldown hasn't caught up — in both cases
 we want the MCS drop.
 
-**Encoder bitrate derives from MCS row.** Conservative: ~50–60 %
-of the nominal MCS throughput at `(k=8, n=12)` overhead, leaving
-airtime for FEC parity + re-tx + telemetry.
+**Encoder bitrate is computed each tick.** Each time the outer
+loop selects a row, `compute_bitrate_kbps` evaluates
+`data_rate_Mbps_LGI[bw][mcs] * 1000 * utilization_factor * (k/n)`,
+clamped to `[min_bitrate_kbps, max_bitrate_kbps]`. The operator
+tunes one `utilization_factor` (default 0.8) in
+`policy.bitrate`; FEC overhead is folded in via the row's actual
+`k/n` ratio. See `gs/dynamic_link/bitrate.py`.
 
 **Commands emitted:**
 
@@ -852,12 +861,13 @@ tick — but only with an IDR + the leading-loop's MCS drop.
 **FEC `(k, n)` is not adjusted on loss.** It is a deterministic
 per-MCS lookup against the radio profile's `fec_table` (see §4.1
 table); whenever the leading loop selects a row, that row's
-`(k, n, bitrate)` is what the decision packet carries.
+`(k, n)` is what the decision packet carries (encoder bitrate is
+computed from the row at send time).
 
 | Trigger (this 100 ms window) | Actions (all on the same decision packet) |
 |---|---|
 | `residual_loss_w > 0` | **request an IDR** from the encoder (GS → drone applier → encoder helper, §2). The current GOP is already corrupted by the lost primary, so the decoder needs a fresh keyframe to resync cleanly. **No `CMD_SET_FEC`** — the bench (`docs/knob-cadence-bench.md`) showed reactive FEC reconfigs cost more in data-plane stalls than they save. |
-| `residual_loss_w > 0` *and* the leading loop's Channel B emergency thresholds met (`loss ≥ emergency_loss_rate`, default 5 %) | The leading loop force-drops one MCS row on its own (Channel B, §4.1). The new row's `(k, n, bitrate)` follows automatically because they're a per-MCS lookup. If the new row sits in the **MCS 0/1/2 survival band** the `(k, n)` is unchanged — same `(2, 5)` shared across the band — so no `CMD_SET_FEC` fires. |
+| `residual_loss_w > 0` *and* the leading loop's Channel B emergency thresholds met (`loss ≥ emergency_loss_rate`, default 5 %) | The leading loop force-drops one MCS row on its own (Channel B, §4.1). The new row's `(k, n)` and computed bitrate follow automatically because they're a per-MCS lookup. If the new row sits in the **MCS 0/1/2 survival band** the `(k, n)` is unchanged — same `(2, 5)` shared across the band — so no `CMD_SET_FEC` fires. |
 | `fec_work` rising, `residual_loss_w == 0` | **no-op.** Parity headroom is being consumed but no primary has glitched. The leading loop's stress-widened SNR margin (Channel A) accounts for `fec_work`; if the link character actually deteriorates the leading loop will drop MCS, and FEC follows. |
 
 **IDR-request mechanics.** The request flows:
@@ -912,9 +922,9 @@ deterministic per-MCS lookup against the radio profile's
 `fec_table`. Both `k` (block size) and `n` (parity count) are
 chosen at profile-load time per the rules:
 
-- **`k` is sized for bitrate**, so block-fill time
+- **`k` is sized for the row's PHY rate**, so block-fill time
   (`k × MTU × 8 / bitrate`) stays in the 5–10 ms band at every
-  row. MCS 0/1/2 share `k = 2` because MCS 0's 1.5 Mbps bitrate
+  row. MCS 0/1/2 share `k = 2` because MCS 0's low PHY rate
   needs the smallest possible block to keep block-fill latency
   reasonable.
 - **`n` is sized for the row's link quality.** Lower MCS = noisier
@@ -1475,11 +1485,6 @@ preferred_k:
   2: 4
   1: 2
   0: 2     # MCS0 survival; smallest k keeps block-fill bounded
-
-# Conservative encoder-bitrate fraction of nominal (0..1).
-# Controller emits bitrate = data_rate * encoder_bitrate_frac,
-# leaving headroom for FEC parity + re-tx + telemetry.
-encoder_bitrate_frac: 0.40
 ```
 
 **Startup validation.** The GS service, on load:
@@ -1493,9 +1498,10 @@ encoder_bitrate_frac: 0.40
   set (the bands §4.2 defines) and that `preferred_k` values
   decrease monotonically from MCS 7 to MCS 0.
 - Builds the runtime `rssi_mcs_map` from `sensitivity_dBm` +
-  `rssi_margin_db` + `data_rate_Mbps_LGI * encoder_bitrate_frac`
-  + `preferred_k`. The row table shown in §4.1 is the output of
-  this build for the `m8812eu2` HT20 default.
+  `rssi_margin_db` + `preferred_k`. The row table shown in §4.1
+  is the output of this build for the `m8812eu2` HT20 default.
+  Encoder bitrate is computed at tick time (not at profile load)
+  via `compute_bitrate_kbps` using `policy.bitrate.utilization_factor`.
 - Runs the latency-budget predictor at the chosen `video_fps`
   against each row's preferred `k` at depth 1 and depth 2. If
   any row would exceed `max_latency_ms`, the service logs a
