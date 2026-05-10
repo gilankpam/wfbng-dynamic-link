@@ -757,17 +757,17 @@ startup from `conf/radios/<name>.yaml` in the dynamic-link repo
 
 **Default (M8812EU2, HT20, long GI), at `rssi_margin_db = 8`:**
 
-| Band (dBm)          | MCS | `(k, n)`  | redundancy | bitrate (illustrative, `utilization_factor=0.8`) |
-|---------------------|-----|-----------|------------|--------------------------------------------------|
-| `rssi >= -69`       | 7   | (12, 14)  | 17 %       | ~25 Mbps                                         |
-| `-72 <= rssi < -69` | 6   | (10, 12)  | 20 %       | ~22 Mbps                                         |
-| `-74 <= rssi < -72` | 5   | (8, 10)   | 25 %       | ~18 Mbps                                         |
-| `-77 <= rssi < -74` | 4   | (6, 9)    | 33 %       | ~13 Mbps                                         |
-| `-80 <= rssi < -77` | 3   | (4, 7)    | 43 %       | ~7.5 Mbps                                        |
-| `-83 <= rssi < -80` | 2   | **(2, 5)**| 60 %       | ~4.0 Mbps                                        |
-| `-85 <= rssi < -83` | 1   | **(2, 5)**| 60 %       | ~2.5 Mbps                                        |
-| `-88 <= rssi < -85` | 0   | **(2, 5)**| 60 %       | ~1.5 Mbps                                        |
-| `rssi < -88`        | —   | —         | —          | (`budget_exhausted`, RTH)                        |
+| Band (dBm)          | MCS | `(k, n)`  | redundancy | bitrate (`utilization_factor=0.8`, clamped to 24 Mbps) |
+|---------------------|-----|-----------|------------|--------------------------------------------------------|
+| `rssi >= -69`       | 7   | (12, 14)  | 17 %       | 24.0 Mbps (clamped; raw 44.6 Mbps)                    |
+| `-72 <= rssi < -69` | 6   | (10, 12)  | 20 %       | 24.0 Mbps (clamped; raw 39.0 Mbps)                    |
+| `-74 <= rssi < -72` | 5   | (8, 10)   | 25 %       | 24.0 Mbps (clamped; raw 33.3 Mbps)                    |
+| `-77 <= rssi < -74` | 4   | (6, 9)    | 33 %       | 20.8 Mbps                                             |
+| `-80 <= rssi < -77` | 3   | (4, 7)    | 43 %       | 11.9 Mbps                                             |
+| `-83 <= rssi < -80` | 2   | **(2, 5)**| 60 %       |  6.2 Mbps                                             |
+| `-85 <= rssi < -83` | 1   | **(2, 5)**| 60 %       |  4.2 Mbps                                             |
+| `-88 <= rssi < -85` | 0   | **(2, 5)**| 60 %       |  2.1 Mbps                                             |
+| `rssi < -88`        | —   | —         | —          | (`budget_exhausted`, RTH)                              |
 
 The radio profile's `fec_table[bw][mcs]` (§6.1) carries the
 operator-validated `(k, n)` for each MCS row. Encoder bitrate is
@@ -922,11 +922,12 @@ deterministic per-MCS lookup against the radio profile's
 `fec_table`. Both `k` (block size) and `n` (parity count) are
 chosen at profile-load time per the rules:
 
-- **`k` is sized for the row's PHY rate**, so block-fill time
-  (`k × MTU × 8 / bitrate`) stays in the 5–10 ms band at every
-  row. MCS 0/1/2 share `k = 2` because MCS 0's low PHY rate
-  needs the smallest possible block to keep block-fill latency
-  reasonable.
+- **`k` is sized for parity-window coverage.** Block-fill latency
+  `MTU × 8 × n / (PHY × utilization)` depends only on `n` and PHY
+  (because bitrate is now `PHY × util × k/n`); `k` controls how many
+  packets the block protects against loss within that window.
+  MCS 0/1/2 share `k = 2` because their `n = 5` already fills the
+  latency budget at low PHY.
 - **`n` is sized for the row's link quality.** Lower MCS = noisier
   link = richer parity. Default profile spans 60 % redundancy at
   MCS 0/1/2 down to 17 % at MCS 7.
@@ -1277,7 +1278,7 @@ video:
   max_latency_ms: 50             # hard cap; refuse decisions that exceed
 
 # Policy bounds for the trailing (FEC) loop.
-# Per-k bands live in the radio profile (§6.1 preferred_k);
+# Per-(k, n) values live in the radio profile's fec_table (§6.1);
 # these are the absolute floor / ceiling across all bands.
 fec:
   n_min: 4                       # k=2 band floor; smallest n we'll use
@@ -1470,21 +1471,31 @@ data_rate_Mbps_LGI:
     6: 121.5
     7: 135.0
 
-# Preferred FEC k per MCS row (§4.2). Tuned for the 60 fps
-# latency cap (50 ms) at depth 1-2. At 90 fps the
-# latency-budget predictor (§4) may auto-drop k one band.
-# Bandwidth-agnostic — same table for HT20 and HT40 because
-# block-fill time is k * MTU / bitrate and bitrate already
-# scales with bandwidth at the same MCS row.
-preferred_k:
-  7: 8     # MCS7 cruise; k=8 matches master.cfg [video] floor
-  6: 8
-  5: 6
-  4: 6
-  3: 4
-  2: 4
-  1: 2
-  0: 2     # MCS0 survival; smallest k keeps block-fill bounded
+# Per-MCS FEC `(k, n)` for each supported bandwidth (§4.2).
+# Pinned per-MCS, never escalated reactively. Encoder bitrate
+# is computed at runtime as
+#   data_rate_Mbps_LGI[bw][mcs] * 1000 * policy.bitrate.utilization_factor * (k/n)
+# clamped to policy.bitrate.{min,max}_bitrate_kbps. See
+# gs/dynamic_link/bitrate.py.
+fec_table:
+  20:
+    0: {k: 2,  n: 5}
+    1: {k: 2,  n: 5}
+    2: {k: 2,  n: 5}
+    3: {k: 4,  n: 7}
+    4: {k: 6,  n: 9}
+    5: {k: 8,  n: 10}
+    6: {k: 10, n: 12}
+    7: {k: 12, n: 14}
+  40:
+    0: {k: 2,  n: 5}
+    1: {k: 2,  n: 5}
+    2: {k: 2,  n: 5}
+    3: {k: 4,  n: 7}
+    4: {k: 6,  n: 9}
+    5: {k: 8,  n: 10}
+    6: {k: 10, n: 12}
+    7: {k: 12, n: 14}
 ```
 
 **Startup validation.** The GS service, on load:
@@ -1494,16 +1505,18 @@ preferred_k:
 - Confirms every `(bandwidth, mcs)` pair in the row range has
   both a `sensitivity_dBm` entry and a `data_rate_Mbps_LGI`
   entry.
-- Confirms every MCS in `preferred_k` is in the `{2, 4, 6, 8}`
-  set (the bands §4.2 defines) and that `preferred_k` values
-  decrease monotonically from MCS 7 to MCS 0.
+- Confirms every `(bandwidth, mcs)` pair in `fec_table` carries
+  both `k` and `n` (the validator rejects `bitrate_Mbps`; that
+  field is no longer accepted because bitrate is computed from
+  `policy.bitrate`). Confirms `n > k`, `k <= 12`, and `n <= 32`
+  (the wfb-ng cap).
 - Builds the runtime `rssi_mcs_map` from `sensitivity_dBm` +
-  `rssi_margin_db` + `preferred_k`. The row table shown in §4.1
+  `rssi_margin_db` + `fec_table`. The row table shown in §4.1
   is the output of this build for the `m8812eu2` HT20 default.
   Encoder bitrate is computed at tick time (not at profile load)
   via `compute_bitrate_kbps` using `policy.bitrate.utilization_factor`.
 - Runs the latency-budget predictor at the chosen `video_fps`
-  against each row's preferred `k` at depth 1 and depth 2. If
+  against each row's `k` at depth 1 and depth 2. If
   any row would exceed `max_latency_ms`, the service logs a
   warning and notes the auto-drop-k rows for runtime.
 
