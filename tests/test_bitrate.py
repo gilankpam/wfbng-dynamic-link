@@ -48,10 +48,10 @@ def test_clamp_to_min():
 
 
 def test_clamp_to_max():
-    """MCS 7 / 40 MHz with full util: ceilings at max_bitrate_kbps."""
+    """MCS 5 / 40 MHz with full util: ceilings at max_bitrate_kbps."""
     p = _profile()
-    # phy=135 Mbps, k/n=12/14, util=1.0 → 115714 kbps; clamped to 24000.
-    assert compute_bitrate_kbps(p, 40, 7, k=12, n=14,
+    # phy=108.0 Mbps, k/n=8/10=0.8, util=1.0 → 86400 kbps; clamped to 24000.
+    assert compute_bitrate_kbps(p, 40, 5, k=8, n=10,
                                 cfg=_cfg(util=1.0)) == 24000
 
 
@@ -64,7 +64,10 @@ def test_kn_ratio_affects_result():
     assert a > b
 
 
-def test_returns_int():
+def test_typical_mcs_1_40mhz_no_clamp():
+    """MCS 1 / 40 MHz: phy=27.0 Mbps, k/n=2/5=0.4, util=0.8.
+    Raw = 27000 * 0.8 * 0.4 = 8640 kbps. No clamp. Covers the
+    40 MHz lookup branch in a non-clamped scenario."""
     p = _profile()
-    got = compute_bitrate_kbps(p, 20, 4, k=6, n=9, cfg=_cfg())
-    assert isinstance(got, int)
+    got = compute_bitrate_kbps(p, 40, 1, k=2, n=5, cfg=_cfg())
+    assert got == 8640
