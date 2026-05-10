@@ -400,6 +400,57 @@ def test_idr_throttle_drops_duplicates(tmp_path: Path):
         assert len(idrs) == 1, s["encoder"].recorded
 
 
+@pytest.mark.asyncio
+async def test_idr_burst_delivers_multiple_packets(tmp_path: Path):
+    """End-to-end: when IdrBurster fires count=4 packets at 20ms
+    spacing and the drone-side throttle is shorter than the spacing,
+    multiple IDR HTTP calls land on the camera. Verifies the burst
+    actually reaches the applier (lossy-UDP survival path)."""
+    import asyncio
+    from dynamic_link.decision import Decision
+    from dynamic_link.idr_burst import IdrBurstConfig, IdrBurster
+    from dynamic_link.return_link import ReturnLink
+    from dynamic_link.wire import Encoder as WireEncoder
+
+    # Throttle below burst spacing so each packet fires its own
+    # /request/idr — that lets us count arrivals via encoder.recorded.
+    with _sandbox(tmp_path, min_idr_interval_ms=10) as s:
+        target_addr = s["listen_addr"]
+        target_port = s["listen_port"]
+
+        return_link = ReturnLink(target_addr, target_port)
+        encoder = WireEncoder(seq=1)
+        cfg = IdrBurstConfig(enabled=True, count=4, interval_ms=20)
+        burster = IdrBurster(cfg, return_link, encoder)
+
+        decision = Decision(
+            timestamp=1.0, mcs=5, bandwidth=20, tx_power_dBm=18,
+            k=8, n=12, depth=1, bitrate_kbps=8000,
+            idr_request=True, reason="test",
+        )
+
+        # Mirror service.py: send the regular tick packet, then
+        # trigger the count-1 follow-up burst.
+        return_link.send(encoder.encode(decision))
+        burster.trigger(decision)
+
+        # Burst window is interval_ms * (count - 1) = 60 ms.
+        # Allow generous slack for asyncio + applier scheduling.
+        await asyncio.sleep(0.25)
+
+        idrs = [p for p in s["encoder"].recorded if p == "/request/idr"]
+        # Tolerant: UDP/asyncio timing on CI is nondeterministic.
+        # We sent 4 packets total; at min_idr_interval_ms=10 below
+        # the 20ms burst spacing, all 4 should fire — but assert
+        # >= 2 to stay green under timing pressure.
+        assert len(idrs) >= 2, (
+            f"expected >= 2 IDR calls in burst window, got {len(idrs)} "
+            f"(encoder.recorded={s['encoder'].recorded})"
+        )
+
+        return_link.close()
+
+
 def test_watchdog_pushes_safe_defaults_on_silence(tmp_path: Path):
     with _sandbox(tmp_path, health_timeout_ms=500) as s:
         target = f"{s['listen_addr']}:{s['listen_port']}"
