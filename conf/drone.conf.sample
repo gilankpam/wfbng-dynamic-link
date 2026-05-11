@@ -14,21 +14,9 @@ listen_port = 5800
 wfb_tx_ctrl_addr = 127.0.0.1
 wfb_tx_ctrl_port = 8000
 
-# ---- Per-airframe safety ceiling (failsafe 4) -----------------------
-# depth_max must stay <= 8 (wfb-ng MAX_INTERLEAVE_DEPTH, src/rx.hpp:103).
-# depth_max > 1 forces video_n_max <= 32 (src/tx.cpp:1183).
-# Raise k_min if this airframe should never drop into survival mode.
-video_k_min = 2
-video_k_max = 8
-video_n_max = 16
-depth_max   = 3
-mcs_max     = 7
-
-# TX power hardware / regulatory ceiling. Set to the lower of:
-#   (a) chipset's calibrated operating power,
-#   (b) regulatory limit for the operator's country.
-tx_power_min_dBm = 0
-tx_power_max_dBm = 20
+# The drone applies whatever the GS sends — there is no per-decision
+# bounds check. Per-airframe fallback values are configured via safe_*
+# below (used when the GS goes silent past health_timeout_ms).
 
 # ---- IDR throttle ---------------------------------------------------
 # Authoritative upper bound on keyframe rate. Lower bound: ~1 frame

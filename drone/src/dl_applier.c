@@ -5,9 +5,8 @@
  *   - timerfd       (watchdog + OSD tick).
  *
  * On every accepted decision:
- *   parse_wire -> ceiling_check -> dispatch backends -> reset watchdog
- *   -> OSD update. Partial backend failure is logged but the loop
- *   continues.
+ *   parse_wire -> dispatch backends -> reset watchdog -> OSD update.
+ *   Partial backend failure is logged but the loop continues.
  *
  * On watchdog trip:
  *   one-shot safe_defaults push; latch until the next fresh decision.
@@ -16,7 +15,6 @@
 #include "dl_backend_enc.h"
 #include "dl_backend_radio.h"
 #include "dl_backend_tx.h"
-#include "dl_ceiling.h"
 #include "dl_config.h"
 #include "dl_dbg.h"
 #include "dl_dedup.h"
@@ -218,10 +216,6 @@ int main(int argc, char **argv) {
         dl_log_fatal("config load failed");
         return 3;
     }
-    if (dl_config_validate(&cfg) < 0) {
-        dl_log_fatal("config validation failed");
-        return 3;
-    }
 
     dl_dbg_init(&cfg);
 
@@ -345,93 +339,78 @@ int main(int argc, char **argv) {
                 } else if (dl_dedup_check(&dedup, d.sequence)) {
                     dl_log_debug("decode: duplicate seq=%u", d.sequence);
                 } else {
-                    dl_ceiling_result_t cr = dl_ceiling_check(&d, &cfg);
-                    if (cr != DL_CEILING_OK) {
-                        const char *rsn = dl_ceiling_reason(cr);
-                        dl_osd_event_reject(osd, rsn);
-                        char text[64];
-                        snprintf(text, sizeof(text), "DL REJECT %s", rsn);
-                        dl_mavlink_emit(mav, "reject",
-                                        DL_MAV_SEV_WARNING, text);
-                        char detail[96];
-                        snprintf(detail, sizeof(detail),
-                                 "{\"reason\":\"%s\",\"seq\":%u}",
-                                 rsn, d.sequence);
-                        dl_dbg_emit("CEILING_REJECT", DL_DBG_SEV_WARN, detail);
-                    } else {
-                        /* New decision supersedes any in-flight phase 2;
-                         * the per-backend diff in phase-1 below will
-                         * reapply anything that still differs. */
-                        if (apply_state != APPLY_IDLE) {
-                            disarm_gap(gap_fd);
-                            apply_state = APPLY_IDLE;
-                        }
-
-                        uint64_t now = now_monotonic_ms();
-                        bool first = (last_enc.magic != DL_WIRE_MAGIC);
-                        dl_apply_dir_t dir = dl_apply_direction(
-                            last_enc.bitrate_kbps, d.bitrate_kbps, first);
-
-                        int drc = 0;
-                        useconds_t sub_pace_us =
-                            (useconds_t)cfg.apply_sub_pace_ms * 1000u;
-                        if (cfg.apply_stagger_ms == 0 ||
-                            dir == DL_APPLY_DIR_EQUAL) {
-                            if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
-                            if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
-                            if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
-                            if (d.flags & DL_FLAG_IDR_REQUEST) {
-                                dl_backend_enc_request_idr(be, now);
-                            }
-                        } else if (dir == DL_APPLY_DIR_UP) {
-                            /* Power up BEFORE MCS up so the new (higher)
-                             * MCS rate has the headroom on the very first
-                             * frame transmitted at it. Then tx (FEC/depth/
-                             * MCS) — paced from the iw exit so wfb_tx's
-                             * radiotap update lands on a steady-state
-                             * power level. Encoder bitrate expands after
-                             * the outer gap. */
-                            if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
-                            if (sub_pace_us > 0) usleep(sub_pace_us);
-                            if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
-                            apply_pending = d;
-                            apply_state   = APPLY_UP_GAP;
-                            arm_gap(gap_fd, cfg.apply_stagger_ms);
-                        } else {  /* DL_APPLY_DIR_DOWN */
-                            /* Throttle producer first, then narrow
-                             * capacity after the gap. IDR rides with
-                             * the encoder phase. tx (MCS down) before
-                             * radio (power down) so we don't transmit
-                             * the old high MCS at reduced power. */
-                            if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
-                            if (d.flags & DL_FLAG_IDR_REQUEST) {
-                                dl_backend_enc_request_idr(be, now);
-                            }
-                            apply_pending = d;
-                            apply_state   = APPLY_DOWN_GAP;
-                            arm_gap(gap_fd, cfg.apply_stagger_ms);
-                        }
-
-                        if (drc < 0) {
-                            dl_log_warn("apply: at least one backend failed seq=%u",
-                                        d.sequence);
-                            dl_mavlink_emit(mav, "apply_fail",
-                                            DL_MAV_SEV_WARNING,
-                                            "DL APPLY_FAIL backend");
-                            char detail[64];
-                            snprintf(detail, sizeof(detail),
-                                     "{\"seq\":%u}", d.sequence);
-                            dl_dbg_emit("APPLY_FAIL", DL_DBG_SEV_WARN, detail);
-                        } else {
-                            dl_log_debug("apply: seq=%u mcs=%u k=%u n=%u d=%u tx=%d br=%u dir=%d",
-                                         d.sequence, d.mcs, d.k, d.n, d.depth,
-                                         d.tx_power_dBm, d.bitrate_kbps,
-                                         (int)dir);
-                        }
-                        last_applied = d;
-                        dl_osd_write_status(osd, &last_applied, last_rssi_dBm);
-                        dl_watchdog_notify_decision(&wd, now);
+                    /* New decision supersedes any in-flight phase 2;
+                     * the per-backend diff in phase-1 below will
+                     * reapply anything that still differs. */
+                    if (apply_state != APPLY_IDLE) {
+                        disarm_gap(gap_fd);
+                        apply_state = APPLY_IDLE;
                     }
+
+                    uint64_t now = now_monotonic_ms();
+                    bool first = (last_enc.magic != DL_WIRE_MAGIC);
+                    dl_apply_dir_t dir = dl_apply_direction(
+                        last_enc.bitrate_kbps, d.bitrate_kbps, first);
+
+                    int drc = 0;
+                    useconds_t sub_pace_us =
+                        (useconds_t)cfg.apply_sub_pace_ms * 1000u;
+                    if (cfg.apply_stagger_ms == 0 ||
+                        dir == DL_APPLY_DIR_EQUAL) {
+                        if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
+                        if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
+                        if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
+                        if (d.flags & DL_FLAG_IDR_REQUEST) {
+                            dl_backend_enc_request_idr(be, now);
+                        }
+                    } else if (dir == DL_APPLY_DIR_UP) {
+                        /* Power up BEFORE MCS up so the new (higher)
+                         * MCS rate has the headroom on the very first
+                         * frame transmitted at it. Then tx (FEC/depth/
+                         * MCS) — paced from the iw exit so wfb_tx's
+                         * radiotap update lands on a steady-state
+                         * power level. Encoder bitrate expands after
+                         * the outer gap. */
+                        if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
+                        if (sub_pace_us > 0) usleep(sub_pace_us);
+                        if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
+                        apply_pending = d;
+                        apply_state   = APPLY_UP_GAP;
+                        arm_gap(gap_fd, cfg.apply_stagger_ms);
+                    } else {  /* DL_APPLY_DIR_DOWN */
+                        /* Throttle producer first, then narrow
+                         * capacity after the gap. IDR rides with
+                         * the encoder phase. tx (MCS down) before
+                         * radio (power down) so we don't transmit
+                         * the old high MCS at reduced power. */
+                        if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
+                        if (d.flags & DL_FLAG_IDR_REQUEST) {
+                            dl_backend_enc_request_idr(be, now);
+                        }
+                        apply_pending = d;
+                        apply_state   = APPLY_DOWN_GAP;
+                        arm_gap(gap_fd, cfg.apply_stagger_ms);
+                    }
+
+                    if (drc < 0) {
+                        dl_log_warn("apply: at least one backend failed seq=%u",
+                                    d.sequence);
+                        dl_mavlink_emit(mav, "apply_fail",
+                                        DL_MAV_SEV_WARNING,
+                                        "DL APPLY_FAIL backend");
+                        char detail[64];
+                        snprintf(detail, sizeof(detail),
+                                 "{\"seq\":%u}", d.sequence);
+                        dl_dbg_emit("APPLY_FAIL", DL_DBG_SEV_WARN, detail);
+                    } else {
+                        dl_log_debug("apply: seq=%u mcs=%u k=%u n=%u d=%u tx=%d br=%u dir=%d",
+                                     d.sequence, d.mcs, d.k, d.n, d.depth,
+                                     d.tx_power_dBm, d.bitrate_kbps,
+                                     (int)dir);
+                    }
+                    last_applied = d;
+                    dl_osd_write_status(osd, &last_applied, last_rssi_dBm);
+                    dl_watchdog_notify_decision(&wd, now);
                 }
             }
         }

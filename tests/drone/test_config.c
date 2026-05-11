@@ -1,4 +1,4 @@
-/* test_config.c — drone.conf parser + validator. */
+/* test_config.c — drone.conf parser. */
 #include "test_main.h"
 #include "dl_config.h"
 
@@ -23,10 +23,19 @@ DL_TEST(test_config_defaults_are_sane) {
     dl_config_defaults(&c);
     DL_ASSERT_STR_EQ(c.listen_addr, "0.0.0.0");
     DL_ASSERT_EQ(c.listen_port, 5800);
-    DL_ASSERT_EQ(c.depth_max, 3);
-    DL_ASSERT_EQ(c.video_k_max, 8);
+    DL_ASSERT_EQ(c.safe_k, 8);
     DL_ASSERT_EQ(c.health_timeout_ms, 10000);
-    DL_ASSERT(dl_config_validate(&c) == 0);
+}
+
+DL_TEST(test_config_rejects_removed_ceiling_key) {
+    /* Any of the seven removed keys must cause a load failure. */
+    const char *body = "mcs_max = 7\n";
+    char path[64];
+    DL_ASSERT_EQ(write_tmp(body, path, sizeof(path)), 0);
+    dl_config_t c;
+    dl_config_defaults(&c);
+    DL_ASSERT_EQ(dl_config_load(path, &c), -1);
+    unlink(path);
 }
 
 DL_TEST(test_config_parses_good_file) {
@@ -35,12 +44,6 @@ DL_TEST(test_config_parses_good_file) {
         "listen_addr = 127.0.0.1\n"
         "listen_port = 5900\n"
         "wfb_tx_ctrl_port = 8010\n"
-        "video_k_min = 2\n"
-        "video_k_max = 8\n"
-        "video_n_max = 16\n"
-        "depth_max = 3\n"
-        "mcs_max = 7\n"
-        "tx_power_max_dBm = 20\n"
         "encoder_kind = waybeam\n"
         "encoder_port = 8080\n"
         "osd_enable = false\n";
@@ -56,40 +59,8 @@ DL_TEST(test_config_parses_good_file) {
     DL_ASSERT_STR_EQ(c.encoder_kind, "waybeam");
     DL_ASSERT_EQ(c.encoder_port, 8080);
     DL_ASSERT(!c.osd_enable);
-    DL_ASSERT_EQ(dl_config_validate(&c), 0);
 
     unlink(path);
-}
-
-DL_TEST(test_config_rejects_depth_above_hw_limit) {
-    dl_config_t c;
-    dl_config_defaults(&c);
-    c.depth_max = 9;  /* > MAX_INTERLEAVE_DEPTH=8 */
-    DL_ASSERT(dl_config_validate(&c) < 0);
-}
-
-DL_TEST(test_config_rejects_depth2_with_n_over_32) {
-    dl_config_t c;
-    dl_config_defaults(&c);
-    c.depth_max = 2;
-    c.video_n_max = 33;
-    DL_ASSERT(dl_config_validate(&c) < 0);
-}
-
-DL_TEST(test_config_rejects_safe_k_above_ceiling) {
-    dl_config_t c;
-    dl_config_defaults(&c);
-    c.video_k_max = 4;
-    c.safe_k = 8;
-    DL_ASSERT(dl_config_validate(&c) < 0);
-}
-
-DL_TEST(test_config_rejects_safe_tx_power_above_ceiling) {
-    dl_config_t c;
-    dl_config_defaults(&c);
-    c.tx_power_max_dBm = 20;
-    c.safe_tx_power_dBm = 30;
-    DL_ASSERT(dl_config_validate(&c) < 0);
 }
 
 DL_TEST(test_config_missing_file_returns_error) {

@@ -9,8 +9,6 @@
 #include <string.h>
 
 #define MAX_LINE 256
-#define WFB_MAX_INTERLEAVE_DEPTH 8   /* wfb-ng src/rx.hpp:103 */
-#define WFB_N_LIMIT_WITH_DEPTH   32  /* wfb-ng src/tx.cpp:1183 */
 
 void dl_config_defaults(dl_config_t *cfg) {
     memset(cfg, 0, sizeof(*cfg));
@@ -18,15 +16,6 @@ void dl_config_defaults(dl_config_t *cfg) {
     cfg->listen_port = 5800;
     strncpy(cfg->wfb_tx_ctrl_addr, "127.0.0.1", DL_CONF_MAX_STR - 1);
     cfg->wfb_tx_ctrl_port = 8000;
-
-    cfg->video_k_min = 2;
-    cfg->video_k_max = 8;
-    cfg->video_n_max = 16;
-    cfg->depth_max   = 3;
-    cfg->mcs_max     = 7;
-
-    cfg->tx_power_min_dBm = 0;
-    cfg->tx_power_max_dBm = 20;
 
     cfg->min_idr_interval_ms = 500;
 
@@ -159,13 +148,19 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "listen_port") == 0)        SET_INT_RANGED(listen_port, uint16_t, 1, 65535);
         else if (strcmp(key, "wfb_tx_ctrl_addr") == 0)   SET_STR(wfb_tx_ctrl_addr);
         else if (strcmp(key, "wfb_tx_ctrl_port") == 0)   SET_INT_RANGED(wfb_tx_ctrl_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "video_k_min") == 0)        SET_INT_RANGED(video_k_min, uint8_t, 1, 32);
-        else if (strcmp(key, "video_k_max") == 0)        SET_INT_RANGED(video_k_max, uint8_t, 1, 32);
-        else if (strcmp(key, "video_n_max") == 0)        SET_INT_RANGED(video_n_max, uint8_t, 2, 255);
-        else if (strcmp(key, "depth_max") == 0)          SET_INT_RANGED(depth_max, uint8_t, 1, 8);
-        else if (strcmp(key, "mcs_max") == 0)            SET_INT_RANGED(mcs_max, uint8_t, 0, 7);
-        else if (strcmp(key, "tx_power_min_dBm") == 0)   SET_INT_RANGED(tx_power_min_dBm, int8_t, -10, 30);
-        else if (strcmp(key, "tx_power_max_dBm") == 0)   SET_INT_RANGED(tx_power_max_dBm, int8_t, -10, 30);
+        else if (strcmp(key, "video_k_min") == 0 ||
+                 strcmp(key, "video_k_max") == 0 ||
+                 strcmp(key, "video_n_max") == 0 ||
+                 strcmp(key, "depth_max") == 0 ||
+                 strcmp(key, "mcs_max") == 0 ||
+                 strcmp(key, "tx_power_min_dBm") == 0 ||
+                 strcmp(key, "tx_power_max_dBm") == 0) {
+            dl_log_err("%s:%d: %s is no longer supported "
+                       "(removed 2026-05-11); the drone applies whatever "
+                       "the GS sends", path, lineno, key);
+            rc = -1;
+            continue;
+        }
         else if (strcmp(key, "min_idr_interval_ms") == 0) SET_INT_RANGED(min_idr_interval_ms, uint32_t, 0, 60000);
         else if (strcmp(key, "apply_stagger_ms") == 0)   SET_INT_RANGED(apply_stagger_ms, uint32_t, 0, 500);
         else if (strcmp(key, "apply_sub_pace_ms") == 0)  SET_INT_RANGED(apply_sub_pace_ms, uint32_t, 0, 50);
@@ -202,60 +197,6 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         }
     }
     fclose(fd);
-    return rc;
-}
-
-int dl_config_validate(const dl_config_t *cfg) {
-    int rc = 0;
-
-    if (cfg->video_k_min > cfg->video_k_max) {
-        dl_log_err("config: video_k_min (%u) > video_k_max (%u)",
-                   cfg->video_k_min, cfg->video_k_max);
-        rc = -1;
-    }
-    if (cfg->tx_power_min_dBm > cfg->tx_power_max_dBm) {
-        dl_log_err("config: tx_power_min_dBm (%d) > tx_power_max_dBm (%d)",
-                   cfg->tx_power_min_dBm, cfg->tx_power_max_dBm);
-        rc = -1;
-    }
-    if (cfg->depth_max > WFB_MAX_INTERLEAVE_DEPTH) {
-        dl_log_err("config: depth_max=%u exceeds wfb-ng MAX_INTERLEAVE_DEPTH=%d",
-                   cfg->depth_max, WFB_MAX_INTERLEAVE_DEPTH);
-        rc = -1;
-    }
-    if (cfg->depth_max > 1 && cfg->video_n_max > WFB_N_LIMIT_WITH_DEPTH) {
-        dl_log_err("config: depth_max>1 requires video_n_max<=%d (got %u)",
-                   WFB_N_LIMIT_WITH_DEPTH, cfg->video_n_max);
-        rc = -1;
-    }
-    /* safe_defaults must fit the ceiling. */
-    if (cfg->safe_k < cfg->video_k_min || cfg->safe_k > cfg->video_k_max) {
-        dl_log_err("config: safe_k=%u outside [%u,%u]",
-                   cfg->safe_k, cfg->video_k_min, cfg->video_k_max);
-        rc = -1;
-    }
-    if (cfg->safe_n > cfg->video_n_max) {
-        dl_log_err("config: safe_n=%u > video_n_max=%u",
-                   cfg->safe_n, cfg->video_n_max);
-        rc = -1;
-    }
-    if (cfg->safe_depth > cfg->depth_max) {
-        dl_log_err("config: safe_depth=%u > depth_max=%u",
-                   cfg->safe_depth, cfg->depth_max);
-        rc = -1;
-    }
-    if (cfg->safe_mcs > cfg->mcs_max) {
-        dl_log_err("config: safe_mcs=%u > mcs_max=%u",
-                   cfg->safe_mcs, cfg->mcs_max);
-        rc = -1;
-    }
-    if (cfg->safe_tx_power_dBm < cfg->tx_power_min_dBm ||
-        cfg->safe_tx_power_dBm > cfg->tx_power_max_dBm) {
-        dl_log_err("config: safe_tx_power_dBm=%d outside [%d,%d]",
-                   cfg->safe_tx_power_dBm,
-                   cfg->tx_power_min_dBm, cfg->tx_power_max_dBm);
-        rc = -1;
-    }
     return rc;
 }
 

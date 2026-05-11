@@ -318,7 +318,6 @@ applies don't produce records; only their broken siblings.
 | Reason | Emitter | Detail keys |
 |---|---|---|
 | `DECODE_BAD` | `dl_applier.c` wire decode failed | `code`, `len` |
-| `CEILING_REJECT` | `dl_ceiling.c` failsafe 4 | `reason`, `seq` |
 | `APPLY_FAIL` | any backend returned non-zero | `seq` |
 | `WATCHDOG_TRIPPED` | failsafe 1 (GS-link silence) | `timeout_ms` |
 | `TX_APPLY_FAIL` | `dl_backend_tx.c` send/recv/short/non-zero rc | `cmd`, `errno`/`rc`/`reply_len` |

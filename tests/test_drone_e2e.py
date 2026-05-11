@@ -243,9 +243,6 @@ def _sandbox(tmp_path: Path, **overrides):
         # wlan to guarantee `iw` fails softly (we're not testing iw).
         "radio_backend":     "iw",
         "wlan_dev":          "dl-nonexistent0",
-        "video_k_min": 2, "video_k_max": 8, "video_n_max": 16,
-        "depth_max": 3, "mcs_max": 7,
-        "tx_power_min_dBm": 0, "tx_power_max_dBm": 20,
         "safe_k": 8, "safe_n": 12, "safe_depth": 1,
         "safe_mcs": 1, "safe_bandwidth": 20,
         "safe_tx_power_dBm": 20, "safe_bitrate_kbps": 2000,
@@ -372,20 +369,6 @@ def test_golden_path_dispatches_all_backends(tmp_path: Path):
                    for p in paths), paths
 
 
-def test_ceiling_rejects_out_of_bound_mcs(tmp_path: Path):
-    with _sandbox(tmp_path, mcs_max=5) as s:
-        target = f"{s['listen_addr']}:{s['listen_port']}"
-        _inject(target, mcs=7, bandwidth=20, tx_power=18,
-                k=8, n=12, depth=1, bitrate=10000)
-        time.sleep(0.3)
-        # Nothing should have reached wfb_tx.
-        assert s["wfb"].received == []
-        # OSD should contain a reject event.
-        assert s["osd_path"].exists()
-        content = s["osd_path"].read_text()
-        assert "REJECT" in content
-
-
 def test_idr_throttle_drops_duplicates(tmp_path: Path):
     with _sandbox(tmp_path, min_idr_interval_ms=500) as s:
         target = f"{s['listen_addr']}:{s['listen_port']}"
@@ -467,19 +450,6 @@ def test_watchdog_pushes_safe_defaults_on_silence(tmp_path: Path):
         # And the OSD should say so.
         content = s["osd_path"].read_text() if s["osd_path"].exists() else ""
         assert "WATCHDOG" in content
-
-
-def test_ceiling_reject_emits_statustext(tmp_path: Path):
-    with _sandbox(tmp_path, mcs_max=5) as s:
-        target = f"{s['listen_addr']}:{s['listen_port']}"
-        _inject(target, mcs=7, bandwidth=20, tx_power=18,
-                k=8, n=12, depth=1, bitrate=10000)
-        assert _wait_until(
-            lambda: any("DL REJECT" in t for _, t in s["mavlink"].statustexts()),
-            timeout_s=1.0,
-        ), s["mavlink"].statustexts()
-        texts = [t for _, t in s["mavlink"].statustexts()]
-        assert any("mcs_too_high" in t for t in texts), texts
 
 
 def test_watchdog_emits_statustext(tmp_path: Path):

@@ -450,7 +450,6 @@ Reasons emitted today:
 | Reason | Where | Detail fields |
 |---|---|---|
 | `DECODE_BAD` | wire decode failed | `code`, `len` |
-| `CEILING_REJECT` | failsafe 4 tripped | `reason`, `seq` |
 | `APPLY_FAIL` | one or more backends returned non-zero | `seq` |
 | `WATCHDOG_TRIPPED` | failsafe 1 (GS-link silence) | `timeout_ms` |
 | `TX_APPLY_FAIL` | wfb_tx control socket error | `cmd`, `errno`/`rc`/`reply_len` |

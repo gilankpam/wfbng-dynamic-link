@@ -3,9 +3,8 @@
 Adaptive link controller for wfb-ng — separate repo, pure consumer of
 wfb-ng's already-stable interfaces. See `docs/dynamic-link-design.md` for
 the full design. Implementation notes per phase live at
-`docs/phase0-implementation.md` (GS observer), `docs/phase1-implementation.md`
-(drone applier), `docs/phase2-implementation.md` (end-to-end wiring),
-`docs/phase3-implementation.md` (post-flight debug suite).
+`docs/phase0-implementation.md` (GS observer), `docs/phase2-implementation.md`
+(end-to-end wiring), `docs/phase3-implementation.md` (post-flight debug suite).
 
 Two components:
 
@@ -222,8 +221,7 @@ drone/
     dl_applier.c         Main event loop
     dl_inject.c          CLI — craft+send one decision (also `--dry-run`)
     dl_wire.{c,h}        Wire format (authority for both languages)
-    dl_config.{c,h}      drone.conf parser + validator
-    dl_ceiling.{c,h}     Failsafe 4 (local bounds)
+    dl_config.{c,h}      drone.conf parser
     dl_watchdog.{c,h}    Failsafe 1 (GS-link timeout)
     dl_backend_tx.{c,h}  tx_cmd.h dispatch (FEC, RADIO, DEPTH)
     dl_backend_radio.{c,h}  iw shell-out (TX power)

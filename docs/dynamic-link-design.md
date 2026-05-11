@@ -159,8 +159,8 @@ the return link at its static master.cfg defaults.
   |  | process)                  |   |         |  | process)               |  |
   |  |                           |   |         |  |                        |  |
   |  |  - JSON stats subscriber  |   |         |  |  - decision parser     |  |
-  |  |  - signal collector       |   |         |  |  - ceiling check       |  |
-  |  |  - policy engine          |   |         |  |  - 4 failsafes         |  |
+  |  |  - signal collector       |   |         |  |  - watchdog            |  |
+  |  |  - policy engine          |   |         |  |  - 3 failsafes         |  |
   |  |    (state machine,        |   |         |  |  - dispatcher          |  |
   |  |     hysteresis,           |   |         |  +---+-------+--------+---+  |
   |  |     latency budget)       |   |         |      |       |        |      |
@@ -192,15 +192,13 @@ for return path). No wfb-ng source changes.
   hysteresis-driven — no real-time constraint.
 - **Drone is resource-tight.** Typical targets (Radxa Zero 3W,
   OpenIPC SoCs) boot a minimal image without Python. The drone
-  applier's job is small: parse decisions, check bounds, issue
-  `tx_cmd.h` packets to the local `wfb_tx`. C keeps the runtime
-  footprint ~100 KB and avoids adding Python to the drone image.
-- **Safety-critical path stays local.** The drone applier
-  independently enforces the per-airframe ceiling (§5 failsafe 4)
-  and the GS-link watchdog (§5 failsafe 1). A compromised or
-  crashing GS cannot push the drone outside its envelope — the
-  enforcement is in the drone's own process, in a language with
-  no runtime to crash.
+  applier's job is small: parse decisions and issue `tx_cmd.h`
+  packets to the local `wfb_tx`. C keeps the runtime footprint
+  ~100 KB and avoids adding Python to the drone image.
+- **GS-link watchdog stays local.** When the GS goes silent past
+  `health_timeout_ms` the drone falls back to its configured
+  `safe_*` defaults (§5 failsafe 1). All other policy lives on the
+  GS; the drone applies whatever the GS sends.
 
 ### Backends on the drone
 
@@ -243,9 +241,8 @@ degrade gracefully.
   GS is the authoritative source.
 - **Drone (C, standalone binary `dl-applier`).** Spawned by the
   drone's init system alongside `wfb_tx`. Pure executor:
-  receives decisions, validates, dispatches. Holds no policy
-  state of its own beyond the ceiling check and the watchdog
-  timer.
+  receives decisions, dispatches. Holds no policy state of its
+  own beyond the watchdog timer.
 - **Return link.** Asymmetric by design (§10):
   - *GS → drone (decision path).* Raw UDP, fixed-size struct,
     explicit endianness, carried over the existing `tunnel`
@@ -1203,26 +1200,11 @@ from a sick GS must not depend on the GS.
 3. **Never exceed the latency cap.** *(GS service, Python.)*
    Predicted-latency check per §4 above. Refuse, don't degrade
    latency.
-4. **Safety ceiling enforced locally.** *(Drone applier, C.)*
-   The applier independently rejects any command above the
-   per-airframe ceiling from the drone's local config file, even
-   if the GS signed off on it. Ceilings cover:
-   - `(k, n, depth)` for FEC / interleaver.
-   - `tx_power_max_dBm` — regulatory / hardware cap on TX power.
-     Critical: a mis-calibrated GS asking for 33 dBm on a
-     chipset rated for 20 dBm can damage the PA. The applier
-     clamps every TX-power decision to the local ceiling.
-   - `mcs_index` / `bandwidth` pairs the chipset is validated
-     for.
 
-   If the GS is compromised, the drone still flies inside its
-   envelope. The interleaver-depth ceiling must also stay ≤
-   `MAX_INTERLEAVE_DEPTH` (8, at
-   [src/rx.hpp:103](../../src/rx.hpp#L103)) — the compile-time
-   RX ring sizing. `wfb_tx_cmd` accepts `depth 1..255` and
-   `wfb_tx` only rejects depth conflicts against `n > 32` /
-   `fec_timeout > 0`; nothing in the TX rejects depth > 8, so
-   the applier is the only line of defense for that bound.
+The drone applies whatever the GS sends — there is no per-decision
+ceiling on the drone. The GS policy is the single authoritative
+source for what's safe; the drone's only local safety net is the
+watchdog (failsafe 1).
 
 ### What a watchdog-triggered fallback looks like
 
@@ -1501,7 +1483,7 @@ fec_table:
 **Startup validation.** The GS service, on load:
 
 - Parses the YAML with a safe loader (no Python-tag support).
-- Confirms `mcs_max <= 7` (design policy).
+- Confirms `mcs_max <= 7`. The drone applies whatever the GS sends, so this cap is enforced GS-side only.
 - Confirms every `(bandwidth, mcs)` pair in the row range has
   both a `sensitivity_dBm` entry and a `data_rate_Mbps_LGI`
   entry.
@@ -1545,27 +1527,8 @@ listen_port = 5800
 wfb_tx_ctrl_addr = 127.0.0.1
 wfb_tx_ctrl_port = 8000
 
-# Per-airframe hardware ceiling. Applier rejects any decision
-# above any of these values regardless of what the GS says.
-#
-# depth_max must stay <= MAX_INTERLEAVE_DEPTH (8) at
-# src/rx.hpp:103 -- the compile-time RX ring sizing.
-# n_max must stay <= 32 when depth_max > 1 (src/tx.cpp:1183).
-# k_min default of 2 matches the GS-side per-MCS-row bands
-# (§4.2); raise it if your airframe should never drop into
-# a low-k / low-bitrate survival mode.
-video_k_min = 2
-video_k_max = 8
-video_n_max = 16
-depth_max = 3
-
-# TX power hardware / regulatory ceiling. The GS's inner loop may
-# ask for anything in [tx_power_min_dBm, tx_power_max_dBm]; the
-# applier clamps to this local pair. Set to the lower of:
-# (a) chipset's safe operating power, (b) regulatory limit for
-# this airframe's country of operation.
-tx_power_min_dBm = 0
-tx_power_max_dBm = 20
+# The drone applies whatever the GS sends — no per-decision ceiling.
+# Per-airframe fallback is via safe_* below (used on watchdog trip).
 
 # IDR throttle — authoritative cap on encoder IDR-request rate.
 # GS emits IDR requests on every residual_loss_w > 0 window
@@ -2105,3 +2068,7 @@ dynamic-link's 10 Hz cadence: set `log_interval = 100` in
 [wfb_ng/conf/master.cfg:26](../../wfb_ng/conf/master.cfg#L26)).
 Default is 1000. This is the only wfb-ng-side setting dynamic-
 link requires; everything else is dynamic-link's own config.
+
+---
+
+*2026-05-11: failsafe 4 (drone-side ceiling) removed entirely. The drone applies whatever the GS sends; failsafe 1 (GS-link watchdog + safe_*) is the only drone-local safety net.*

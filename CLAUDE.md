@@ -52,7 +52,7 @@ wfb-ng/             Reference checkout (GITIGNORED — not our code)
 
 | Need | Command |
 |---|---|
-| Run pytest (GS unit + Python e2e) | `python3 -m pytest` (from repo root) |
+| Run pytest (GS unit + Python e2e) | `python3 -m pytest --ignore=tests/test_mavlink_status.py` (from repo root) |
 | Run C unit tests | `make -C drone test` |
 | Build C binaries | `make -C drone` → `drone/build/dl-applier`, `dl-inject` |
 | Cross-compile for ARM | `make -C drone CROSS_COMPILE=arm-linux-gnueabihf-` |
@@ -66,11 +66,14 @@ wfb-ng/             Reference checkout (GITIGNORED — not our code)
 - **pytest / pytest-asyncio** — dev-only.
 - **wfb-ng Python package** (`wfb_ng.mavlink`, `wfb_ng.mavlink_protocol`)
   — Phase 2 `mavlink_status.py` reuses wfb-ng's bundled MAVLink codec.
-  Operators running the radio link already have this installed. For
-  dev on this workstation: `VERSION=1.0.0 COMMIT=abc1234 python3 -m
-  pip install --break-system-packages -e /workspace/wfb-ng` (wfb-ng's
-  setup.py requires both env vars; any PEP-440-ish version string
-  works).
+  Operators running the radio link already have this installed. The
+  `tests/test_mavlink_status.py` suite needs it too; the documented
+  pytest command above ignores that file so a clean checkout passes
+  without an install. To run those tests on this workstation:
+  `VERSION=1.0.0 COMMIT=abc1234 python3 -m pip install
+  --break-system-packages -e /workspace/wfb-ng` (wfb-ng's setup.py
+  requires both env vars; any PEP-440-ish version string works), then
+  drop the `--ignore=` flag.
 - **Twisted** — pulled in transitively by the wfb-ng package. We don't
   use Twisted directly; dynamic-link's own Python code is stdlib
   asyncio.
