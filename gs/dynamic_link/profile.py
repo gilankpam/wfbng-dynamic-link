@@ -1,11 +1,11 @@
 """Radio-profile YAML loader and runtime `rssi_mcs_map` builder (§6.1).
 
-Each profile carries a per-(bandwidth, MCS) `fec_table` — the `(k, n)`
-pair to use at that row. The table is operator-validated per airframe;
-the controller never moves `(k, n)` reactively. Bitrate is computed at
-runtime via `dynamic_link.bitrate.compute_bitrate_kbps` keyed off
-`policy.bitrate`. See `docs/knob-cadence-bench.md` for why FEC reconfigs
-are pinned per-MCS instead of escalated on loss.
+Bitrate is computed at runtime via
+`dynamic_link.bitrate.compute_bitrate_kbps` keyed off `policy.bitrate`,
+and `(k, n)` are computed at runtime by `dynamic_link.dynamic_fec`
+from the drone-reported `(mtu_bytes, fps)` and the live MCS-driven
+bitrate. See `docs/knob-cadence-bench.md` for why FEC reconfigs are
+debounced via the EmitGate.
 """
 from __future__ import annotations
 
@@ -20,27 +20,15 @@ class ProfileError(ValueError):
 
 
 @dataclass(frozen=True)
-class FECEntry:
-    k: int
-    n: int
-
-
-@dataclass(frozen=True)
 class MCSRow:
-    """One row of the runtime RSSI/SNR → (MCS, k, n) map.
+    """One row of the runtime RSSI/SNR → MCS map.
 
-    Both `rssi_floor_dBm` and `snr_floor_dB` are populated by both
-    `rssi_mcs_map` and `snr_mcs_map`. The leading loop's MCS hysteresis
-    runs on `snr_floor_dB`; `rssi_floor_dBm` is retained for diagnostic
-    visibility and any future RSSI-based safety check. `(k, n)` come
-    from the profile's `fec_table` row. Bitrate is computed at runtime
-    via `dynamic_link.bitrate.compute_bitrate_kbps` keyed off `policy.bitrate`.
+    `(k, n)` are no longer per-row — they're computed at runtime by
+    `dynamic_fec.compute_k` / `compute_n`. See P4b spec.
     """
     mcs: int
     rssi_floor_dBm: float  # sensitivity_dBm[mcs] + rssi_margin_db
     snr_floor_dB: float    # snr_floor_dB[mcs] + snr_margin_db
-    k: int                 # fec_table[bw][mcs].k
-    n: int                 # fec_table[bw][mcs].n
 
 
 @dataclass(frozen=True)
@@ -57,21 +45,6 @@ class RadioProfile:
     sensitivity_dBm: dict[int, dict[int, int]]   # bw -> mcs -> dBm
     snr_floor_dB: dict[int, dict[int, float]]    # bw -> mcs -> dB
     data_rate_Mbps_LGI: dict[int, dict[int, float]]
-    fec_table: dict[int, dict[int, FECEntry]]    # bw -> mcs -> FECEntry
-
-    def fec_for(self, bandwidth: int, mcs: int) -> FECEntry:
-        """Look up the operator-validated `(k, n)` for a (bandwidth, mcs)
-        pair. Raises `ProfileError` if missing."""
-        if bandwidth not in self.fec_table:
-            raise ProfileError(
-                f"fec_table missing bandwidth {bandwidth}"
-            )
-        row = self.fec_table[bandwidth]
-        if mcs not in row:
-            raise ProfileError(
-                f"fec_table[{bandwidth}] missing mcs {mcs}"
-            )
-        return row[mcs]
 
     def _build_rows(
         self,
@@ -85,16 +58,12 @@ class RadioProfile:
             )
         sens = self.sensitivity_dBm[bandwidth]
         snr = self.snr_floor_dB[bandwidth]
-        fec = self.fec_table[bandwidth]
         rows = []
         for mcs in range(self.mcs_max, self.mcs_min - 1, -1):
-            entry = fec[mcs]
             rows.append(MCSRow(
                 mcs=mcs,
                 rssi_floor_dBm=sens[mcs] + rssi_margin_db,
                 snr_floor_dB=snr[mcs] + snr_margin_db,
-                k=entry.k,
-                n=entry.n,
             ))
         return rows
 
@@ -137,6 +106,15 @@ def _validate(data: dict, source: str) -> RadioProfile:
             raise ProfileError(f"{source}: missing required key {key!r}")
         return data[key]
 
+    # fec_table was removed in P4b. Reject legacy YAMLs explicitly so
+    # operators know to delete the section rather than silently ignoring it.
+    if "fec_table" in data:
+        raise ProfileError(
+            f"{source}: fec_table is no longer supported — (k, n) are "
+            f"computed at runtime by dynamic_fec from the drone-reported "
+            f"(mtu, fps). Remove the fec_table section."
+        )
+
     mcs_min = int(req("mcs_min"))
     mcs_max = int(req("mcs_max"))
     if mcs_max > 7:
@@ -165,50 +143,6 @@ def _validate(data: dict, source: str) -> RadioProfile:
     data_rate = {int(bw): {int(m): float(s) for m, s in sub.items()}
                  for bw, sub in req("data_rate_Mbps_LGI").items()}
 
-    fec_raw = req("fec_table")
-    if not isinstance(fec_raw, dict):
-        raise ProfileError(f"{source}: fec_table must be a mapping")
-    fec_table: dict[int, dict[int, FECEntry]] = {}
-    for bw_key, sub in fec_raw.items():
-        bw = int(bw_key)
-        if not isinstance(sub, dict):
-            raise ProfileError(
-                f"{source}: fec_table[{bw}] must be a mapping"
-            )
-        per_bw: dict[int, FECEntry] = {}
-        for mcs_key, entry in sub.items():
-            mcs_i = int(mcs_key)
-            if not isinstance(entry, dict):
-                raise ProfileError(
-                    f"{source}: fec_table[{bw}][{mcs_i}] must be a mapping"
-                )
-            for f in ("k", "n"):
-                if f not in entry:
-                    raise ProfileError(
-                        f"{source}: fec_table[{bw}][{mcs_i}] missing {f!r}"
-                    )
-            if "bitrate_Mbps" in entry:
-                raise ProfileError(
-                    f"{source}: fec_table[{bw}][{mcs_i}] contains bitrate_Mbps; "
-                    f"bitrate is computed from policy.bitrate — drop this field"
-                )
-            k = int(entry["k"])
-            n = int(entry["n"])
-            if k < 1 or k > 12:
-                raise ProfileError(
-                    f"{source}: fec_table[{bw}][{mcs_i}] k={k} out of range [1, 12]"
-                )
-            if n <= k:
-                raise ProfileError(
-                    f"{source}: fec_table[{bw}][{mcs_i}] n={n} must be > k={k}"
-                )
-            if n > 32:
-                raise ProfileError(
-                    f"{source}: fec_table[{bw}][{mcs_i}] n={n} exceeds wfb-ng cap (32)"
-                )
-            per_bw[mcs_i] = FECEntry(k=k, n=n)
-        fec_table[bw] = per_bw
-
     for bw in bandwidth_supported:
         if bw not in sensitivity:
             raise ProfileError(f"{source}: sensitivity_dBm missing bw={bw}")
@@ -216,8 +150,6 @@ def _validate(data: dict, source: str) -> RadioProfile:
             raise ProfileError(f"{source}: snr_floor_dB missing bw={bw}")
         if bw not in data_rate:
             raise ProfileError(f"{source}: data_rate_Mbps_LGI missing bw={bw}")
-        if bw not in fec_table:
-            raise ProfileError(f"{source}: fec_table missing bw={bw}")
         for mcs in range(mcs_min, mcs_max + 1):
             if mcs not in sensitivity[bw]:
                 raise ProfileError(
@@ -230,10 +162,6 @@ def _validate(data: dict, source: str) -> RadioProfile:
             if mcs not in data_rate[bw]:
                 raise ProfileError(
                     f"{source}: data_rate_Mbps_LGI[{bw}] missing mcs={mcs}"
-                )
-            if mcs not in fec_table[bw]:
-                raise ProfileError(
-                    f"{source}: fec_table[{bw}] missing mcs={mcs}"
                 )
 
     return RadioProfile(
@@ -248,5 +176,4 @@ def _validate(data: dict, source: str) -> RadioProfile:
         sensitivity_dBm=sensitivity,
         snr_floor_dB=snr_floor,
         data_rate_Mbps_LGI=data_rate,
-        fec_table=fec_table,
     )
