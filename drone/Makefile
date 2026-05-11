@@ -27,7 +27,8 @@ APPLIER_SRCS := \
     $(SRCDIR)/dl_mavlink.c \
     $(SRCDIR)/dl_osd.c \
     $(SRCDIR)/dl_watchdog.c \
-    $(SRCDIR)/dl_wire.c
+    $(SRCDIR)/dl_wire.c \
+    $(SRCDIR)/dl_yaml_get.c
 
 # dl-inject only needs the wire encoder.
 INJECT_SRCS := \
@@ -44,13 +45,15 @@ TEST_SRCS := \
     $(TESTDIR)/test_dedup.c \
     $(TESTDIR)/test_mavlink.c \
     $(TESTDIR)/test_watchdog.c \
+    $(TESTDIR)/test_dl_yaml.c \
     $(SRCDIR)/dl_wire.c \
     $(SRCDIR)/dl_config.c \
     $(SRCDIR)/dl_dbg.c \
     $(SRCDIR)/dl_dedup.c \
     $(SRCDIR)/dl_log.c \
     $(SRCDIR)/dl_mavlink.c \
-    $(SRCDIR)/dl_watchdog.c
+    $(SRCDIR)/dl_watchdog.c \
+    $(SRCDIR)/dl_yaml_get.c
 
 APPLIER := $(OUTDIR)/dl-applier
 INJECT  := $(OUTDIR)/dl-inject
