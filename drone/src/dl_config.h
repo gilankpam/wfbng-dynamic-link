@@ -83,6 +83,15 @@ typedef struct {
     char     dbg_log_dir[DL_CONF_MAX_STR];
     uint32_t dbg_max_bytes;
     bool     dbg_fsync_each;
+
+    /* P4a hello state machine: announce/keepalive cadence and
+     * authoritative-config file paths (overridable for tests). */
+    uint32_t hello_announce_initial_ms;
+    uint32_t hello_announce_steady_ms;
+    uint32_t hello_keepalive_ms;
+    uint32_t hello_announce_initial_count;
+    char     hello_wfb_yaml_path[DL_CONF_MAX_STR];
+    char     hello_majestic_yaml_path[DL_CONF_MAX_STR];
 } dl_config_t;
 
 /* Populate `cfg` with built-in defaults. */

@@ -23,6 +23,7 @@ APPLIER_SRCS := \
     $(SRCDIR)/dl_config.c \
     $(SRCDIR)/dl_dbg.c \
     $(SRCDIR)/dl_dedup.c \
+    $(SRCDIR)/dl_hello.c \
     $(SRCDIR)/dl_log.c \
     $(SRCDIR)/dl_mavlink.c \
     $(SRCDIR)/dl_osd.c \
@@ -46,10 +47,12 @@ TEST_SRCS := \
     $(TESTDIR)/test_mavlink.c \
     $(TESTDIR)/test_watchdog.c \
     $(TESTDIR)/test_dl_yaml.c \
+    $(TESTDIR)/test_dl_hello.c \
     $(SRCDIR)/dl_wire.c \
     $(SRCDIR)/dl_config.c \
     $(SRCDIR)/dl_dbg.c \
     $(SRCDIR)/dl_dedup.c \
+    $(SRCDIR)/dl_hello.c \
     $(SRCDIR)/dl_log.c \
     $(SRCDIR)/dl_mavlink.c \
     $(SRCDIR)/dl_watchdog.c \

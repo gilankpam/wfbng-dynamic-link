@@ -54,6 +54,13 @@ void dl_config_defaults(dl_config_t *cfg) {
     strncpy(cfg->dbg_log_dir, "/sdcard/dl-events", DL_CONF_MAX_STR - 1);
     cfg->dbg_max_bytes = 32 * 1024 * 1024;
     cfg->dbg_fsync_each = false;
+
+    cfg->hello_announce_initial_ms = 500;
+    cfg->hello_announce_steady_ms = 5000;
+    cfg->hello_keepalive_ms = 10000;
+    cfg->hello_announce_initial_count = 60;
+    strncpy(cfg->hello_wfb_yaml_path, "/etc/wfb.yaml", DL_CONF_MAX_STR - 1);
+    strncpy(cfg->hello_majestic_yaml_path, "/etc/majestic.yaml", DL_CONF_MAX_STR - 1);
 }
 
 static void trim(char *s) {
@@ -192,6 +199,18 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "dbg_log_dir") == 0)        SET_STR(dbg_log_dir);
         else if (strcmp(key, "dbg_max_bytes") == 0)      SET_INT_RANGED(dbg_max_bytes, uint32_t, 4096, 1 << 30);
         else if (strcmp(key, "dbg_fsync_each") == 0)     SET_BOOL(dbg_fsync_each);
+        else if (strcmp(key, "hello_announce_initial_ms") == 0)
+            SET_INT_RANGED(hello_announce_initial_ms, uint32_t, 1, 60000);
+        else if (strcmp(key, "hello_announce_steady_ms") == 0)
+            SET_INT_RANGED(hello_announce_steady_ms, uint32_t, 1, 300000);
+        else if (strcmp(key, "hello_keepalive_ms") == 0)
+            SET_INT_RANGED(hello_keepalive_ms, uint32_t, 1, 300000);
+        else if (strcmp(key, "hello_announce_initial_count") == 0)
+            SET_INT_RANGED(hello_announce_initial_count, uint32_t, 0, 100000);
+        else if (strcmp(key, "hello_wfb_yaml_path") == 0)
+            SET_STR(hello_wfb_yaml_path);
+        else if (strcmp(key, "hello_majestic_yaml_path") == 0)
+            SET_STR(hello_majestic_yaml_path);
         else {
             dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
         }
