@@ -262,7 +262,8 @@ size_t dl_wire_encode_hello(const dl_hello_t *h, uint8_t *buf, size_t buflen) {
     if (buflen < DL_HELLO_ON_WIRE_SIZE) return 0;
     memset(buf, 0, DL_HELLO_ON_WIRE_SIZE);
     put_u32(&buf[0], DL_HELLO_MAGIC);
-    buf[4] = h->version;
+    /* Always emit current version; caller-supplied .version is ignored. */
+    buf[4] = DL_WIRE_VERSION;
     buf[5] = h->flags;
     /* [6..7] _pad already zero */
     put_u32(&buf[8],  h->generation_id);
@@ -284,6 +285,7 @@ dl_decode_result_t dl_wire_decode_hello(const uint8_t *buf, size_t len,
     uint32_t crc_wire = get_u32(&buf[DL_HELLO_PAYLOAD_SIZE]);
     uint32_t crc_calc = dl_wire_crc32(buf, DL_HELLO_PAYLOAD_SIZE);
     if (crc_wire != crc_calc) return DL_DECODE_BAD_CRC;
+    memset(h, 0, sizeof(*h));
     h->magic = magic;
     h->version = buf[4];
     h->flags = buf[5];
@@ -298,7 +300,8 @@ size_t dl_wire_encode_hello_ack(const dl_hello_ack_t *h, uint8_t *buf, size_t bu
     if (buflen < DL_HELLO_ACK_ON_WIRE_SIZE) return 0;
     memset(buf, 0, DL_HELLO_ACK_ON_WIRE_SIZE);
     put_u32(&buf[0], DL_HELLO_ACK_MAGIC);
-    buf[4] = h->version;
+    /* Always emit current version; caller-supplied .version is ignored. */
+    buf[4] = DL_WIRE_VERSION;
     /* [5..7] _pad already zero */
     put_u32(&buf[8], h->generation_id_echo);
     /* [12..27] reserved already zero */
@@ -316,9 +319,9 @@ dl_decode_result_t dl_wire_decode_hello_ack(const uint8_t *buf, size_t len,
     uint32_t crc_wire = get_u32(&buf[DL_HELLO_ACK_PAYLOAD_SIZE]);
     uint32_t crc_calc = dl_wire_crc32(buf, DL_HELLO_ACK_PAYLOAD_SIZE);
     if (crc_wire != crc_calc) return DL_DECODE_BAD_CRC;
+    memset(h, 0, sizeof(*h));
     h->magic = magic;
     h->version = buf[4];
-    h->flags = 0;
     h->generation_id_echo = get_u32(&buf[8]);
     return DL_DECODE_OK;
 }

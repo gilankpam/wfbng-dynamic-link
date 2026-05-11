@@ -121,7 +121,6 @@ typedef struct {
 typedef struct {
     uint32_t magic;                  /* DL_HELLO_ACK_MAGIC after decode */
     uint8_t  version;
-    uint8_t  flags;
     uint32_t generation_id_echo;     /* copied from acked HELLO */
 } dl_hello_ack_t;
 

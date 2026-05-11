@@ -216,7 +216,6 @@ DL_TEST(wire_hello_encode_decode_roundtrip) {
 DL_TEST(wire_hello_ack_encode_decode_roundtrip) {
     dl_hello_ack_t in = {
         .version = DL_WIRE_VERSION,
-        .flags = 0,
         .generation_id_echo = 0x12345678u,
     };
     uint8_t buf[DL_HELLO_ACK_ON_WIRE_SIZE];
@@ -262,4 +261,72 @@ DL_TEST(wire_peek_kind_hello) {
     uint8_t buf[DL_HELLO_ON_WIRE_SIZE];
     dl_wire_encode_hello(&in, buf, sizeof(buf));
     DL_ASSERT_EQ(dl_wire_peek_kind(buf, sizeof(buf)), DL_PKT_HELLO);
+}
+
+DL_TEST(wire_hello_ack_bad_crc_rejected) {
+    dl_hello_ack_t in = { .generation_id_echo = 7 };
+    uint8_t buf[DL_HELLO_ACK_ON_WIRE_SIZE];
+    dl_wire_encode_hello_ack(&in, buf, sizeof(buf));
+    buf[DL_HELLO_ACK_ON_WIRE_SIZE - 1] ^= 0x01;
+    dl_hello_ack_t out;
+    DL_ASSERT_EQ(dl_wire_decode_hello_ack(buf, sizeof(buf), &out),
+                 DL_DECODE_BAD_CRC);
+}
+
+DL_TEST(wire_hello_ack_bad_magic_rejected) {
+    uint8_t buf[DL_HELLO_ACK_ON_WIRE_SIZE] = {0};
+    dl_hello_ack_t out;
+    DL_ASSERT_EQ(dl_wire_decode_hello_ack(buf, sizeof(buf), &out),
+                 DL_DECODE_BAD_MAGIC);
+}
+
+DL_TEST(wire_hello_short_buffer_rejected) {
+    dl_hello_t in = { .version = DL_WIRE_VERSION, .generation_id = 1,
+                      .mtu_bytes = 1400, .fps = 30 };
+    uint8_t buf[DL_HELLO_ON_WIRE_SIZE];
+    dl_wire_encode_hello(&in, buf, sizeof(buf));
+    dl_hello_t out;
+    DL_ASSERT_EQ(dl_wire_decode_hello(buf, DL_HELLO_ON_WIRE_SIZE - 1, &out),
+                 DL_DECODE_SHORT);
+}
+
+DL_TEST(wire_hello_bad_version_rejected) {
+    dl_hello_t in = { .version = DL_WIRE_VERSION, .generation_id = 1,
+                      .mtu_bytes = 1400, .fps = 30 };
+    uint8_t buf[DL_HELLO_ON_WIRE_SIZE];
+    dl_wire_encode_hello(&in, buf, sizeof(buf));
+    buf[4] = DL_WIRE_VERSION + 1;
+    /* Recompute CRC so we test bad-version, not bad-crc. */
+    uint32_t new_crc = dl_wire_crc32(buf, DL_HELLO_PAYLOAD_SIZE);
+    buf[DL_HELLO_PAYLOAD_SIZE]     = (new_crc >> 24) & 0xFF;
+    buf[DL_HELLO_PAYLOAD_SIZE + 1] = (new_crc >> 16) & 0xFF;
+    buf[DL_HELLO_PAYLOAD_SIZE + 2] = (new_crc >> 8)  & 0xFF;
+    buf[DL_HELLO_PAYLOAD_SIZE + 3] = new_crc & 0xFF;
+    dl_hello_t out;
+    DL_ASSERT_EQ(dl_wire_decode_hello(buf, sizeof(buf), &out),
+                 DL_DECODE_BAD_VERSION);
+}
+
+DL_TEST(wire_hello_ack_short_buffer_rejected) {
+    dl_hello_ack_t in = { .generation_id_echo = 1 };
+    uint8_t buf[DL_HELLO_ACK_ON_WIRE_SIZE];
+    dl_wire_encode_hello_ack(&in, buf, sizeof(buf));
+    dl_hello_ack_t out;
+    DL_ASSERT_EQ(dl_wire_decode_hello_ack(buf, DL_HELLO_ACK_ON_WIRE_SIZE - 1, &out),
+                 DL_DECODE_SHORT);
+}
+
+DL_TEST(wire_hello_ack_bad_version_rejected) {
+    dl_hello_ack_t in = { .generation_id_echo = 1 };
+    uint8_t buf[DL_HELLO_ACK_ON_WIRE_SIZE];
+    dl_wire_encode_hello_ack(&in, buf, sizeof(buf));
+    buf[4] = DL_WIRE_VERSION + 1;
+    uint32_t new_crc = dl_wire_crc32(buf, DL_HELLO_ACK_PAYLOAD_SIZE);
+    buf[DL_HELLO_ACK_PAYLOAD_SIZE]     = (new_crc >> 24) & 0xFF;
+    buf[DL_HELLO_ACK_PAYLOAD_SIZE + 1] = (new_crc >> 16) & 0xFF;
+    buf[DL_HELLO_ACK_PAYLOAD_SIZE + 2] = (new_crc >> 8)  & 0xFF;
+    buf[DL_HELLO_ACK_PAYLOAD_SIZE + 3] = new_crc & 0xFF;
+    dl_hello_ack_t out;
+    DL_ASSERT_EQ(dl_wire_decode_hello_ack(buf, sizeof(buf), &out),
+                 DL_DECODE_BAD_VERSION);
 }
