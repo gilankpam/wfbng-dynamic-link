@@ -171,6 +171,23 @@ loop.
   encoder HTTP / mock MAVLink sink — no live radio required. Keep
   it that way; CI runs on a workstation.
 
+### Dynamic FEC (P4b)
+
+`(k, n)` is computed at runtime, not pinned per-MCS in the profile:
+
+  k = clamp(bitrate_kbps * 1000 / (fps * mtu_bytes * 8), k_min, k_max)
+  n = ceil(k * (1 + base_redundancy_ratio)) + n_escalation
+
+`mtu_bytes` and `fps` come from the P4a handshake (drone reads them
+from /etc/wfb.yaml and /etc/majestic.yaml). `n_escalation` ramps on
+sustained residual_loss and decays on sustained clean windows; the
+EmitGate bundles (k, n) rewrites onto MCS-change ticks per
+`docs/knob-cadence-bench.md`.
+
+Bitrate uses a FIXED `k/n = 1/(1 + base_redundancy_ratio)`, not the
+live (k, n), so encoder allocation stays steady when n_escalation
+moves.
+
 ## How to land a new phase
 
 1. Write a plan first (use
