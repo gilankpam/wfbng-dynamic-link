@@ -23,6 +23,15 @@
 #define DL_PONG_PAYLOAD_SIZE    36
 #define DL_PONG_ON_WIRE_SIZE    40            /* payload + 4-byte CRC */
 
+/* P4a: drone-reported config (mtu, fps, generation_id). */
+#define DL_HELLO_MAGIC          0x444C4845u   /* "DLHE" */
+#define DL_HELLO_PAYLOAD_SIZE   28
+#define DL_HELLO_ON_WIRE_SIZE   32            /* payload + 4-byte CRC */
+
+#define DL_HELLO_ACK_MAGIC          0x444C4841u   /* "DLHA" */
+#define DL_HELLO_ACK_PAYLOAD_SIZE   28
+#define DL_HELLO_ACK_ON_WIRE_SIZE   32            /* payload + 4-byte CRC */
+
 /* flag bits */
 #define DL_FLAG_IDR_REQUEST 0x01u
 
@@ -97,14 +106,43 @@ size_t dl_wire_encode_pong(const dl_pong_t *p, uint8_t *buf, size_t buflen);
 dl_decode_result_t dl_wire_decode_pong(const uint8_t *buf, size_t len,
                                        dl_pong_t *p);
 
+/* ---- HELLO / HELLO_ACK (P4a) --------------------------------------- */
+
+typedef struct {
+    uint32_t magic;             /* DL_HELLO_MAGIC after decode */
+    uint8_t  version;
+    uint8_t  flags;
+    uint32_t generation_id;     /* random per drone boot */
+    uint16_t mtu_bytes;
+    uint16_t fps;
+    uint32_t applier_build_sha; /* low 4 bytes of git SHA, debug only */
+} dl_hello_t;
+
+typedef struct {
+    uint32_t magic;                  /* DL_HELLO_ACK_MAGIC after decode */
+    uint8_t  version;
+    uint8_t  flags;
+    uint32_t generation_id_echo;     /* copied from acked HELLO */
+} dl_hello_ack_t;
+
+size_t dl_wire_encode_hello(const dl_hello_t *h, uint8_t *buf, size_t buflen);
+dl_decode_result_t dl_wire_decode_hello(const uint8_t *buf, size_t len,
+                                        dl_hello_t *h);
+
+size_t dl_wire_encode_hello_ack(const dl_hello_ack_t *h, uint8_t *buf, size_t buflen);
+dl_decode_result_t dl_wire_decode_hello_ack(const uint8_t *buf, size_t len,
+                                            dl_hello_ack_t *h);
+
 /* Quick magic-peek for the recv-path dispatcher. Returns one of the
  * three known magics or 0 for unknown. Does not validate length or
  * CRC — callers must follow up with the full decoder. */
 typedef enum {
-    DL_PKT_UNKNOWN  = 0,
-    DL_PKT_DECISION = 1,
-    DL_PKT_PING     = 2,
-    DL_PKT_PONG     = 3,
+    DL_PKT_UNKNOWN     = 0,
+    DL_PKT_DECISION    = 1,
+    DL_PKT_PING        = 2,
+    DL_PKT_PONG        = 3,
+    DL_PKT_HELLO       = 4,
+    DL_PKT_HELLO_ACK   = 5,
 } dl_packet_kind_t;
 
 dl_packet_kind_t dl_wire_peek_kind(const uint8_t *buf, size_t len);

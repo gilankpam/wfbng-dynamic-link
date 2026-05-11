@@ -235,11 +235,101 @@ dl_decode_result_t dl_wire_decode_pong(const uint8_t *buf, size_t len,
     return DL_DECODE_OK;
 }
 
+/* ---- HELLO / HELLO_ACK (P4a) ---------------------------------------
+ *
+ * DL_HELLO layout (big-endian, 32 bytes = 28 payload + 4 CRC):
+ *    0  4  magic = 0x444C4845 ('DLHE')
+ *    4  1  version
+ *    5  1  flags
+ *    6  2  _pad
+ *    8  4  generation_id
+ *   12  2  mtu_bytes
+ *   14  2  fps
+ *   16  4  applier_build_sha
+ *   20  8  reserved (zero)
+ *   28  4  crc32(bytes[0..27])
+ *
+ * DL_HELLO_ACK layout (big-endian, 32 bytes = 28 payload + 4 CRC):
+ *    0  4  magic = 0x444C4841 ('DLHA')
+ *    4  1  version
+ *    5  3  _pad
+ *    8  4  generation_id_echo
+ *   12  16 reserved (zero)
+ *   28  4  crc32(bytes[0..27])
+ */
+
+size_t dl_wire_encode_hello(const dl_hello_t *h, uint8_t *buf, size_t buflen) {
+    if (buflen < DL_HELLO_ON_WIRE_SIZE) return 0;
+    memset(buf, 0, DL_HELLO_ON_WIRE_SIZE);
+    put_u32(&buf[0], DL_HELLO_MAGIC);
+    buf[4] = h->version;
+    buf[5] = h->flags;
+    /* [6..7] _pad already zero */
+    put_u32(&buf[8],  h->generation_id);
+    put_u16(&buf[12], h->mtu_bytes);
+    put_u16(&buf[14], h->fps);
+    put_u32(&buf[16], h->applier_build_sha);
+    /* [20..27] reserved already zero */
+    uint32_t crc = dl_wire_crc32(buf, DL_HELLO_PAYLOAD_SIZE);
+    put_u32(&buf[DL_HELLO_PAYLOAD_SIZE], crc);
+    return DL_HELLO_ON_WIRE_SIZE;
+}
+
+dl_decode_result_t dl_wire_decode_hello(const uint8_t *buf, size_t len,
+                                        dl_hello_t *h) {
+    if (len < DL_HELLO_ON_WIRE_SIZE) return DL_DECODE_SHORT;
+    uint32_t magic = get_u32(&buf[0]);
+    if (magic != DL_HELLO_MAGIC) return DL_DECODE_BAD_MAGIC;
+    if (buf[4] != DL_WIRE_VERSION) return DL_DECODE_BAD_VERSION;
+    uint32_t crc_wire = get_u32(&buf[DL_HELLO_PAYLOAD_SIZE]);
+    uint32_t crc_calc = dl_wire_crc32(buf, DL_HELLO_PAYLOAD_SIZE);
+    if (crc_wire != crc_calc) return DL_DECODE_BAD_CRC;
+    h->magic = magic;
+    h->version = buf[4];
+    h->flags = buf[5];
+    h->generation_id = get_u32(&buf[8]);
+    h->mtu_bytes = get_u16(&buf[12]);
+    h->fps = get_u16(&buf[14]);
+    h->applier_build_sha = get_u32(&buf[16]);
+    return DL_DECODE_OK;
+}
+
+size_t dl_wire_encode_hello_ack(const dl_hello_ack_t *h, uint8_t *buf, size_t buflen) {
+    if (buflen < DL_HELLO_ACK_ON_WIRE_SIZE) return 0;
+    memset(buf, 0, DL_HELLO_ACK_ON_WIRE_SIZE);
+    put_u32(&buf[0], DL_HELLO_ACK_MAGIC);
+    buf[4] = h->version;
+    /* [5..7] _pad already zero */
+    put_u32(&buf[8], h->generation_id_echo);
+    /* [12..27] reserved already zero */
+    uint32_t crc = dl_wire_crc32(buf, DL_HELLO_ACK_PAYLOAD_SIZE);
+    put_u32(&buf[DL_HELLO_ACK_PAYLOAD_SIZE], crc);
+    return DL_HELLO_ACK_ON_WIRE_SIZE;
+}
+
+dl_decode_result_t dl_wire_decode_hello_ack(const uint8_t *buf, size_t len,
+                                            dl_hello_ack_t *h) {
+    if (len < DL_HELLO_ACK_ON_WIRE_SIZE) return DL_DECODE_SHORT;
+    uint32_t magic = get_u32(&buf[0]);
+    if (magic != DL_HELLO_ACK_MAGIC) return DL_DECODE_BAD_MAGIC;
+    if (buf[4] != DL_WIRE_VERSION) return DL_DECODE_BAD_VERSION;
+    uint32_t crc_wire = get_u32(&buf[DL_HELLO_ACK_PAYLOAD_SIZE]);
+    uint32_t crc_calc = dl_wire_crc32(buf, DL_HELLO_ACK_PAYLOAD_SIZE);
+    if (crc_wire != crc_calc) return DL_DECODE_BAD_CRC;
+    h->magic = magic;
+    h->version = buf[4];
+    h->flags = 0;
+    h->generation_id_echo = get_u32(&buf[8]);
+    return DL_DECODE_OK;
+}
+
 dl_packet_kind_t dl_wire_peek_kind(const uint8_t *buf, size_t len) {
     if (len < 4) return DL_PKT_UNKNOWN;
     uint32_t m = get_u32(buf);
-    if (m == DL_WIRE_MAGIC) return DL_PKT_DECISION;
-    if (m == DL_PING_MAGIC) return DL_PKT_PING;
-    if (m == DL_PONG_MAGIC) return DL_PKT_PONG;
+    if (m == DL_WIRE_MAGIC)      return DL_PKT_DECISION;
+    if (m == DL_PING_MAGIC)      return DL_PKT_PING;
+    if (m == DL_PONG_MAGIC)      return DL_PKT_PONG;
+    if (m == DL_HELLO_MAGIC)     return DL_PKT_HELLO;
+    if (m == DL_HELLO_ACK_MAGIC) return DL_PKT_HELLO_ACK;
     return DL_PKT_UNKNOWN;
 }

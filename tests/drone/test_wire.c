@@ -190,3 +190,76 @@ DL_TEST(test_wire_ping_rejects_bad_crc) {
     dl_ping_t r;
     DL_ASSERT_EQ(dl_wire_decode_ping(buf, sizeof(buf), &r), DL_DECODE_BAD_CRC);
 }
+
+DL_TEST(wire_hello_encode_decode_roundtrip) {
+    dl_hello_t in = {
+        .version = DL_WIRE_VERSION,
+        .flags = 0,
+        .generation_id = 0xCAFEBABEu,
+        .mtu_bytes = 3994,
+        .fps = 60,
+        .applier_build_sha = 0xDEADBEEFu,
+    };
+    uint8_t buf[DL_HELLO_ON_WIRE_SIZE];
+    size_t n = dl_wire_encode_hello(&in, buf, sizeof(buf));
+    DL_ASSERT_EQ(n, DL_HELLO_ON_WIRE_SIZE);
+
+    dl_hello_t out;
+    dl_decode_result_t rc = dl_wire_decode_hello(buf, n, &out);
+    DL_ASSERT_EQ(rc, DL_DECODE_OK);
+    DL_ASSERT_EQ(out.generation_id, in.generation_id);
+    DL_ASSERT_EQ(out.mtu_bytes, in.mtu_bytes);
+    DL_ASSERT_EQ(out.fps, in.fps);
+    DL_ASSERT_EQ(out.applier_build_sha, in.applier_build_sha);
+}
+
+DL_TEST(wire_hello_ack_encode_decode_roundtrip) {
+    dl_hello_ack_t in = {
+        .version = DL_WIRE_VERSION,
+        .flags = 0,
+        .generation_id_echo = 0x12345678u,
+    };
+    uint8_t buf[DL_HELLO_ACK_ON_WIRE_SIZE];
+    size_t n = dl_wire_encode_hello_ack(&in, buf, sizeof(buf));
+    DL_ASSERT_EQ(n, DL_HELLO_ACK_ON_WIRE_SIZE);
+
+    dl_hello_ack_t out;
+    dl_decode_result_t rc = dl_wire_decode_hello_ack(buf, n, &out);
+    DL_ASSERT_EQ(rc, DL_DECODE_OK);
+    DL_ASSERT_EQ(out.generation_id_echo, in.generation_id_echo);
+}
+
+DL_TEST(wire_hello_bad_crc_rejected) {
+    dl_hello_t in = { .version = DL_WIRE_VERSION, .generation_id = 1,
+                      .mtu_bytes = 1400, .fps = 30, .applier_build_sha = 0 };
+    uint8_t buf[DL_HELLO_ON_WIRE_SIZE];
+    dl_wire_encode_hello(&in, buf, sizeof(buf));
+    buf[DL_HELLO_ON_WIRE_SIZE - 1] ^= 0x01;  /* corrupt CRC */
+    dl_hello_t out;
+    DL_ASSERT_EQ(dl_wire_decode_hello(buf, sizeof(buf), &out),
+                 DL_DECODE_BAD_CRC);
+}
+
+DL_TEST(wire_hello_bad_magic_rejected) {
+    uint8_t buf[DL_HELLO_ON_WIRE_SIZE] = {0};
+    /* All-zero magic. */
+    dl_hello_t out;
+    DL_ASSERT_EQ(dl_wire_decode_hello(buf, sizeof(buf), &out),
+                 DL_DECODE_BAD_MAGIC);
+}
+
+DL_TEST(wire_peek_kind_hello_ack) {
+    dl_hello_ack_t in = { .version = DL_WIRE_VERSION,
+                          .generation_id_echo = 7 };
+    uint8_t buf[DL_HELLO_ACK_ON_WIRE_SIZE];
+    dl_wire_encode_hello_ack(&in, buf, sizeof(buf));
+    DL_ASSERT_EQ(dl_wire_peek_kind(buf, sizeof(buf)), DL_PKT_HELLO_ACK);
+}
+
+DL_TEST(wire_peek_kind_hello) {
+    dl_hello_t in = { .version = DL_WIRE_VERSION, .generation_id = 1,
+                      .mtu_bytes = 1400, .fps = 30 };
+    uint8_t buf[DL_HELLO_ON_WIRE_SIZE];
+    dl_wire_encode_hello(&in, buf, sizeof(buf));
+    DL_ASSERT_EQ(dl_wire_peek_kind(buf, sizeof(buf)), DL_PKT_HELLO);
+}
