@@ -74,7 +74,7 @@ DL_TEST(hello_ack_mismatching_genid_ignored) {
     dl_hello_sm_t h;
     dl_hello_init(&h, &cfg);
     uint32_t orig_state = h.state;
-    dl_hello_ack_t ack = { .generation_id_echo = h.generation_id ^ 0xFFu };
+    dl_hello_ack_t ack = { .generation_id_echo = h.generation_id ^ 0xFFFFFFFFu };
     int matched = dl_hello_on_ack(&h, &ack);
     DL_ASSERT_EQ(matched, 0);
     DL_ASSERT_EQ(h.state, orig_state);

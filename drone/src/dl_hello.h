@@ -37,7 +37,6 @@ typedef struct {
     uint16_t mtu_bytes;
     uint16_t fps;
     uint32_t announce_count;
-    uint32_t announces_without_ack;
     uint32_t keepalives_without_ack;
     const dl_config_t *cfg;
 } dl_hello_sm_t;

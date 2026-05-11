@@ -64,7 +64,6 @@ int dl_hello_init(dl_hello_sm_t *h, const dl_config_t *cfg) {
     h->generation_id = random_u32();
     h->state = DL_HELLO_STATE_ANNOUNCING;
     h->announce_count = 0;
-    h->announces_without_ack = 0;
     h->keepalives_without_ack = 0;
     dl_log_info("dl_hello: ANNOUNCING gen=0x%08x mtu=%u fps=%u",
                 h->generation_id, h->mtu_bytes, h->fps);
