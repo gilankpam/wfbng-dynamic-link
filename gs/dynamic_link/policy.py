@@ -520,11 +520,11 @@ class LeadingSelector:
 # Trailing loop — depth + IDR signalling.
 # ------------------------------------------------------------------
 #
-# Reactive `n`-escalation was removed when the per-MCS FEC table
-# moved into the radio profile (`fec_table`). FEC `(k, n)` follows
-# MCS deterministically; if the link gets worse the leading loop
-# drops MCS and the row's `(k, n)` is applied with it. The trailing
-# loop now does two things only:
+# `(k, n)` is computed each tick by `dynamic_fec.compute_k` /
+# `compute_n` from `(bitrate, mtu, fps)` plus an `NEscalator` that
+# ramps redundancy on sustained `residual_loss`. `EmitGate` bundles
+# solo `(k, n)` rewrites onto MCS-change ticks to keep the wire
+# cadence cheap. The trailing loop here does two things only:
 #
 #   1. Request an IDR on any window with residual loss — the GOP is
 #      already corrupted, so a fresh keyframe is needed regardless
@@ -861,12 +861,13 @@ class Policy:
             signals, self.state.depth, ts_ms,
         )
 
-        # Latency-budget gate — defensive last-resort. The profile's
-        # `fec_table` is operator-validated for budget; this only
-        # fires if a deeper depth (interleaver) raise pushes the
-        # block over the cap. On budget exhaustion we hold the
-        # previous state rather than silently rewriting `(k, n)` —
-        # the bench showed reactive `(k, n)` rewrites are costly.
+        # Latency-budget gate — defensive last-resort. Runs against
+        # the dynamically computed `(k, n)` from `dynamic_fec` plus
+        # whatever depth the trailing loop just picked; fires when
+        # the combined block-decode + interleaver cost overshoots
+        # the cap. On budget exhaustion we hold the previous state
+        # rather than silently rewriting `(k, n)` — the bench showed
+        # reactive `(k, n)` rewrites are costly.
         proposal = Proposal(k=new_k, n=new_n, depth=new_depth)
         reason_budget = ""
         try:

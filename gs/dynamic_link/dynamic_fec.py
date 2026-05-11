@@ -20,7 +20,7 @@ All three are pure / stateless except for `NEscalator` and
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,25 @@ class DynamicFecConfig:
             raise ValueError(
                 f"max_n_escalation must be >= 0; "
                 f"got {self.max_n_escalation}"
+            )
+        if self.n_loss_windows < 1:
+            raise ValueError(
+                f"n_loss_windows must be >= 1; "
+                f"got {self.n_loss_windows}"
+            )
+        if self.n_recover_windows < 1:
+            raise ValueError(
+                f"n_recover_windows must be >= 1; "
+                f"got {self.n_recover_windows}"
+            )
+        if self.n_loss_step < 0:
+            raise ValueError(
+                f"n_loss_step must be >= 0; got {self.n_loss_step}"
+            )
+        if self.n_recover_step < 0:
+            raise ValueError(
+                f"n_recover_step must be >= 0; "
+                f"got {self.n_recover_step}"
             )
 
 
