@@ -329,7 +329,7 @@ async def _run(args: argparse.Namespace) -> int:
 
     policy_cfg = _build_policy_config(raw)
     drone_config = DroneConfigState()
-    policy = Policy(policy_cfg, profile)
+    policy = Policy(policy_cfg, profile, drone_config=drone_config)
     aggregator = _build_aggregator(raw)
 
     enabled = bool(raw.get("enabled", False))

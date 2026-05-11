@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from .bitrate import BitrateConfig, compute_bitrate_kbps
 from .decision import Decision
+from .drone_config import DroneConfigState
 from .predictor import (
     BudgetExhausted,
     PredictorConfig,
@@ -695,9 +696,19 @@ class Policy:
     """Composes the dual-gate selector + trailing loop + latency-budget
     predictor."""
 
-    def __init__(self, cfg: PolicyConfig, profile: RadioProfile):
+    def __init__(
+        self,
+        cfg: PolicyConfig,
+        profile: RadioProfile,
+        *,
+        drone_config: DroneConfigState | None = None,
+    ) -> None:
         self.cfg = cfg
         self.profile = profile
+        # P4a: when set, Policy.tick emits safe-defaults until the drone
+        # sends its first HELLO (DroneConfigState transitions to SYNCED).
+        # Left None for back-compat with tests that don't need the gate.
+        self.drone_config = drone_config
         self.leading = LeadingSelector(
             cfg.leading, cfg.gate, cfg.selection, profile
         )
@@ -728,7 +739,37 @@ class Policy:
             ),
         )
 
+    def _safe_decision(self, *, timestamp: float, reason: str) -> Decision:
+        """Conservative-defaults Decision used while gated (e.g. before
+        the drone's first HELLO). Knobs come from `cfg.safe`; radio
+        bounds come from `cfg.leading`. No knobs_changed and no signal
+        snapshot — this is a placeholder heartbeat, not a real
+        decision."""
+        safe = self.cfg.safe
+        return Decision(
+            timestamp=timestamp,
+            mcs=safe.mcs,
+            bandwidth=self.cfg.leading.bandwidth,
+            tx_power_dBm=int(round(self.cfg.leading.tx_power_min_dBm)),
+            k=safe.k,
+            n=safe.n,
+            depth=safe.depth,
+            bitrate_kbps=int(self.cfg.bitrate.min_bitrate_kbps),
+            idr_request=False,
+            reason=reason,
+        )
+
     def tick(self, signals: Signals) -> Decision:
+        # P4a: until the drone has reported its config (mtu, fps,
+        # generation_id) via DLHE, emit a safe-defaults decision
+        # regardless of incoming signals. Keeps the wire heartbeat
+        # alive without applying speculative parameters.
+        if self.drone_config is not None and not self.drone_config.is_synced():
+            return self._safe_decision(
+                timestamp=signals.timestamp,
+                reason="awaiting_drone_config",
+            )
+
         ts_ms = signals.timestamp * 1000.0 if signals.timestamp else 0.0
         prev = PolicyState(**self.state.__dict__)
 
