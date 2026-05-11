@@ -261,14 +261,120 @@ def decode_pong(buf: bytes) -> Pong:
 
 
 def peek_kind(buf: bytes) -> str:
-    """Return 'decision' | 'ping' | 'pong' | 'unknown' based on the magic."""
+    """Return 'decision' | 'ping' | 'pong' | 'hello' | 'hello_ack' | 'unknown'."""
     if len(buf) < 4:
         return "unknown"
     (magic,) = struct.unpack_from(">I", buf, 0)
-    if magic == MAGIC:
-        return "decision"
-    if magic == PING_MAGIC:
-        return "ping"
-    if magic == PONG_MAGIC:
-        return "pong"
+    if magic == MAGIC:           return "decision"
+    if magic == PING_MAGIC:      return "ping"
+    if magic == PONG_MAGIC:      return "pong"
+    if magic == HELLO_MAGIC:     return "hello"
+    if magic == HELLO_ACK_MAGIC: return "hello_ack"
     return "unknown"
+
+
+# ---- P4a HELLO / HELLO-ACK ----------------------------------------------
+#
+# DL_HELLO (drone→GS, 32 bytes):
+#    0  4  magic = HELLO_MAGIC ('DLHE')
+#    4  1  version
+#    5  1  flags
+#    6  2  _pad
+#    8  4  generation_id
+#   12  2  mtu_bytes
+#   14  2  fps
+#   16  4  applier_build_sha
+#   20  8  reserved (zero)
+#   28  4  crc32(bytes[0..27])
+#
+# DL_HELLO_ACK (GS→drone, 32 bytes):
+#    0  4  magic = HELLO_ACK_MAGIC ('DLHA')
+#    4  1  version
+#    5  3  _pad
+#    8  4  generation_id_echo
+#   12  16 reserved (zero)
+#   28  4  crc32(bytes[0..27])
+
+HELLO_MAGIC          = 0x444C4845    # 'DLHE'
+HELLO_PAYLOAD_SIZE   = 28
+HELLO_ON_WIRE_SIZE   = 32
+
+HELLO_ACK_MAGIC          = 0x444C4841    # 'DLHA'
+HELLO_ACK_PAYLOAD_SIZE   = 28
+HELLO_ACK_ON_WIRE_SIZE   = 32
+
+
+@dataclass(frozen=True)
+class Hello:
+    generation_id: int
+    mtu_bytes: int
+    fps: int
+    applier_build_sha: int = 0
+    flags: int = 0
+
+
+@dataclass(frozen=True)
+class HelloAck:
+    generation_id_echo: int
+
+
+def encode_hello(h: Hello) -> bytes:
+    payload = bytearray(HELLO_PAYLOAD_SIZE)
+    struct.pack_into(">I", payload, 0, HELLO_MAGIC)
+    payload[4] = VERSION & 0xFF
+    payload[5] = h.flags & 0xFF
+    struct.pack_into(">I", payload, 8,  h.generation_id & 0xFFFFFFFF)
+    struct.pack_into(">H", payload, 12, h.mtu_bytes & 0xFFFF)
+    struct.pack_into(">H", payload, 14, h.fps & 0xFFFF)
+    struct.pack_into(">I", payload, 16, h.applier_build_sha & 0xFFFFFFFF)
+    crc = _crc32(bytes(payload))
+    return bytes(payload) + struct.pack(">I", crc)
+
+
+def decode_hello(buf: bytes) -> Hello:
+    if len(buf) < HELLO_ON_WIRE_SIZE:
+        raise ValueError("hello: short buffer")
+    (magic,) = struct.unpack_from(">I", buf, 0)
+    if magic != HELLO_MAGIC:
+        raise ValueError(f"hello: bad magic 0x{magic:08x}")
+    if buf[4] != VERSION:
+        raise ValueError(f"hello: bad version {buf[4]}")
+    crc_wire = struct.unpack_from(">I", buf, HELLO_PAYLOAD_SIZE)[0]
+    crc_calc = _crc32(bytes(buf[:HELLO_PAYLOAD_SIZE]))
+    if crc_wire != crc_calc:
+        raise ValueError("hello: bad crc")
+    return Hello(
+        flags=buf[5],
+        generation_id=struct.unpack_from(">I", buf, 8)[0],
+        mtu_bytes=struct.unpack_from(">H", buf, 12)[0],
+        fps=struct.unpack_from(">H", buf, 14)[0],
+        applier_build_sha=struct.unpack_from(">I", buf, 16)[0],
+    )
+
+
+def encode_hello_ack(h: HelloAck) -> bytes:
+    payload = bytearray(HELLO_ACK_PAYLOAD_SIZE)
+    struct.pack_into(">I", payload, 0, HELLO_ACK_MAGIC)
+    payload[4] = VERSION & 0xFF
+    # [5..7] = _pad
+    struct.pack_into(">I", payload, 8, h.generation_id_echo & 0xFFFFFFFF)
+    # [12..27] = reserved
+    crc = _crc32(bytes(payload))
+    return bytes(payload) + struct.pack(">I", crc)
+
+
+def decode_hello_ack(buf: bytes) -> HelloAck:
+    if len(buf) < HELLO_ACK_ON_WIRE_SIZE:
+        raise ValueError("hello-ack: short buffer")
+    (magic,) = struct.unpack_from(">I", buf, 0)
+    if magic != HELLO_ACK_MAGIC:
+        raise ValueError(f"hello-ack: bad magic 0x{magic:08x}")
+    if buf[4] != VERSION:
+        raise ValueError(f"hello-ack: bad version {buf[4]}")
+    crc_wire = struct.unpack_from(">I", buf, HELLO_ACK_PAYLOAD_SIZE)[0]
+    crc_calc = _crc32(bytes(buf[:HELLO_ACK_PAYLOAD_SIZE]))
+    if crc_wire != crc_calc:
+        raise ValueError("hello-ack: bad crc")
+    return HelloAck(
+        generation_id_echo=struct.unpack_from(">I", buf, 8)[0],
+    )
