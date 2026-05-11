@@ -72,7 +72,7 @@ int dl_yaml_get_int(const char *path,
                     const char *key,
                     int *out) {
     FILE *fp = fopen(path, "r");
-    if (!fp) return -ENOENT;
+    if (!fp) return -errno;
 
     char line[MAX_LINE];
     int in_block = 0;

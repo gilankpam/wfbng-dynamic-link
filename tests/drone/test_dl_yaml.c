@@ -56,9 +56,27 @@ DL_TEST(yaml_rejects_malformed_file) {
 }
 
 DL_TEST(yaml_ignores_lookalike_key_at_wrong_indent) {
-    /* A top-level "mlink:" line outside a "wireless:" block must not
-     * match. The malformed fixture has exactly this case. */
+    /* `mlink: 9999` exists at column 0, outside the `wireless:`
+     * block. The parser must NOT match it: the request is for
+     * `wireless.mlink` specifically. */
     int v = 0;
-    int rc = dl_yaml_get_int(FIX("wfb_malformed.yaml"), "wireless", "mlink", &v);
+    int rc = dl_yaml_get_int(
+        FIX("wfb_mlink_at_wrong_indent.yaml"), "wireless", "mlink", &v);
+    DL_ASSERT_EQ(rc, -EINVAL);
+}
+
+DL_TEST(yaml_accepts_zero_value) {
+    /* Edge case: an integer literal `0` parses as 0, not as
+     * "value missing" — important since strtol can also return
+     * 0 on parse failure. */
+    int v = -1;
+    int rc = dl_yaml_get_int(FIX("with_zero.yaml"), "section", "k", &v);
+    DL_ASSERT_EQ(rc, 0);
+    DL_ASSERT_EQ(v, 0);
+}
+
+DL_TEST(yaml_rejects_int_overflow) {
+    int v = 0;
+    int rc = dl_yaml_get_int(FIX("with_overflow.yaml"), "section", "k", &v);
     DL_ASSERT_EQ(rc, -EINVAL);
 }
