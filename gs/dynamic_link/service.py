@@ -13,6 +13,7 @@ import yaml
 
 from . import wire
 from .debug_config import DebugConfig
+from .drone_config import DroneConfigEvent, DroneConfigState
 from .flight_log import FlightDirRotator
 from .latency_sink import LatencySink
 from .observed import derive_observed
@@ -44,7 +45,7 @@ from .stats_client import (
 from .timesync import TimeSync
 from .tunnel_listener import TunnelListener
 from .video_tap import VideoRtpSink, VideoTap
-from .wire import Encoder as WireEncoder
+from .wire import Encoder as WireEncoder, encode_hello_ack
 
 log = logging.getLogger("dynamic_link")
 
@@ -327,6 +328,7 @@ async def _run(args: argparse.Namespace) -> int:
     log.info("loaded radio profile %s (%s)", profile.name, profile.chipset)
 
     policy_cfg = _build_policy_config(raw)
+    drone_config = DroneConfigState()
     policy = Policy(policy_cfg, profile)
     aggregator = _build_aggregator(raw)
 
@@ -421,6 +423,21 @@ async def _run(args: argparse.Namespace) -> int:
             idr_burst_cfg.interval_ms,
         )
 
+    # P4a HELLO/HELLO-ACK callback. Forwards to the state machine and
+    # ACKs every received HELLO so ANNOUNCING retries always get a
+    # fresh DLHA echo (build_ack is idempotent for the same gen_id).
+    def _on_hello(h: wire.Hello) -> None:
+        event = drone_config.on_hello(h)
+        if event in (DroneConfigEvent.SYNCED, DroneConfigEvent.REBOOT_DETECTED):
+            # State machine already logs the transition; this branch is
+            # the explicit hook for follow-up actions (none yet).
+            pass
+        if return_link is None:
+            return
+        ack = drone_config.build_ack()
+        if ack is not None:
+            return_link.send_hello_ack(encode_hello_ack(ack))
+
     # ---- Phase 3 ping/pong wiring ----
     if debug_cfg.ping_pong:
         # We need a return_link to send pings, even if Phase-2 emit is
@@ -448,7 +465,9 @@ async def _run(args: argparse.Namespace) -> int:
             )
 
         tunnel_listener = TunnelListener(
-            gs_listen_addr, gs_listen_port, on_pong=_on_pong,
+            gs_listen_addr, gs_listen_port,
+            on_pong=_on_pong,
+            on_hello=_on_hello,
         )
         try:
             await tunnel_listener.start()

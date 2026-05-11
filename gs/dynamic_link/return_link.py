@@ -55,6 +55,11 @@ class ReturnLink:
         :meth:`send` (counted into the same totals)."""
         return self.send(packet)
 
+    def send_hello_ack(self, packet: bytes) -> bool:
+        """Send a P4a HELLO-ACK (DLHA) to the drone. Reuses the same
+        UDP socket; identical error semantics as :meth:`send`."""
+        return self.send(packet)
+
     def close(self) -> None:
         try:
             self._sock.close()

@@ -67,3 +67,46 @@ def test_build_ack_returns_helloack_for_current_genid():
 def test_build_ack_returns_none_when_awaiting():
     s = DroneConfigState()
     assert s.build_ack() is None
+
+
+@pytest.mark.asyncio
+async def test_tunnel_listener_dispatches_hello_to_handler():
+    """Bind a TunnelListener on an ephemeral port, send a wire-encoded
+    HELLO from a UDP socket, verify the handler fires."""
+    import asyncio
+    from socket import AF_INET, SOCK_DGRAM, socket as Socket
+
+    from dynamic_link.tunnel_listener import TunnelListener
+    from dynamic_link.wire import encode_hello
+
+    received: list[Hello] = []
+    listener = TunnelListener(
+        "127.0.0.1", 0,  # 0 = ephemeral
+        on_pong=lambda *_: None,
+        on_hello=lambda h: received.append(h),
+    )
+    await listener.start()
+    try:
+        transport = listener._transport
+        assert transport is not None
+        sockname = transport.get_extra_info("sockname")
+        port = sockname[1]
+
+        sender = Socket(AF_INET, SOCK_DGRAM)
+        try:
+            sender.sendto(
+                encode_hello(Hello(generation_id=0x42, mtu_bytes=1400,
+                                   fps=30, applier_build_sha=0)),
+                ("127.0.0.1", port),
+            )
+            # Let the event loop process the datagram.
+            await asyncio.sleep(0.05)
+        finally:
+            sender.close()
+    finally:
+        listener.stop()
+
+    assert len(received) == 1
+    assert received[0].generation_id == 0x42
+    assert received[0].mtu_bytes == 1400
+    assert received[0].fps == 30
