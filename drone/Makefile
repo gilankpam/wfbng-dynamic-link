@@ -38,6 +38,7 @@ INJECT_SRCS := \
 # Unit-test binary links whole library minus dl_applier.c's main().
 TEST_SRCS := \
     $(TESTDIR)/test_main.c \
+    $(TESTDIR)/test_apply_stagger.c \
     $(TESTDIR)/test_wire.c \
     $(TESTDIR)/test_ceiling.c \
     $(TESTDIR)/test_config.c \

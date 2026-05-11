@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dynamic_link.bitrate import compute_bitrate_kbps
 from dynamic_link.policy import (
     FECBounds,
     LeadingLoopConfig,
@@ -224,7 +225,7 @@ def _policy(**overrides) -> Policy:
     )
     cfg = PolicyConfig(
         leading=leading,
-        safe=SafeDefaults(k=8, n=12, depth=1, mcs=1, bitrate_kbps=2000),
+        safe=SafeDefaults(k=8, n=12, depth=1, mcs=1),
         **overrides,
     )
     return Policy(cfg, prof)
@@ -284,8 +285,8 @@ def _settle_at_mcs(p, target_mcs: int, base_ts: float = 0.0) -> float:
 
 
 def test_policy_fec_matches_profile_at_each_mcs():
-    """At every MCS the controller settles into, `(k, n, bitrate)`
-    matches the profile's `fec_table` row exactly — no scaling."""
+    """At every MCS the controller settles into, `(k, n)` matches the
+    profile's `fec_table` row and `bitrate_kbps` matches the formula."""
     p = _policy()
     for target in (1, 3, 5):
         _settle_at_mcs(p, target)
@@ -293,7 +294,10 @@ def test_policy_fec_matches_profile_at_each_mcs():
             continue
         entry = p.profile.fec_for(20, target)
         assert (p.state.k, p.state.n) == (entry.k, entry.n)
-        assert p.state.bitrate_kbps == int(entry.bitrate_Mbps * 1000)
+        expected = compute_bitrate_kbps(
+            p.profile, 20, target, entry.k, entry.n, p.cfg.bitrate,
+        )
+        assert p.state.bitrate_kbps == expected
 
 
 def test_sub_emergency_loss_does_not_change_fec():

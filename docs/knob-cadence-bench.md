@@ -79,6 +79,11 @@ came from the *transition*, not from a saturated steady state.
 | 10 Hz, full ladder | 33.6 | 79.4 | 171.4 | 829.7 | 867.3 | 33 | 390.6 | 94.6 | 0.000% | **2 (14–15% bursts)** |
 | 10 Hz, FEC=6/9 fixed (MCS varies) | 21.2 | 42.2 | 61.7 | 68.7 | 96.4 | 1 | 78.1 | 59.2 | 0.000% | 0 |
 | 10 Hz, MCS=5 fixed (FEC varies) | 21.8 | 83.1 | 403.3 | 46.8 | 54.3 | 0 | 134.7 | 115.5 | 0.000% | 0 |
+| 5 Hz, full ladder (waybeam, stagger=50 ms) #pilot | 13.8 | 33.8 | 107.4 | 35.3 | 55.3 | **0** | 110.8 | 74.6 | 0.013% | 5 |
+| 5 Hz, full ladder (waybeam, stagger=50 ms) #1 | 21.0 | 35.0 | 68.4 | 44.3 | 49.6 | 0 | 748.7 | 75.9 | 0.000% | — |
+| 5 Hz, full ladder (waybeam, stagger=50 ms) #2 | 20.5 | 35.6 | 113.3 | 48.5 | 81.3 | 1 | 975.2 | 60.6 | 0.000% | — |
+| 5 Hz, full ladder (waybeam, **stagger=0**) #1 | 22.7 | 64.3 | 117.5 | 89.8 | 108.2 | 7 | 976.1 | 87.2 | 0.000% | — |
+| 5 Hz, full ladder (waybeam, **stagger=0**) #2 | 23.5 | 64.6 | 97.4 | 82.4 | 85.0 | 6 | 907.6 | 81.2 | 0.009% | — |
 
 Units: drift / RTT / frame interarrival in **ms**. "swing" =
 sliding 200 ms drift max-min. "frame ia max" = worst single
@@ -119,6 +124,89 @@ on its own; together they cost ~5–25×. The radio reconfig path
 does not tolerate the combined pressure: airtime backs up,
 fragments collide, FEC ramps up to compensate.
 
+### 4b. Direction-aware staggered apply substantially flattens the cadence curve
+
+A matched A/B on **2026-05-03** measured the bundled 4-step ladder
+at **5 Hz** — the cadence the prior bench labelled *broken*
+(`≥ ~5 Hz`) — toggling only `apply_stagger_ms` (50 vs 0) on the
+drone. Encoder, GS, sweep schedule, and link conditions held
+constant across all four runs.
+
+Setup, common to all rows below:
+
+- Encoder: `waybeam_venc` (binary `/usr/bin/venc`).
+  API-compatible with majestic (`GET /api/v1/set?…`,
+  `docs/encoder_api.md`).
+- Applier: direction-aware staggered apply (commit `4de7f6d`).
+  Toggled per run via `apply_stagger_ms` in `drone.conf`. With
+  staggering on, every bundled transition was confirmed to fire
+  two phases ~50 ms apart in `applier.log`; with it off, the
+  same transitions ran single-shot (zero `phase2` log lines).
+- GS: observer mode (`enabled: false`); `dl-inject` from the
+  drone drove the radio.
+- Sweep: 60 s, 5 Hz, ladder rungs `(4 Mbps / MCS1 / 4–8) →
+  (8 / MCS2 / 6–9) → (12 / MCS4 / 8–12) → (16 / MCS5 / 8–10)`.
+
+Four runs, two per side:
+
+| Run | swing p50 | swing p95 | swing max | RTT p99 | RTT max | RTT outliers | frame ia max | loss % |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| stagger=50 #1 | 21.0 | 35.0 | 68.4 | 44.3 | 49.6 | 0 | 75.9 | 0.000 |
+| stagger=50 #2 | 20.5 | 35.6 | 113.3 | 48.5 | 81.3 | 1 | 60.6 | 0.000 |
+| stagger=0  #1 | 22.7 | 64.3 | 117.5 | 89.8 | 108.2 | 7 | 87.2 | 0.000 |
+| stagger=0  #2 | 23.5 | 64.6 | 97.4  | 82.4 | 85.0  | 6 | 81.2 | 0.009 |
+
+Group means:
+
+| Metric | stagger=50 (n=2) | stagger=0 (n=2) | Δ |
+|---|---:|---:|---|
+| swing p50 (ms) | 20.8 | 23.1 | +11 % |
+| swing p95 (ms) | **35.3** | **64.5** | **+83 % (1.83×)** |
+| swing max (ms) | 90.9 | 107.5 | +18 % |
+| RTT p99 (ms) | **46.4** | **86.1** | **+86 % (1.86×)** |
+| RTT max (ms) | 65.5 | 96.6 | +47 % |
+| RTT outliers | **0.5** | **6.5** | **13×** |
+| Frame ia max (ms) | 68.3 | 84.2 | +23 % |
+| Video loss (%) | 0.000 | 0.005 | first sub-percent appears |
+
+Read:
+
+- **Swing p95 and RTT p99 / outliers are the cleanest signals.**
+  Within-group variance is tiny (swing p95: 35.0 vs 35.6 with
+  stagger on; 64.3 vs 64.6 with stagger off), between-group
+  difference is ~30 ms — clearly not noise. Same for outlier count
+  (0–1 vs 6–7).
+- **Swing max and drift range are noisy.** Each side had one run
+  with a fat-tail spike, so `max` alone is ambiguous; use p95.
+- **First sub-percent video loss appears with stagger off.**
+  At 5 Hz × 60 s × 4 rungs that's a credible boundary signal:
+  with the stagger absorbing the inter-stage burst, frames stayed
+  intact across all transitions; without it, one of the two runs
+  edged into real (if tiny) loss territory.
+- **Steady-state cost of staggering is zero.** Median swing is
+  unchanged within noise; the gap costs nothing on stable links.
+
+The cadence curve really did shift: the 5 Hz bundled regime that
+the prior bench placed firmly in the *broken* band now sits inside
+the *tolerable* band on every control-plane metric, and the
+isolation run shows the staggered apply is what moved it there.
+
+Remaining caveats:
+
+- **n = 2 per side.** Strong directional signal but the small-n
+  variance estimate is itself noisy. Worth re-running if a
+  decision rides on this.
+- **Single airframe, single bench location.** No fade-margin or
+  multi-link contention. Fade conditions could change the
+  relative cost of the unstaggered queue burst.
+- **5 Hz only.** Higher cadences (10 Hz bundled) weren't re-run
+  with the stagger toggle. The original 10 Hz bundled run
+  produced real loss bursts; whether the stagger rescues that
+  regime or merely shifts the cliff later is open.
+- **`encoder_kind = majestic` is still set in `drone.conf`** —
+  harmless because the API path is shared, but a label drift to
+  fix.
+
 ### 4a. The cost transition is sharp around 1–2 Hz, not gradual
 
 The 2 Hz full-ladder run shows that bundled-change cost saturates
@@ -129,7 +217,7 @@ stutter). Going from 2 Hz to 10 Hz changes the *control plane*
 (RTT max 135 → 867 ms) and adds real loss bursts, but the
 data-plane drift swing barely moves further. Two regimes:
 
-| regime | bundled cadence | character |
+| regime | bundled cadence (stagger=0) | character |
 |---|---|---|
 | tolerable | ≤ 1 Hz | encoder buffer + radio chain recover between transitions |
 | stressed | ~2 Hz | most disturbance metrics saturate; first sub-percent loss |
@@ -139,6 +227,12 @@ The 1→2 Hz step looks like crossing a settling-time threshold:
 at 1 Hz the radio chain finishes draining the previous reconfig
 before the next one lands; at 2 Hz it doesn't, and most of the
 disturbance budget is already consumed.
+
+The matched A/B in §4b shows the staggered apply moves the 5 Hz
+bundled regime back into the *tolerable* band on swing-p95 and
+RTT-p99, so the column header above explicitly qualifies it as the
+**stagger=0** baseline. The 10 Hz bundled cliff has not been
+re-tested with stagger on.
 
 ### 5. MCS thrash and FEC thrash hurt **different planes**
 
@@ -201,7 +295,11 @@ Practical guidance for tick-level decision logic:
   do this implicitly via independent timers per knob; the
   bench validates the choice.
 - **Bitrate is the cheap knob** — change it as often as the
-  encoder will tolerate, regardless of MCS/FEC state.
+  encoder will tolerate, regardless of MCS/FEC state. In the
+  current implementation bitrate is derived from the selected
+  `(k, n)` and `policy.bitrate.utilization_factor` at each
+  tick, so it tracks FEC ratio changes automatically without a
+  separate operator-pinned value per row.
 
 ## Reproducing
 

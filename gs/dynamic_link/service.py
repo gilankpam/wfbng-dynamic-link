@@ -15,6 +15,7 @@ from . import wire
 from .debug_config import DebugConfig
 from .flight_log import FlightDirRotator
 from .latency_sink import LatencySink
+from .observed import derive_observed
 from .policy import (
     CooldownConfig,
     FECBounds,
@@ -25,6 +26,8 @@ from .policy import (
     ProfileSelectionConfig,
     SafeDefaults,
 )
+from .bitrate import BitrateConfig
+from .idr_burst import IdrBurstConfig, IdrBurster
 from .predictor import PredictorConfig
 from .profile import load_profile
 from .return_link import ReturnLink
@@ -195,12 +198,24 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         n=int(safe_video.get("n", 12)),
         depth=int(safe_raw.get("depth", 1)),
         mcs=int(safe_raw.get("mcs", 1)),
-        bitrate_kbps=int(safe_raw.get("bitrate_kbps", 2000)),
     )
     predictor = PredictorConfig(
         per_packet_airtime_us=float(video_raw.get("per_packet_airtime_us", 80.0)),
     )
     policy_raw = raw.get("policy", {})
+    bitrate_raw = policy_raw.get("bitrate", {})
+    try:
+        bitrate = BitrateConfig(
+            **{
+                k: (float if k == "utilization_factor" else int)(v)
+                for k, v in bitrate_raw.items()
+                if k in {"utilization_factor",
+                         "min_bitrate_kbps",
+                         "max_bitrate_kbps"}
+            }
+        )
+    except ValueError as e:
+        raise ValueError(f"policy.bitrate.{e}") from e
     return PolicyConfig(
         leading=leading,
         gate=gate,
@@ -208,10 +223,30 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         cooldown=cooldown,
         fec=fec,
         safe=safe,
+        bitrate=bitrate,
         predictor=predictor,
         max_latency_ms=float(video_raw.get("max_latency_ms", 50.0)),
         starvation_windows=int(policy_raw.get("starvation_windows", 5)),
     )
+
+
+def _build_idr_burst_config(raw: dict) -> IdrBurstConfig:
+    policy_raw = raw.get("policy", {})
+    burst_raw = policy_raw.get("idr_burst", {})
+    cfg = IdrBurstConfig(
+        enabled=bool(burst_raw.get("enabled", True)),
+        count=int(burst_raw.get("count", 4)),
+        interval_ms=int(burst_raw.get("interval_ms", 20)),
+    )
+    if cfg.count < 1:
+        raise ValueError(
+            f"policy.idr_burst.count must be >= 1; got {cfg.count}"
+        )
+    if cfg.interval_ms <= 0:
+        raise ValueError(
+            f"policy.idr_burst.interval_ms must be > 0; got {cfg.interval_ms}"
+        )
+    return cfg
 
 
 def _build_aggregator(raw: dict) -> SignalAggregator:
@@ -342,13 +377,20 @@ async def _run(args: argparse.Namespace) -> int:
             log.warning("debug.video_tap=true but --log-dir not supplied; "
                         "per-frame RTP records will not be persisted")
 
+    # 1-slot holder for the latest RxEvent — populated in on_event,
+    # read by _log_extras to derive the observed block. List used as
+    # mutable cell so the closure can rebind without `nonlocal`.
+    latest_rx: list[RxEvent | None] = [None]
+
     def _log_extras() -> dict:
-        if timesync is None or timesync.offset_us is None:
-            return {}
-        return {
-            "offset_us": timesync.offset_us,
-            "offset_stddev_us": timesync.offset_stddev_us,
-        }
+        out: dict = {}
+        if timesync is not None and timesync.offset_us is not None:
+            out["offset_us"] = timesync.offset_us
+            out["offset_stddev_us"] = timesync.offset_stddev_us
+        observed = derive_observed(latest_rx[0])
+        if observed:
+            out["observed"] = observed
+        return out
 
     sink = LogSink(
         events_stream=events_stream,
@@ -368,6 +410,16 @@ async def _run(args: argparse.Namespace) -> int:
                  drone_addr, drone_port)
     else:
         log.info("enabled=false; observer mode (no wire emit)")
+
+    idr_burst_cfg = _build_idr_burst_config(raw)
+    idr_burster: IdrBurster | None = None
+    if enabled and return_link is not None and wire_encoder is not None:
+        idr_burster = IdrBurster(idr_burst_cfg, return_link, wire_encoder)
+        log.info(
+            "idr_burst: enabled=%s count=%d interval_ms=%d",
+            idr_burst_cfg.enabled, idr_burst_cfg.count,
+            idr_burst_cfg.interval_ms,
+        )
 
     # ---- Phase 3 ping/pong wiring ----
     if debug_cfg.ping_pong:
@@ -456,12 +508,15 @@ async def _run(args: argparse.Namespace) -> int:
         if isinstance(ev, RxEvent):
             if rotator is not None:
                 rotator.on_rx_event(ev)
+            latest_rx[0] = ev
             signals = aggregator.consume(ev)
             decision = policy.tick(signals)
             sink.write(decision)
             if enabled and return_link is not None and wire_encoder is not None:
                 packet = wire_encoder.encode(decision)
                 return_link.send(packet)
+                if decision.idr_request and idr_burster is not None:
+                    idr_burster.trigger(decision)
 
     if args.replay is not None:
         client = ReplayClient(str(args.replay), on_event)

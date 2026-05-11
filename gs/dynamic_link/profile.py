@@ -1,10 +1,11 @@
 """Radio-profile YAML loader and runtime `rssi_mcs_map` builder (§6.1).
 
-Each profile carries a per-(bandwidth, MCS) `fec_table` — the
-`(k, n, bitrate_Mbps)` triple to use at that row. The table is
-operator-validated per airframe; the controller never moves
-`(k, n)` reactively. See `docs/knob-cadence-bench.md` for why
-FEC reconfigs are pinned per-MCS instead of escalated on loss.
+Each profile carries a per-(bandwidth, MCS) `fec_table` — the `(k, n)`
+pair to use at that row. The table is operator-validated per airframe;
+the controller never moves `(k, n)` reactively. Bitrate is computed at
+runtime via `dynamic_link.bitrate.compute_bitrate_kbps` keyed off
+`policy.bitrate`. See `docs/knob-cadence-bench.md` for why FEC reconfigs
+are pinned per-MCS instead of escalated on loss.
 """
 from __future__ import annotations
 
@@ -22,24 +23,22 @@ class ProfileError(ValueError):
 class FECEntry:
     k: int
     n: int
-    bitrate_Mbps: float
 
 
 @dataclass(frozen=True)
 class MCSRow:
-    """One row of the runtime RSSI/SNR → (MCS, k, n, bitrate) map.
+    """One row of the runtime RSSI/SNR → (MCS, k, n) map.
 
     Both `rssi_floor_dBm` and `snr_floor_dB` are populated by both
     `rssi_mcs_map` and `snr_mcs_map`. The leading loop's MCS hysteresis
     runs on `snr_floor_dB`; `rssi_floor_dBm` is retained for diagnostic
-    visibility and any future RSSI-based safety check. `(k, n)` and
-    `bitrate_Mbps` come straight from the profile's `fec_table` row —
-    they are not computed at runtime.
+    visibility and any future RSSI-based safety check. `(k, n)` come
+    from the profile's `fec_table` row. Bitrate is computed at runtime
+    via `dynamic_link.bitrate.compute_bitrate_kbps` keyed off `policy.bitrate`.
     """
     mcs: int
     rssi_floor_dBm: float  # sensitivity_dBm[mcs] + rssi_margin_db
     snr_floor_dB: float    # snr_floor_dB[mcs] + snr_margin_db
-    bitrate_Mbps: float    # fec_table[bw][mcs].bitrate_Mbps
     k: int                 # fec_table[bw][mcs].k
     n: int                 # fec_table[bw][mcs].n
 
@@ -61,8 +60,8 @@ class RadioProfile:
     fec_table: dict[int, dict[int, FECEntry]]    # bw -> mcs -> FECEntry
 
     def fec_for(self, bandwidth: int, mcs: int) -> FECEntry:
-        """Look up the operator-validated `(k, n, bitrate_Mbps)` for
-        a (bandwidth, mcs) pair. Raises `ProfileError` if missing."""
+        """Look up the operator-validated `(k, n)` for a (bandwidth, mcs)
+        pair. Raises `ProfileError` if missing."""
         if bandwidth not in self.fec_table:
             raise ProfileError(
                 f"fec_table missing bandwidth {bandwidth}"
@@ -94,7 +93,6 @@ class RadioProfile:
                 mcs=mcs,
                 rssi_floor_dBm=sens[mcs] + rssi_margin_db,
                 snr_floor_dB=snr[mcs] + snr_margin_db,
-                bitrate_Mbps=entry.bitrate_Mbps,
                 k=entry.k,
                 n=entry.n,
             ))
@@ -184,14 +182,18 @@ def _validate(data: dict, source: str) -> RadioProfile:
                 raise ProfileError(
                     f"{source}: fec_table[{bw}][{mcs_i}] must be a mapping"
                 )
-            for f in ("k", "n", "bitrate_Mbps"):
+            for f in ("k", "n"):
                 if f not in entry:
                     raise ProfileError(
                         f"{source}: fec_table[{bw}][{mcs_i}] missing {f!r}"
                     )
+            if "bitrate_Mbps" in entry:
+                raise ProfileError(
+                    f"{source}: fec_table[{bw}][{mcs_i}] contains bitrate_Mbps; "
+                    f"bitrate is computed from policy.bitrate — drop this field"
+                )
             k = int(entry["k"])
             n = int(entry["n"])
-            br = float(entry["bitrate_Mbps"])
             if k < 1 or k > 12:
                 raise ProfileError(
                     f"{source}: fec_table[{bw}][{mcs_i}] k={k} out of range [1, 12]"
@@ -204,11 +206,7 @@ def _validate(data: dict, source: str) -> RadioProfile:
                 raise ProfileError(
                     f"{source}: fec_table[{bw}][{mcs_i}] n={n} exceeds wfb-ng cap (32)"
                 )
-            if br <= 0.0:
-                raise ProfileError(
-                    f"{source}: fec_table[{bw}][{mcs_i}] bitrate_Mbps={br} must be > 0"
-                )
-            per_bw[mcs_i] = FECEntry(k=k, n=n, bitrate_Mbps=br)
+            per_bw[mcs_i] = FECEntry(k=k, n=n)
         fec_table[bw] = per_bw
 
     for bw in bandwidth_supported:

@@ -12,6 +12,7 @@
  * On watchdog trip:
  *   one-shot safe_defaults push; latch until the next fresh decision.
  */
+#include "dl_apply.h"
 #include "dl_backend_enc.h"
 #include "dl_backend_radio.h"
 #include "dl_backend_tx.h"
@@ -118,6 +119,33 @@ static int open_listen_socket(const dl_config_t *cfg) {
     return fd;
 }
 
+typedef enum {
+    APPLY_IDLE = 0,
+    APPLY_UP_GAP,    /* phase 1 = tx+radio applied; encoder pending */
+    APPLY_DOWN_GAP,  /* phase 1 = encoder applied; tx+radio pending */
+} apply_state_t;
+
+static int arm_gap(int gap_fd, uint32_t ms) {
+    struct itimerspec ts = {0};
+    ts.it_value.tv_sec  = ms / 1000;
+    ts.it_value.tv_nsec = (long)(ms % 1000) * 1000000L;
+    /* it_interval stays zero -> single-shot */
+    if (timerfd_settime(gap_fd, 0, &ts, NULL) < 0) {
+        dl_log_warn("gap: arm: %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+static int disarm_gap(int gap_fd) {
+    struct itimerspec ts = {0};
+    if (timerfd_settime(gap_fd, 0, &ts, NULL) < 0) {
+        dl_log_warn("gap: disarm: %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
 static int open_tick_timer(uint32_t interval_ms) {
     int fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     if (fd < 0) {
@@ -220,6 +248,13 @@ int main(int argc, char **argv) {
     int tick_fd = open_tick_timer(tick_ms);
     if (tick_fd < 0) { close(listen_fd); return 4; }
 
+    int gap_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (gap_fd < 0) {
+        dl_log_err("gap: timerfd_create: %s", strerror(errno));
+        close(listen_fd); close(tick_fd);
+        return 4;
+    }
+
     dl_backend_tx_t    *bt = dl_backend_tx_open(&cfg);
     dl_backend_radio_t *br = dl_backend_radio_open(&cfg);
     dl_backend_enc_t   *be = dl_backend_enc_open(&cfg);
@@ -241,12 +276,16 @@ int main(int argc, char **argv) {
     dl_dedup_init(&dedup);
     int      last_rssi_dBm = 0;  /* Phase 2 will populate from MAVLink */
 
-    struct pollfd pfds[2];
+    apply_state_t apply_state   = APPLY_IDLE;
+    dl_decision_t apply_pending = {0};
+
+    struct pollfd pfds[3];
     pfds[0].fd = listen_fd; pfds[0].events = POLLIN;
     pfds[1].fd = tick_fd;   pfds[1].events = POLLIN;
+    pfds[2].fd = gap_fd;    pfds[2].events = POLLIN;
 
     while (!g_stop) {
-        int n = poll(pfds, 2, -1);
+        int n = poll(pfds, 3, -1);
         if (n < 0) {
             if (errno == EINTR) continue;
             dl_log_err("poll: %s", strerror(errno));
@@ -320,14 +359,59 @@ int main(int argc, char **argv) {
                                  rsn, d.sequence);
                         dl_dbg_emit("CEILING_REJECT", DL_DBG_SEV_WARN, detail);
                     } else {
-                        uint64_t now = now_monotonic_ms();
-                        int drc = 0;
-                        if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
-                        if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
-                        if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
-                        if (d.flags & DL_FLAG_IDR_REQUEST) {
-                            dl_backend_enc_request_idr(be, now);
+                        /* New decision supersedes any in-flight phase 2;
+                         * the per-backend diff in phase-1 below will
+                         * reapply anything that still differs. */
+                        if (apply_state != APPLY_IDLE) {
+                            disarm_gap(gap_fd);
+                            apply_state = APPLY_IDLE;
                         }
+
+                        uint64_t now = now_monotonic_ms();
+                        bool first = (last_enc.magic != DL_WIRE_MAGIC);
+                        dl_apply_dir_t dir = dl_apply_direction(
+                            last_enc.bitrate_kbps, d.bitrate_kbps, first);
+
+                        int drc = 0;
+                        useconds_t sub_pace_us =
+                            (useconds_t)cfg.apply_sub_pace_ms * 1000u;
+                        if (cfg.apply_stagger_ms == 0 ||
+                            dir == DL_APPLY_DIR_EQUAL) {
+                            if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
+                            if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
+                            if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
+                            if (d.flags & DL_FLAG_IDR_REQUEST) {
+                                dl_backend_enc_request_idr(be, now);
+                            }
+                        } else if (dir == DL_APPLY_DIR_UP) {
+                            /* Power up BEFORE MCS up so the new (higher)
+                             * MCS rate has the headroom on the very first
+                             * frame transmitted at it. Then tx (FEC/depth/
+                             * MCS) — paced from the iw exit so wfb_tx's
+                             * radiotap update lands on a steady-state
+                             * power level. Encoder bitrate expands after
+                             * the outer gap. */
+                            if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
+                            if (sub_pace_us > 0) usleep(sub_pace_us);
+                            if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
+                            apply_pending = d;
+                            apply_state   = APPLY_UP_GAP;
+                            arm_gap(gap_fd, cfg.apply_stagger_ms);
+                        } else {  /* DL_APPLY_DIR_DOWN */
+                            /* Throttle producer first, then narrow
+                             * capacity after the gap. IDR rides with
+                             * the encoder phase. tx (MCS down) before
+                             * radio (power down) so we don't transmit
+                             * the old high MCS at reduced power. */
+                            if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
+                            if (d.flags & DL_FLAG_IDR_REQUEST) {
+                                dl_backend_enc_request_idr(be, now);
+                            }
+                            apply_pending = d;
+                            apply_state   = APPLY_DOWN_GAP;
+                            arm_gap(gap_fd, cfg.apply_stagger_ms);
+                        }
+
                         if (drc < 0) {
                             dl_log_warn("apply: at least one backend failed seq=%u",
                                         d.sequence);
@@ -339,9 +423,10 @@ int main(int argc, char **argv) {
                                      "{\"seq\":%u}", d.sequence);
                             dl_dbg_emit("APPLY_FAIL", DL_DBG_SEV_WARN, detail);
                         } else {
-                            dl_log_debug("apply: seq=%u mcs=%u k=%u n=%u d=%u tx=%d br=%u",
+                            dl_log_debug("apply: seq=%u mcs=%u k=%u n=%u d=%u tx=%d br=%u dir=%d",
                                          d.sequence, d.mcs, d.k, d.n, d.depth,
-                                         d.tx_power_dBm, d.bitrate_kbps);
+                                         d.tx_power_dBm, d.bitrate_kbps,
+                                         (int)dir);
                         }
                         last_applied = d;
                         dl_osd_write_status(osd, &last_applied, last_rssi_dBm);
@@ -358,6 +443,11 @@ int main(int argc, char **argv) {
             uint64_t now = now_monotonic_ms();
             if (dl_watchdog_tick(&wd, now)) {
                 dl_log_warn("watchdog tripped; pushing safe_defaults");
+                /* Drop any queued phase 2 — safe values supersede. */
+                if (apply_state != APPLY_IDLE) {
+                    disarm_gap(gap_fd);
+                    apply_state = APPLY_IDLE;
+                }
                 if (bt) dl_backend_tx_apply_safe(bt, &cfg);
                 if (br) dl_backend_radio_apply_safe(br, &cfg);
                 if (be) dl_backend_enc_apply_safe(be, &cfg);
@@ -379,11 +469,51 @@ int main(int argc, char **argv) {
                 dl_dedup_reset(&dedup);
             }
         }
+
+        if (pfds[2].revents & POLLIN) {
+            uint64_t expirations;
+            ssize_t r = read(gap_fd, &expirations, sizeof(expirations));
+            (void)r;  /* always drain to clear POLLIN */
+            int drc = 0;
+            if (apply_state == APPLY_UP_GAP) {
+                if (be && dl_backend_enc_apply(be, &apply_pending, &last_enc) < 0)
+                    drc = -1;
+                if (apply_pending.flags & DL_FLAG_IDR_REQUEST) {
+                    dl_backend_enc_request_idr(be, now_monotonic_ms());
+                }
+            } else if (apply_state == APPLY_DOWN_GAP) {
+                if (bt && dl_backend_tx_apply(bt, &apply_pending, &last_tx) < 0)
+                    drc = -1;
+                if (cfg.apply_sub_pace_ms > 0) {
+                    usleep((useconds_t)cfg.apply_sub_pace_ms * 1000u);
+                }
+                if (br && dl_backend_radio_apply(br, &apply_pending, &last_radio) < 0)
+                    drc = -1;
+            }
+            /* APPLY_IDLE here means a stale expiration the kernel had
+             * already queued before disarm landed — drained, ignore. */
+            if (apply_state != APPLY_IDLE && drc < 0) {
+                dl_log_warn("apply: phase2 backend failed seq=%u",
+                            apply_pending.sequence);
+                dl_mavlink_emit(mav, "apply_fail",
+                                DL_MAV_SEV_WARNING,
+                                "DL APPLY_FAIL backend");
+                char detail[64];
+                snprintf(detail, sizeof(detail),
+                         "{\"seq\":%u,\"phase\":2}", apply_pending.sequence);
+                dl_dbg_emit("APPLY_FAIL", DL_DBG_SEV_WARN, detail);
+            } else if (apply_state != APPLY_IDLE) {
+                dl_log_debug("apply: phase2 seq=%u state=%d",
+                             apply_pending.sequence, (int)apply_state);
+            }
+            apply_state = APPLY_IDLE;
+        }
     }
 
     dl_log_info("dl-applier shutting down");
     close(listen_fd);
     close(tick_fd);
+    close(gap_fd);
     if (gs_tunnel_fd >= 0) close(gs_tunnel_fd);
     dl_mavlink_close(mav);
     dl_osd_close(osd);

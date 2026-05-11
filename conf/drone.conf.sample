@@ -36,6 +36,26 @@ tx_power_max_dBm = 20
 # keyframes, but longer corruption window after a missed primary.
 min_idr_interval_ms = 500
 
+# ---- Direction-aware apply stagger ----------------------------------
+# When a decision changes the encoder bitrate, the applier splits the
+# apply into two phases separated by this many milliseconds:
+#   bitrate up   -> iw (power up) + tx_cmd first, then encoder.
+#   bitrate down -> encoder first, then tx_cmd + iw (power down).
+# The bottleneck is widened before the producer expands (and narrowed
+# after the producer is throttled), avoiding a queue burst at the
+# wfb-tx boundary during transitions. Set to 0 to disable.
+apply_stagger_ms = 50
+
+# ---- Sub-command pacing within an apply phase -----------------------
+# Microseconds between consecutive sub-commands inside a single phase:
+# the FEC/DEPTH/RADIO triplet inside dl_backend_tx_apply, and the
+# tx<->radio (iw txpower) handoff inside the applier. Both CMD_SET_FEC
+# and CMD_SET_INTERLEAVE_DEPTH trigger wfb-ng's refresh_session() which
+# closes the open block, flushes the interleaver and re-broadcasts
+# SESSION packets; back-to-back issues overlap those bursts and discard
+# more in-flight video than necessary. 0 disables. Range 0..50 ms.
+apply_sub_pace_ms = 5
+
 # ---- OSD sink (msposd) ----------------------------------------------
 osd_enable              = 1
 osd_msg_path            = /tmp/MSPOSD.msg

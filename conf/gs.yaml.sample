@@ -24,11 +24,11 @@ video:
   max_latency_ms: 50
 
 fec:
-  # `(k, n)` and bitrate are now per-MCS lookups in the radio
-  # profile's `fec_table` block. The controller never moves them
-  # reactively to loss — see `docs/knob-cadence-bench.md` for why
-  # FEC `CMD_SET_FEC` reconfigs are pinned per-MCS instead of
-  # escalated on loss.
+  # `(k, n)` are now per-MCS lookups in the radio profile's
+  # `fec_table` block. The controller never moves them reactively to
+  # loss — see `docs/knob-cadence-bench.md` for why FEC
+  # `CMD_SET_FEC` reconfigs are pinned per-MCS instead of escalated
+  # on loss.
   depth_max: 3
   mtu_bytes: 1400
 
@@ -108,6 +108,27 @@ policy:
   # power to max. At 10 Hz, 5 windows = 0.5 s.
   starvation_windows: 5
 
+  # Encoder bitrate is computed each tick as
+  #   data_rate_Mbps_LGI[bw][mcs] * 1000 * utilization_factor * (k/n)
+  # clamped to [min_bitrate_kbps, max_bitrate_kbps]. Operator tunes one
+  # utilization_factor instead of per-MCS bitrate. Defaults from
+  # alink_gs.conf ([dynamic] utilization_factor, [hardware] min_bitrate,
+  # max_bitrate).
+  bitrate:
+    utilization_factor: 0.8
+    min_bitrate_kbps: 1000
+    max_bitrate_kbps: 24000
+  # On any tick where the policy requests an IDR (residual_loss > 0),
+  # send `count` total IDR-flagged decision packets at `interval_ms`
+  # spacing — burst the regular tick packet plus count-1 fast repeats
+  # so a single UDP loss on the return link doesn't swallow the IDR.
+  # Drone-side dl_backend_enc throttle collapses duplicate arrivals
+  # to one camera HTTP call. Defaults from alink_gs.conf [keyframe].
+  idr_burst:
+    enabled: true
+    count: 4
+    interval_ms: 20
+
 health_timeout_ms: 10000
 
 safe_defaults:
@@ -116,7 +137,6 @@ safe_defaults:
     n: 12
   depth: 1
   mcs: 1
-  bitrate_kbps: 2000
 
 # ---- Debug suite (Phase 3) -----------------------------------------
 # Forensic tooling for post-flight latency / failure analysis.

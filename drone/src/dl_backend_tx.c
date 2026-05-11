@@ -17,7 +17,15 @@
 struct dl_backend_tx {
     int fd;
     struct sockaddr_in dst;
+    /* Microsecond pacing between sub-commands (FEC, DEPTH, RADIO).
+     * See cfg->apply_sub_pace_ms — wfb-ng's refresh_session burst
+     * needs space to land before the next SET_* hits. 0 = no pacing. */
+    useconds_t pace_us;
 };
+
+static void pace(const dl_backend_tx_t *bt) {
+    if (bt->pace_us > 0) usleep(bt->pace_us);
+}
 
 static uint32_t next_req_id(void) {
     /* Simple monotonic; wfb-ng only echoes it so uniqueness within a
@@ -146,8 +154,10 @@ dl_backend_tx_t *dl_backend_tx_open(const dl_config_t *cfg) {
     }
     bt->fd = fd;
     bt->dst = dst;
-    dl_log_info("tx_cmd: connected to %s:%u",
-                cfg->wfb_tx_ctrl_addr, cfg->wfb_tx_ctrl_port);
+    bt->pace_us = (useconds_t)cfg->apply_sub_pace_ms * 1000u;
+    dl_log_info("tx_cmd: connected to %s:%u (sub_pace=%u ms)",
+                cfg->wfb_tx_ctrl_addr, cfg->wfb_tx_ctrl_port,
+                (unsigned)cfg->apply_sub_pace_ms);
     return bt;
 }
 
@@ -200,14 +210,19 @@ int dl_backend_tx_apply(dl_backend_tx_t *bt,
                         dl_decision_t *prev) {
     int rc = 0;
     bool first = (prev == NULL) || prev->magic != DL_WIRE_MAGIC;
+    bool emitted = false;
 
     if (first || prev->k != d->k || prev->n != d->n) {
         if (send_fec(bt, d->k, d->n) < 0) rc = -1;
+        emitted = true;
     }
     if (first || prev->depth != d->depth) {
+        if (emitted) pace(bt);
         if (send_depth(bt, d->depth) < 0) rc = -1;
+        emitted = true;
     }
     if (first || prev->mcs != d->mcs || prev->bandwidth != d->bandwidth) {
+        if (emitted) pace(bt);
         if (send_radio(bt, d->mcs, d->bandwidth) < 0) rc = -1;
     }
 
@@ -218,7 +233,9 @@ int dl_backend_tx_apply(dl_backend_tx_t *bt,
 int dl_backend_tx_apply_safe(dl_backend_tx_t *bt, const dl_config_t *cfg) {
     int rc = 0;
     if (send_fec(bt, cfg->safe_k, cfg->safe_n) < 0) rc = -1;
+    pace(bt);
     if (send_depth(bt, cfg->safe_depth) < 0) rc = -1;
+    pace(bt);
     if (send_radio(bt, cfg->safe_mcs, cfg->safe_bandwidth) < 0) rc = -1;
     return rc;
 }
