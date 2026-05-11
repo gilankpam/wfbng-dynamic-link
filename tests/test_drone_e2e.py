@@ -208,8 +208,94 @@ class FakeMavlinkSink:
         return out
 
 
+class _Sandbox:
+    """Container for sandbox state and per-test helpers.
+
+    Supports dict-style access (`s["wfb"]`, `s["listen_port"]`) for the
+    legacy tests, plus method-style helpers (`recv_one_hello`,
+    `send_to_drone`, `restart_drone_applier`) for the P4a handshake e2e
+    tests.
+    """
+    def __init__(self, state: dict, gs_tunnel_sock: socket.socket,
+                 cfg_path: Path, cfg_dict: dict):
+        self._state = state
+        self._gs_tunnel_sock = gs_tunnel_sock
+        self._cfg_path = cfg_path
+        self._cfg_dict = cfg_dict
+
+    def __getitem__(self, key):
+        return self._state[key]
+
+    def __getattr__(self, key):
+        try:
+            return self._state[key]
+        except KeyError:
+            raise AttributeError(key)
+
+    def send_to_drone(self, data: bytes) -> None:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.sendto(data, (self._state["listen_addr"],
+                               self._state["listen_port"]))
+        finally:
+            sock.close()
+
+    def recv_one_hello(self, timeout: float = 2.0) -> bytes | None:
+        """Drain the gs_tunnel socket until a 'hello' packet arrives or
+        timeout elapses. Returns the raw bytes (32-byte DLHE) or None."""
+        from dynamic_link.wire import peek_kind
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            self._gs_tunnel_sock.settimeout(remaining)
+            try:
+                data, _ = self._gs_tunnel_sock.recvfrom(256)
+            except socket.timeout:
+                return None
+            if peek_kind(data) == "hello":
+                return data
+            # Drop anything else (pong, etc.) and keep waiting.
+
+    def restart_drone_applier(self) -> None:
+        """Kill and respawn dl-applier with the same config. Used to
+        verify a fresh generation_id appears in the next HELLO."""
+        proc = self._state["proc"]
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        listen_addr = self._state["listen_addr"]
+        listen_port = self._state["listen_port"]
+        # Same wait-for-bind dance as the initial spawn.
+        new_proc = subprocess.Popen(
+            [str(APPLIER), "--config", str(self._cfg_path), "--debug"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        deadline = time.monotonic() + 2.0
+        bound = False
+        while time.monotonic() < deadline:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                probe.bind((listen_addr, listen_port))
+                probe.close()
+                time.sleep(0.02)
+            except OSError:
+                probe.close()
+                bound = True
+                break
+        if not bound:
+            new_proc.terminate()
+            raise RuntimeError("dl-applier did not rebind listen port within 2s")
+        self._state["proc"] = new_proc
+
+
 @contextlib.contextmanager
-def _sandbox(tmp_path: Path, **overrides):
+def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
+             **overrides):
     wfb = FakeWfbTx()
     wfb.start()
     enc = make_encoder_server()
@@ -222,6 +308,14 @@ def _sandbox(tmp_path: Path, **overrides):
     s.bind(("127.0.0.1", 0))
     listen_port = s.getsockname()[1]
     s.close()
+
+    # Pre-bind the GS-side tunnel listener. The applier sends PONGs and
+    # (P4a) HELLOs here. Binding now guarantees the port is taken before
+    # we tell the applier about it, so its first sendto doesn't lose to
+    # a kernel-side "no listener" drop on some configurations.
+    gs_tunnel_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    gs_tunnel_sock.bind(("127.0.0.1", 0))
+    gs_tunnel_port = gs_tunnel_sock.getsockname()[1]
 
     osd_path = tmp_path / "MSPOSD.msg"
     cfg = tmp_path / "drone.conf"
@@ -252,8 +346,14 @@ def _sandbox(tmp_path: Path, **overrides):
         "mavlink_port":   mav.port,
         "mavlink_sysid":  250,
         "mavlink_compid": 191,
+        # GS tunnel — point at the pre-bound socket above so PONGs and
+        # HELLOs land somewhere a test can observe.
+        "gs_tunnel_addr":  "127.0.0.1",
+        "gs_tunnel_port":  gs_tunnel_port,
     }
     defaults.update(overrides)
+    if extra_drone_conf:
+        defaults.update(extra_drone_conf)
     with open(cfg, "w") as f:
         for k, v in defaults.items():
             f.write(f"{k} = {v}\n")
@@ -282,16 +382,19 @@ def _sandbox(tmp_path: Path, **overrides):
         proc.terminate()
         raise RuntimeError("dl-applier did not bind listen port within 2s")
 
+    state = {
+        "wfb": wfb, "encoder": enc, "cfg": defaults,
+        "mavlink": mav,
+        "listen_addr": defaults["listen_addr"],
+        "listen_port": listen_port,
+        "gs_tunnel_port": gs_tunnel_port,
+        "osd_path": osd_path,
+        "proc": proc,
+    }
     try:
-        yield {
-            "wfb": wfb, "encoder": enc, "cfg": defaults,
-            "mavlink": mav,
-            "listen_addr": defaults["listen_addr"],
-            "listen_port": listen_port,
-            "osd_path": osd_path,
-            "proc": proc,
-        }
+        yield _Sandbox(state, gs_tunnel_sock, cfg, defaults)
     finally:
+        proc = state["proc"]
         proc.terminate()
         try:
             proc.wait(timeout=3)
@@ -302,6 +405,7 @@ def _sandbox(tmp_path: Path, **overrides):
         mav.stop()
         enc.shutdown()
         enc.server_close()
+        gs_tunnel_sock.close()
 
 
 def _port_open(addr: str, port: int) -> bool:
@@ -613,3 +717,104 @@ def test_apply_stagger_cancel_replaces_pending(tmp_path: Path):
         # finds mcs/n/depth all changed -> 3 messages.
         assert new_wfb == 3, \
             f"expected 3 tx_cmd reqs, got {new_wfb}: {s['wfb'].received}"
+
+
+# -----------------------------------------------------------------
+# P4a — drone→GS config handshake (DLHE / DLHA).
+# -----------------------------------------------------------------
+
+def test_drone_e2e_handshake_then_decide(tmp_path: Path):
+    """Drone sends HELLO -> GS ACKs -> drone enters KEEPALIVE and the
+    same generation_id reappears (no fresh announce rotation)."""
+    wfb_yaml = tmp_path / "wfb.yaml"
+    wfb_yaml.write_text("wireless:\n  mlink: 3994\n")
+    majestic_yaml = tmp_path / "majestic.yaml"
+    majestic_yaml.write_text("video0:\n  fps: 60\n")
+
+    with _sandbox(
+        tmp_path,
+        extra_drone_conf={
+            "hello_wfb_yaml_path": str(wfb_yaml),
+            "hello_majestic_yaml_path": str(majestic_yaml),
+            "hello_announce_initial_ms": 100,
+            "hello_keepalive_ms": 200,
+        },
+    ) as ctx:
+        from dynamic_link.wire import (
+            HelloAck, decode_hello, encode_hello_ack,
+        )
+
+        hello_bytes = ctx.recv_one_hello(timeout=2.0)
+        assert hello_bytes is not None, "drone did not announce DLHE"
+        h1 = decode_hello(hello_bytes)
+        assert h1.mtu_bytes == 3994
+        assert h1.fps == 60
+
+        # ACK back; drone should transition ANNOUNCING -> KEEPALIVE.
+        ack = encode_hello_ack(HelloAck(generation_id_echo=h1.generation_id))
+        ctx.send_to_drone(ack)
+
+        # In KEEPALIVE the next DLHE arrives ~hello_keepalive_ms later
+        # (200 ms) with the same generation_id. Use a generous window
+        # to absorb scheduling jitter.
+        h2_bytes = ctx.recv_one_hello(timeout=2.0)
+        assert h2_bytes is not None, "drone did not emit keepalive DLHE"
+        h2 = decode_hello(h2_bytes)
+        assert h2.generation_id == h1.generation_id
+        assert h2.mtu_bytes == 3994
+        assert h2.fps == 60
+
+
+def test_drone_e2e_restart_triggers_new_generation_id(tmp_path: Path):
+    """Restarting dl-applier mid-run produces a fresh generation_id."""
+    wfb_yaml = tmp_path / "wfb.yaml"
+    wfb_yaml.write_text("wireless:\n  mlink: 1400\n")
+    majestic_yaml = tmp_path / "majestic.yaml"
+    majestic_yaml.write_text("video0:\n  fps: 30\n")
+
+    with _sandbox(
+        tmp_path,
+        extra_drone_conf={
+            "hello_wfb_yaml_path": str(wfb_yaml),
+            "hello_majestic_yaml_path": str(majestic_yaml),
+            "hello_announce_initial_ms": 100,
+        },
+    ) as ctx:
+        from dynamic_link.wire import decode_hello
+
+        b1 = ctx.recv_one_hello(timeout=2.0)
+        assert b1 is not None
+        h1 = decode_hello(b1)
+        assert h1.mtu_bytes == 1400
+        assert h1.fps == 30
+
+        ctx.restart_drone_applier()
+
+        b2 = ctx.recv_one_hello(timeout=2.0)
+        assert b2 is not None
+        h2 = decode_hello(b2)
+        assert h2.mtu_bytes == 1400
+        assert h2.fps == 30
+        assert h1.generation_id != h2.generation_id, (
+            f"expected fresh generation_id after restart, "
+            f"both were 0x{h1.generation_id:08x}"
+        )
+
+
+def test_drone_e2e_bad_yaml_means_no_hello(tmp_path: Path):
+    """If /etc/wfb.yaml has no mlink key, dl_hello_init fails and the
+    state machine stays DISABLED — no DLHE is ever sent."""
+    wfb_yaml = tmp_path / "wfb.yaml"
+    wfb_yaml.write_text("wireless:\n  txpower: 50\n")  # no mlink
+    majestic_yaml = tmp_path / "majestic.yaml"
+    majestic_yaml.write_text("video0:\n  fps: 30\n")
+
+    with _sandbox(
+        tmp_path,
+        extra_drone_conf={
+            "hello_wfb_yaml_path": str(wfb_yaml),
+            "hello_majestic_yaml_path": str(majestic_yaml),
+            "hello_announce_initial_ms": 100,
+        },
+    ) as ctx:
+        assert ctx.recv_one_hello(timeout=1.5) is None
