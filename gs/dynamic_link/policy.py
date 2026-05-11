@@ -12,6 +12,13 @@ from dataclasses import dataclass, field
 from .bitrate import BitrateConfig, compute_bitrate_kbps
 from .decision import Decision
 from .drone_config import DroneConfigState
+from .dynamic_fec import (
+    DynamicFecConfig,
+    EmitGate,
+    NEscalator,
+    compute_k,
+    compute_n,
+)
 from .predictor import (
     BudgetExhausted,
     PredictorConfig,
@@ -153,6 +160,7 @@ class PolicyConfig:
     fec: FECBounds = field(default_factory=FECBounds)
     safe: SafeDefaults = field(default_factory=SafeDefaults)
     bitrate: BitrateConfig = field(default_factory=BitrateConfig)
+    dynamic_fec: DynamicFecConfig = field(default_factory=DynamicFecConfig)
     predictor: PredictorConfig = field(default_factory=PredictorConfig)
     max_latency_ms: float = 50.0
     # Trailing-loop depth=1 → 2 bootstrap requires the last N windows
@@ -722,22 +730,27 @@ class Policy:
         # threshold packet rate before declaring blackout.
         self._starvation_count: int = 0
         # Boot at the leading selector's chosen row. `(k, n)` come
-        # from the row; `bitrate_kbps` is computed from those plus
-        # `policy.bitrate.utilization_factor` via
-        # `compute_bitrate_kbps`.
+        # from `cfg.safe` — dynamic-FEC starts emitting computed values
+        # once `tick()` has seen its first signal snapshot.
         row = self.leading.current_row
         self.state = PolicyState(
             mcs=row.mcs,
             bandwidth=cfg.leading.bandwidth,
             tx_power_dBm=int(self.leading.state.tx_power_dBm),
-            k=row.k,
-            n=row.n,
+            k=cfg.safe.k,
+            n=cfg.safe.n,
             depth=cfg.safe.depth,
             bitrate_kbps=compute_bitrate_kbps(
-                profile, cfg.leading.bandwidth, row.mcs,
-                row.k, row.n, cfg.bitrate,
+                profile, cfg.leading.bandwidth, row.mcs, cfg.bitrate,
             ),
         )
+        # Dynamic-FEC state. `_n_escalator` tracks residual-loss
+        # hysteresis; `_emit_gate` debounces solo (k, n) changes and
+        # bundles them onto MCS-change ticks; `_tick_counter` indexes
+        # those debounce windows.
+        self._n_escalator = NEscalator(cfg.dynamic_fec)
+        self._emit_gate = EmitGate()
+        self._tick_counter = 0
 
     def _safe_decision(self, *, timestamp: float, reason: str) -> Decision:
         """Conservative-defaults Decision used while gated (e.g. before
@@ -798,14 +811,47 @@ class Policy:
         )
         row = self.leading.current_row
 
-        # `(k, n, bitrate)` change only when MCS crosses a row boundary
-        # — never reactively to loss / fec_work.
-        new_k = row.k
-        new_n = row.n
+        # Bitrate first (no FEC dependency — bitrate uses the fixed
+        # `base_redundancy_ratio` from BitrateConfig, not the live k/n).
         new_bitrate_kbps = compute_bitrate_kbps(
-            self.profile, self.state.bandwidth, row.mcs,
-            row.k, row.n, self.cfg.bitrate,
+            self.profile, self.state.bandwidth, row.mcs, self.cfg.bitrate,
         )
+
+        # Dynamic FEC: k from packets-per-frame at the live bitrate,
+        # n from base + escalation. (mtu, fps) come from the drone's
+        # HELLO when available; safe fallbacks otherwise.
+        mtu = self.drone_config.mtu_bytes if self.drone_config else 1400
+        fps = self.drone_config.fps if self.drone_config else 60
+        candidate_k = compute_k(
+            bitrate_kbps=new_bitrate_kbps,
+            mtu_bytes=mtu,
+            fps=fps,
+            cfg=self.cfg.dynamic_fec,
+        )
+        escalation = self._n_escalator.update(
+            loss=float(signals.residual_loss_w)
+        )
+        candidate_n = compute_n(
+            k=candidate_k,
+            n_escalation=escalation,
+            cfg=self.cfg.dynamic_fec,
+        )
+
+        # Emit-gating: solo (k, n) changes wait out the debounce
+        # window; MCS-change ticks emit immediately so (k, n) ride
+        # with their cause-and-effect partner.
+        if self._emit_gate.should_emit(
+            candidate_k, candidate_n, mcs_changed,
+            current_tick=self._tick_counter,
+        ):
+            new_k, new_n = candidate_k, candidate_n
+            self._emit_gate.commit(new_k, new_n, self._tick_counter)
+        else:
+            new_k = self._emit_gate.last_k or self.cfg.safe.k
+            new_n = self._emit_gate.last_n or self.cfg.safe.n
+
+        self._tick_counter += 1
+
         ipi_ms = _ipi_ms_for_encoder(float(new_bitrate_kbps), self.cfg.fec.mtu_bytes)
         # Per-tick predictor cfg with the live ipi_ms.
         predictor_cfg = PredictorConfig(
