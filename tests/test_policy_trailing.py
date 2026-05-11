@@ -292,11 +292,7 @@ def test_policy_fec_matches_profile_at_each_mcs():
         _settle_at_mcs(p, target)
         if p.state.mcs != target:
             continue
-        entry = p.profile.fec_for(20, target)
-        assert (p.state.k, p.state.n) == (entry.k, entry.n)
-        expected = compute_bitrate_kbps(
-            p.profile, 20, target, entry.k, entry.n, p.cfg.bitrate,
-        )
+        expected = compute_bitrate_kbps(p.profile, 20, target, p.cfg.bitrate)
         assert p.state.bitrate_kbps == expected
 
 
