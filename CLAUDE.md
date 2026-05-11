@@ -104,11 +104,17 @@ Design doc §6 calls the JSON stats feed `stats_port`. In wfb-ng's
 
 ### Operational prerequisites (wfb-ng master.cfg changes)
 
-Two edits the operator must make on wfb-ng before we run end-to-end:
+Edits the operator must make before we run end-to-end:
 
 1. `[common] log_interval = 100` (design doc says 10 Hz cadence).
 2. `[<tx-section>] control_port = 8000` (default 0 picks a random
    port our applier can't target).
+3. `/etc/wfb.yaml` must contain `wireless.mlink: <integer>` — the
+   radio MTU. dl-applier reads this at boot and reports it to the
+   GS via the DLHE handshake; missing key means the applier refuses
+   to send HELLO and the GS stays in safe_defaults.
+4. `/etc/majestic.yaml` must contain `video0.fps: <integer>` —
+   same constraint as above, on the FPS side.
 
 Call these out explicitly in any user-facing doc; they're easy to
 miss and the failures are silent.
