@@ -28,6 +28,7 @@ from .policy import (
     SafeDefaults,
 )
 from .bitrate import BitrateConfig
+from .dynamic_fec import DynamicFecConfig
 from .idr_burst import IdrBurstConfig, IdrBurster
 from .predictor import PredictorConfig
 from .profile import load_profile
@@ -176,23 +177,49 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     )
     fec = FECBounds(
         depth_max=int(fec_raw.get("depth_max", 3)),
-        mtu_bytes=int(fec_raw.get("mtu_bytes", 1400)),
     )
-    # `(k, n)` and bitrate now come from the radio profile's
-    # `fec_table` (`docs/knob-cadence-bench.md` rationale). Warn if
-    # the legacy escalation knobs are still in the YAML — they're
-    # silently ignored, but nice to nudge operators to clean up.
+
+    fec_kbounds_raw = fec_raw.get("k_bounds", {})
+    dynamic_fec = DynamicFecConfig(
+        k_min=int(fec_kbounds_raw.get("min", 4)),
+        k_max=int(fec_kbounds_raw.get("max", 16)),
+        base_redundancy_ratio=float(fec_raw.get("base_redundancy_ratio", 0.5)),
+        max_redundancy_ratio=float(fec_raw.get("max_redundancy_ratio", 1.0)),
+        n_loss_threshold=float(fec_raw.get("n_loss_threshold", 0.02)),
+        n_loss_windows=int(fec_raw.get("n_loss_windows", 3)),
+        n_loss_step=int(fec_raw.get("n_loss_step", 1)),
+        n_recover_windows=int(fec_raw.get("n_recover_windows", 10)),
+        n_recover_step=int(fec_raw.get("n_recover_step", 1)),
+        max_n_escalation=int(fec_raw.get("max_n_escalation", 4)),
+    )
+
+    # Legacy fec.* keys: present in old gs.yaml configs but no longer
+    # wired. Log a warning so the operator cleans them up.
     _legacy_fec_keys = (
-        "n_min", "k_min", "k_max", "max_redundancy_ratio",
-        "base_redundancy_ratio", "fec_block_fill_ms_target",
-        "n_loss_step", "n_preempt_step", "n_recover_step",
+        "mtu_bytes",                    # now drone-reported via DLHE (P4a)
+        "fec_block_fill_ms_target",     # removed during the static-table era
+        "n_min", "n_preempt_step",      # removed during the static-table era
     )
+    _legacy_fec_reasons = {
+        "mtu_bytes": "MTU is now reported by the drone at runtime",
+        "fec_block_fill_ms_target": "block-fill is now bounded by k_bounds.max",
+        "n_min": "absorbed into k_bounds.min",
+        "n_preempt_step": "preemptive escalation removed",
+    }
     for k in _legacy_fec_keys:
         if k in fec_raw:
             log.warning(
-                "config: ignoring legacy fec.%s — `(k, n)` is now "
-                "set per-MCS by the radio profile's fec_table", k,
+                "config: ignoring legacy fec.%s — %s", k,
+                _legacy_fec_reasons.get(k, "deprecated"),
             )
+
+    # Legacy encoder keys: encoder.fps moved drone-side.
+    encoder_raw = raw.get("encoder", {})
+    if "fps" in encoder_raw:
+        log.warning(
+            "config: ignoring legacy encoder.fps — FPS is now reported "
+            "by the drone via DLHE (P4a)"
+        )
     safe_video = safe_raw.get("video", {})
     safe = SafeDefaults(
         k=int(safe_video.get("k", 8)),
@@ -207,13 +234,13 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     bitrate_raw = policy_raw.get("bitrate", {})
     try:
         bitrate = BitrateConfig(
-            **{
-                k: (float if k == "utilization_factor" else int)(v)
-                for k, v in bitrate_raw.items()
-                if k in {"utilization_factor",
-                         "min_bitrate_kbps",
-                         "max_bitrate_kbps"}
-            }
+            utilization_factor=float(bitrate_raw.get("utilization_factor", 0.8)),
+            base_redundancy_ratio=float(bitrate_raw.get(
+                "base_redundancy_ratio",
+                float(fec_raw.get("base_redundancy_ratio", 0.5)),
+            )),
+            min_bitrate_kbps=int(bitrate_raw.get("min_bitrate_kbps", 1000)),
+            max_bitrate_kbps=int(bitrate_raw.get("max_bitrate_kbps", 24000)),
         )
     except ValueError as e:
         raise ValueError(f"policy.bitrate.{e}") from e
@@ -225,6 +252,7 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         fec=fec,
         safe=safe,
         bitrate=bitrate,
+        dynamic_fec=dynamic_fec,
         predictor=predictor,
         max_latency_ms=float(video_raw.get("max_latency_ms", 50.0)),
         starvation_windows=int(policy_raw.get("starvation_windows", 5)),

@@ -124,21 +124,12 @@ class CooldownConfig:
     min_change_interval_ms_cross: float = 50.0
 
 
-@dataclass
+@dataclass(frozen=True)
 class FECBounds:
-    """FEC ceilings used for safety clamps.
-
-    `(k, n)` is supplied per-MCS by the radio profile's `fec_table`
-    (see `gs/dynamic_link/profile.py` and `docs/knob-cadence-bench.md`).
-    These bounds exist only as defensive limits — the loader rejects
-    any profile that would violate them. The trailing loop no longer
-    adjusts `n` in response to loss; it follows MCS deterministically.
+    """Defensive ceilings for FEC. `(k, n)` is computed at runtime
+    by `dynamic_fec`; only `depth_max` remains here.
     """
     depth_max: int = 3
-    # MTU used by the latency-budget predictor when translating
-    # encoder kbps → inter-packet interval. 1400 B is wfb-ng's
-    # default UDP MTU.
-    mtu_bytes: int = 1400
 
 
 @dataclass
@@ -852,7 +843,12 @@ class Policy:
 
         self._tick_counter += 1
 
-        ipi_ms = _ipi_ms_for_encoder(float(new_bitrate_kbps), self.cfg.fec.mtu_bytes)
+        mtu_for_predictor = (
+            self.drone_config.mtu_bytes
+            if self.drone_config and self.drone_config.is_synced()
+            else 1400
+        )
+        ipi_ms = _ipi_ms_for_encoder(float(new_bitrate_kbps), mtu_for_predictor)
         # Per-tick predictor cfg with the live ipi_ms.
         predictor_cfg = PredictorConfig(
             per_packet_airtime_us=self.cfg.predictor.per_packet_airtime_us,
