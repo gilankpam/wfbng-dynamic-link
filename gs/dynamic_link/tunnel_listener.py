@@ -28,7 +28,7 @@ HelloHandler = Callable[[wire.Hello], None]
 class _Protocol(asyncio.DatagramProtocol):
     def __init__(
         self,
-        on_pong: PongHandler,
+        on_pong: PongHandler | None,
         on_hello: HelloHandler | None = None,
     ) -> None:
         self._on_pong = on_pong
@@ -41,6 +41,8 @@ class _Protocol(asyncio.DatagramProtocol):
         t4 = time.monotonic_ns() // 1000
         kind = wire.peek_kind(data)
         if kind == "pong":
+            if self._on_pong is None:
+                return
             try:
                 pong = wire.decode_pong(data)
             except ValueError as e:
@@ -76,7 +78,7 @@ class TunnelListener:
         self,
         host: str,
         port: int,
-        on_pong: PongHandler,
+        on_pong: PongHandler | None = None,
         on_hello: HelloHandler | None = None,
     ) -> None:
         self.host = host

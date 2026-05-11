@@ -401,12 +401,15 @@ async def _run(args: argparse.Namespace) -> int:
     )
 
     # ---- Phase 2 wiring ----
-    return_link: ReturnLink | None = None
+    # return_link is always constructed: P4a HELLO/HELLO-ACK uses it
+    # even when decision emit is disabled (observer mode). The cost is
+    # one UDP socket. wire_encoder stays gated on `enabled` since it's
+    # only fed by the decision path.
     wire_encoder: WireEncoder | None = None
     drone_addr = wfb.get("drone_addr", "10.5.0.2")
     drone_port = int(wfb.get("drone_port", 5800))
+    return_link: ReturnLink | None = ReturnLink(drone_addr, drone_port)
     if enabled:
-        return_link = ReturnLink(drone_addr, drone_port)
         wire_encoder = WireEncoder(seq=1)
         log.info("enabled=true; emitting decisions to %s:%d",
                  drone_addr, drone_port)
@@ -438,15 +441,15 @@ async def _run(args: argparse.Namespace) -> int:
         if ack is not None:
             return_link.send_hello_ack(encode_hello_ack(ack))
 
-    # ---- Phase 3 ping/pong wiring ----
-    if debug_cfg.ping_pong:
-        # We need a return_link to send pings, even if Phase-2 emit is
-        # disabled (debugging an observer-only deploy is valid).
-        if return_link is None:
-            return_link = ReturnLink(drone_addr, drone_port)
-        gs_listen_addr = wfb.get("gs_tunnel_listen_addr", "0.0.0.0")
-        gs_listen_port = int(wfb.get("gs_tunnel_listen_port", 5801))
+    # ---- Tunnel listener (always on) ----
+    # HELLO reception is core to P4a — bind the listener regardless of
+    # `enabled` or `debug.ping_pong`. The pong handler is wired in only
+    # when ping/pong is on; the listener treats it as optional.
+    gs_listen_addr = wfb.get("gs_tunnel_listen_addr", "0.0.0.0")
+    gs_listen_port = int(wfb.get("gs_tunnel_listen_port", 5801))
 
+    _on_pong = None
+    if debug_cfg.ping_pong:
         def _on_pong(pong: wire.Pong, t4_us: int) -> None:
             assert timesync is not None
             sample = timesync.observe(
@@ -464,19 +467,19 @@ async def _run(args: argparse.Namespace) -> int:
                 sample.offset_us, sample.outlier,
             )
 
-        tunnel_listener = TunnelListener(
-            gs_listen_addr, gs_listen_port,
-            on_pong=_on_pong,
-            on_hello=_on_hello,
-        )
-        try:
-            await tunnel_listener.start()
-        except OSError as e:
-            log.warning("tunnel_listener: bind %s:%d failed: %s; "
-                        "ping/pong disabled",
-                        gs_listen_addr, gs_listen_port, e)
-            tunnel_listener = None
-            timesync = None
+    tunnel_listener = TunnelListener(
+        gs_listen_addr, gs_listen_port,
+        on_pong=_on_pong,
+        on_hello=_on_hello,
+    )
+    try:
+        await tunnel_listener.start()
+    except OSError as e:
+        log.warning("tunnel_listener: bind %s:%d failed: %s; "
+                    "HELLO/HELLO-ACK and ping/pong disabled",
+                    gs_listen_addr, gs_listen_port, e)
+        tunnel_listener = None
+        timesync = None
 
     if debug_cfg.video_tap:
         def _on_frame(rec) -> None:
@@ -546,7 +549,8 @@ async def _run(args: argparse.Namespace) -> int:
     stop_event = asyncio.Event()
 
     pinger_task: asyncio.Task | None = None
-    if tunnel_listener is not None and return_link is not None:
+    if (debug_cfg.ping_pong and tunnel_listener is not None
+            and return_link is not None):
         async def _pinger() -> None:
             seq = 0
             interval_s = 1.0 / 5.0  # 5 Hz
