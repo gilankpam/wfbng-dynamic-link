@@ -17,7 +17,7 @@ IMAGE=${IMAGE:-wfb-ng-dev:latest}
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
 if [[ -n "${REBUILD:-}" ]] || ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    docker build -t "$IMAGE" -f "$REPO_ROOT/docker/Dockerfile.dev" "$REPO_ROOT/docker"
+    docker build --network host -t "$IMAGE" -f "$REPO_ROOT/docker/Dockerfile.dev" "$REPO_ROOT/docker"
 fi
 
 # Persist Claude Code auth + history in ./.claude under the repo root, so the
