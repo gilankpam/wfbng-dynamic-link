@@ -14,6 +14,12 @@ import pytest
 
 from dynamic_link.decision import Decision
 from dynamic_link.wire import Ping, encode, encode_ping
+from dynamic_link.wire import (
+    Hello,
+    HelloAck,
+    encode_hello,
+    encode_hello_ack,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DL_INJECT = REPO_ROOT / "drone" / "build" / "dl-inject"
@@ -152,3 +158,57 @@ def test_contract_ping_magic():
     py = encode_ping(Ping(gs_seq=1, gs_mono_us=1))
     assert py[:4] == b"DLPG"
     assert py[4] == 1   # version
+
+
+def test_contract_hello_basic():
+    c_bytes = _dl_inject_hex(
+        hello=True,
+        gen_id="0xcafebabe",
+        mtu=3994,
+        fps=60,
+        build_sha="0xdeadbeef",
+    )
+    py_bytes = encode_hello(
+        Hello(generation_id=0xCAFEBABE,
+              mtu_bytes=3994,
+              fps=60,
+              applier_build_sha=0xDEADBEEF)
+    )
+    assert c_bytes == py_bytes, (
+        f"hello mismatch:\n  C : {c_bytes.hex()}\n  Py: {py_bytes.hex()}"
+    )
+
+
+def test_contract_hello_max_values():
+    c_bytes = _dl_inject_hex(
+        hello=True,
+        gen_id="0xffffffff",
+        mtu=65535,
+        fps=65535,
+        build_sha="0xffffffff",
+    )
+    py_bytes = encode_hello(
+        Hello(generation_id=0xFFFFFFFF,
+              mtu_bytes=0xFFFF,
+              fps=0xFFFF,
+              applier_build_sha=0xFFFFFFFF)
+    )
+    assert c_bytes == py_bytes
+
+
+def test_contract_hello_min_values():
+    c_bytes = _dl_inject_hex(
+        hello=True, gen_id="0", mtu=1, fps=1, build_sha="0",
+    )
+    py_bytes = encode_hello(
+        Hello(generation_id=0, mtu_bytes=1, fps=1, applier_build_sha=0)
+    )
+    assert c_bytes == py_bytes
+
+
+def test_contract_hello_ack():
+    c_bytes = _dl_inject_hex(
+        hello_ack=True, gen_id="0x12345678",
+    )
+    py_bytes = encode_hello_ack(HelloAck(generation_id_echo=0x12345678))
+    assert c_bytes == py_bytes
