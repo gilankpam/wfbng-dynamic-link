@@ -573,6 +573,16 @@ async def _run(args: argparse.Namespace) -> int:
         client = StatsClient(endpoint, on_event)
 
     loop = asyncio.get_running_loop()
+
+    def _on_loop_exception(_loop, context):
+        exc = context.get("exception")
+        msg = context.get("message", "")
+        if exc is not None:
+            log.error("asyncio unhandled exception: %s", msg, exc_info=exc)
+        else:
+            log.error("asyncio error: %s context=%r", msg, context)
+    loop.set_exception_handler(_on_loop_exception)
+
     stop_event = asyncio.Event()
 
     pinger_task: asyncio.Task | None = None
