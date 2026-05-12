@@ -31,8 +31,7 @@ def test_bitrate_matches_formula_for_every_row(profile):
     phy * util * 1/(1+base_ratio)."""
     cfg = _cfg(base_ratio=0.5)
     k_over_n = 1.0 / (1.0 + cfg.base_redundancy_ratio)
-    rows = profile._build_rows(bandwidth=20, rssi_margin_db=0,
-                               snr_margin_db=0)
+    rows = profile.snr_mcs_map(bandwidth=20, snr_margin_db=0.0)
     for row in rows:
         phy = profile.data_rate_Mbps_LGI[20][row.mcs]
         expected = int(max(

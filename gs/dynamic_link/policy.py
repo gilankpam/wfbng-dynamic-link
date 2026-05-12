@@ -62,7 +62,6 @@ class LeadingLoopConfig:
     loss_margin_weight: float = 20.0
     fec_margin_weight: float = 20.0
     forced_drop_inhibit_ms: float = 5000.0
-    rssi_margin_db: float = 8.0
     rssi_up_guard_db: float = 3.0
     rssi_up_hold_ms: float = 2000.0
     rssi_down_hold_ms: float = 500.0
@@ -235,7 +234,6 @@ class LeadingSelector:
         rows = profile.snr_mcs_map(
             leading.bandwidth,
             snr_margin_db=0.0,           # static margin lives in gate
-            rssi_margin_db=leading.rssi_margin_db,
         )
         self.rows: list[MCSRow] = [
             r for r in rows if profile.mcs_min <= r.mcs <= cap

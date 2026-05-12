@@ -108,7 +108,6 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         forced_drop_inhibit_ms=float(
             leading_raw.get("forced_drop_inhibit_ms", 5000.0)
         ),
-        rssi_margin_db=float(leading_raw.get("rssi_margin_db", 8.0)),
         rssi_up_guard_db=float(leading_raw.get("rssi_up_guard_db", 3.0)),
         rssi_up_hold_ms=float(leading_raw.get("rssi_up_hold_ms", 2000.0)),
         rssi_down_hold_ms=float(leading_raw.get("rssi_down_hold_ms", 500.0)),

@@ -26,27 +26,24 @@ def test_load_packaged_m8812eu2():
     assert 40 in prof.bandwidth_supported
 
 
-def test_rssi_mcs_map_floor_matches_spec():
-    prof = load_packaged()
-    rows = prof.rssi_mcs_map(bandwidth=20, rssi_margin_db=8.0)
-    # Highest mcs row first; the test asserts against whatever
-    # mcs_max the operator has currently configured.
-    top = rows[0]
-    assert top.mcs == prof.mcs_max
-    expected_floor = prof.sensitivity_dBm[20][prof.mcs_max] + 8
-    assert top.rssi_floor_dBm == expected_floor
-    mcs0 = rows[-1]
-    assert mcs0.mcs == 0
-
-
 def load_packaged():
     return load_profile("m8812eu2", [PACKAGED_DIR])
 
 
-def test_rssi_mcs_map_rejects_unsupported_bandwidth():
-    prof = load_profile("m8812eu2", [PACKAGED_DIR])
+def test_snr_mcs_map_rejects_unsupported_bandwidth():
+    prof = load_packaged()
     with pytest.raises(ProfileError):
-        prof.rssi_mcs_map(bandwidth=80, rssi_margin_db=8.0)
+        prof.snr_mcs_map(bandwidth=80, snr_margin_db=0.0)
+
+
+def test_profile_loader_rejects_legacy_sensitivity_dBm_key(tmp_path):
+    """sensitivity_dBm was removed; loading a YAML that still has it
+    should fail loudly so operators clean up."""
+    d = _valid_dict()
+    d["sensitivity_dBm"] = {20: {i: -90 for i in range(8)}}
+    p = _write_profile(tmp_path, d)
+    with pytest.raises(ProfileError, match="sensitivity_dBm"):
+        load_profile_file(p)
 
 
 def _write_profile(tmp_path: Path, data: dict) -> Path:
@@ -65,7 +62,6 @@ def _valid_dict() -> dict:
         "bandwidth_default": 20,
         "tx_power_min_dBm": 0,
         "tx_power_max_dBm": 20,
-        "sensitivity_dBm": {20: {i: -90 + i for i in range(8)}},
         "snr_floor_dB": {20: {i: 5 + 3 * i for i in range(8)}},
         "data_rate_Mbps_LGI": {20: {i: 6.5 * (i + 1) for i in range(8)}},
     }
@@ -74,7 +70,7 @@ def _valid_dict() -> dict:
 def test_rejects_mcs_max_above_7(tmp_path):
     d = _valid_dict()
     d["mcs_max"] = 8
-    d["sensitivity_dBm"][20][8] = -70
+    d["snr_floor_dB"][20][8] = 30.0
     d["data_rate_Mbps_LGI"][20][8] = 80.0
     p = _write_profile(tmp_path, d)
     with pytest.raises(ProfileError, match="mcs_max"):
@@ -84,7 +80,7 @@ def test_rejects_mcs_max_above_7(tmp_path):
 def test_rejects_missing_bandwidth_entry(tmp_path):
     d = _valid_dict()
     d["bandwidth_supported"] = [20, 40]
-    # Missing 40 in sensitivity / data_rate.
+    # Missing 40 in snr_floor_dB / data_rate_Mbps_LGI.
     p = _write_profile(tmp_path, d)
     with pytest.raises(ProfileError, match="bw=40"):
         load_profile_file(p)
@@ -103,10 +99,6 @@ bandwidth_supported: [20]
 bandwidth_default: 20
 tx_power_min_dBm: 0
 tx_power_max_dBm: 20
-sensitivity_dBm:
-  20:
-    0: -90
-    1: -85
 snr_floor_dB:
   20:
     0: 0
@@ -142,7 +134,6 @@ def test_snr_mcs_map_floor_includes_margin():
 def test_rejects_missing_snr_floor_bw_entry(tmp_path):
     d = _valid_dict()
     d["bandwidth_supported"] = [20, 40]
-    d["sensitivity_dBm"][40] = {i: -90 + i for i in range(8)}
     d["data_rate_Mbps_LGI"][40] = {i: 6.5 * (i + 1) for i in range(8)}
     # snr_floor_dB still missing 40 → should fail with snr_floor_dB error
     p = _write_profile(tmp_path, d)

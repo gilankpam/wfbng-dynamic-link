@@ -21,13 +21,12 @@ class ProfileError(ValueError):
 
 @dataclass(frozen=True)
 class MCSRow:
-    """One row of the runtime RSSI/SNR → MCS map.
+    """One row of the runtime SNR → MCS map.
 
     `(k, n)` are no longer per-row — they're computed at runtime by
     `dynamic_fec.compute_k` / `compute_n`. See P4b spec.
     """
     mcs: int
-    rssi_floor_dBm: float  # sensitivity_dBm[mcs] + rssi_margin_db
     snr_floor_dB: float    # snr_floor_dB[mcs] + snr_margin_db
 
 
@@ -42,44 +41,25 @@ class RadioProfile:
     bandwidth_default: int
     tx_power_min_dBm: int
     tx_power_max_dBm: int
-    sensitivity_dBm: dict[int, dict[int, int]]   # bw -> mcs -> dBm
     snr_floor_dB: dict[int, dict[int, float]]    # bw -> mcs -> dB
     data_rate_Mbps_LGI: dict[int, dict[int, float]]
-
-    def _build_rows(
-        self,
-        bandwidth: int,
-        rssi_margin_db: float,
-        snr_margin_db: float,
-    ) -> list[MCSRow]:
-        if bandwidth not in self.bandwidth_supported:
-            raise ProfileError(
-                f"bandwidth {bandwidth} not in supported {self.bandwidth_supported}"
-            )
-        sens = self.sensitivity_dBm[bandwidth]
-        snr = self.snr_floor_dB[bandwidth]
-        rows = []
-        for mcs in range(self.mcs_max, self.mcs_min - 1, -1):
-            rows.append(MCSRow(
-                mcs=mcs,
-                rssi_floor_dBm=sens[mcs] + rssi_margin_db,
-                snr_floor_dB=snr[mcs] + snr_margin_db,
-            ))
-        return rows
-
-    def rssi_mcs_map(self, bandwidth: int, rssi_margin_db: float) -> list[MCSRow]:
-        """Legacy entry point — leaves snr_floor_dB at 0 margin."""
-        return self._build_rows(bandwidth, rssi_margin_db, 0.0)
 
     def snr_mcs_map(
         self,
         bandwidth: int,
         snr_margin_db: float,
-        rssi_margin_db: float = 0.0,
     ) -> list[MCSRow]:
         """Build the runtime row table for SNR-driven MCS selection
         (§4.1). High MCS first."""
-        return self._build_rows(bandwidth, rssi_margin_db, snr_margin_db)
+        if bandwidth not in self.bandwidth_supported:
+            raise ProfileError(
+                f"bandwidth {bandwidth} not in supported {self.bandwidth_supported}"
+            )
+        snr = self.snr_floor_dB[bandwidth]
+        return [
+            MCSRow(mcs=mcs, snr_floor_dB=snr[mcs] + snr_margin_db)
+            for mcs in range(self.mcs_max, self.mcs_min - 1, -1)
+        ]
 
 
 def load_profile(name: str, search_dirs: list[Path]) -> RadioProfile:
@@ -136,25 +116,24 @@ def _validate(data: dict, source: str) -> RadioProfile:
     if tx_min > tx_max:
         raise ProfileError(f"{source}: tx_power_min_dBm > tx_power_max_dBm")
 
-    sensitivity = {int(bw): {int(m): int(s) for m, s in sub.items()}
-                   for bw, sub in req("sensitivity_dBm").items()}
+    if "sensitivity_dBm" in data:
+        raise ProfileError(
+            f"{source}: sensitivity_dBm is no longer used — RSSI floors "
+            f"never fed the MCS selector (snr_floor_dB drives selection). "
+            f"Remove the sensitivity_dBm section."
+        )
+
     snr_floor = {int(bw): {int(m): float(s) for m, s in sub.items()}
                  for bw, sub in req("snr_floor_dB").items()}
     data_rate = {int(bw): {int(m): float(s) for m, s in sub.items()}
                  for bw, sub in req("data_rate_Mbps_LGI").items()}
 
     for bw in bandwidth_supported:
-        if bw not in sensitivity:
-            raise ProfileError(f"{source}: sensitivity_dBm missing bw={bw}")
         if bw not in snr_floor:
             raise ProfileError(f"{source}: snr_floor_dB missing bw={bw}")
         if bw not in data_rate:
             raise ProfileError(f"{source}: data_rate_Mbps_LGI missing bw={bw}")
         for mcs in range(mcs_min, mcs_max + 1):
-            if mcs not in sensitivity[bw]:
-                raise ProfileError(
-                    f"{source}: sensitivity_dBm[{bw}] missing mcs={mcs}"
-                )
             if mcs not in snr_floor[bw]:
                 raise ProfileError(
                     f"{source}: snr_floor_dB[{bw}] missing mcs={mcs}"
@@ -173,7 +152,6 @@ def _validate(data: dict, source: str) -> RadioProfile:
         bandwidth_default=bandwidth_default,
         tx_power_min_dBm=tx_min,
         tx_power_max_dBm=tx_max,
-        sensitivity_dBm=sensitivity,
         snr_floor_dB=snr_floor,
         data_rate_Mbps_LGI=data_rate,
     )
