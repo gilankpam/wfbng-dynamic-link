@@ -6,6 +6,7 @@
  */
 #include "dl_backend_enc.h"
 #include "dl_dbg.h"
+#include "dl_latency.h"
 #include "dl_log.h"
 
 #include <arpa/inet.h>
@@ -150,18 +151,14 @@ static int http_get(const char *host, uint16_t port, const char *path) {
     if (status >= 200 && status < 300) {
         return 0;
     }
-    /* Non-2xx (or unparseable): capture for the SD log so the
-     * specific failure stops being silent. We deliberately still
-     * return 0 — the legacy contract is "completed HTTP exchange
-     * succeeded", and changing it would re-route every weird encoder
-     * reply through the noisier MAVLink apply_fail path. The SD log
-     * is the right place for these. */
+    /* Non-2xx (or unparseable): capture the body for the SD log and
+     * propagate as an error. This was previously returned 0 to avoid
+     * the MAVLink apply_fail path; the debug-OSD work made surfacing
+     * application-layer rejects worth the extra STATUSTEXT noise. See
+     * docs/superpowers/specs/2026-05-13-debug-osd-apply-latency-design.md
+     * §"Encoder error-contract change". */
     dl_log_warn("enc: http %d from %s:%u for %s",
                 status, host, port, path);
-    /* Find the start of the body (after the \r\n\r\n header
-     * separator). If we don't find it, fall back to the raw reply —
-     * something is better than nothing, and the status code is
-     * already captured separately. */
     const char *body = reply;
     size_t body_len = reply_len;
     for (size_t i = 0; i + 3 < reply_len; ++i) {
@@ -174,7 +171,7 @@ static int http_get(const char *host, uint16_t port, const char *path) {
     }
     dl_dbg_emit_http("ENC_RESPONSE_BAD", DL_DBG_SEV_WARN,
                      status, body, body_len);
-    return 0;
+    return -1;
 }
 
 dl_backend_enc_t *dl_backend_enc_open(const dl_config_t *cfg) {
@@ -193,7 +190,6 @@ void dl_backend_enc_close(dl_backend_enc_t *be) {
 
 static int apply_set(dl_backend_enc_t *be,
                      uint16_t bitrate_kbps, uint8_t roi_qp, uint8_t fps) {
-    /* Compose query string with only the fields we want to change. */
     char path[256];
     char *p = path;
     size_t left = sizeof(path);
@@ -210,7 +206,10 @@ static int apply_set(dl_backend_enc_t *be,
         if (n < 0 || (size_t)n >= left) return -1;
         p += n; left -= (size_t)n;
     }
-    return http_get(be->host, be->port, path);
+    dl_lat_handle_t h = dl_latency_begin(DL_LAT_ENC);
+    int rc = http_get(be->host, be->port, path);
+    dl_latency_end(h, rc);
+    return rc;
 }
 
 int dl_backend_enc_apply(dl_backend_enc_t *be,
@@ -239,7 +238,9 @@ int dl_backend_enc_request_idr(dl_backend_enc_t *be, uint64_t now_ms) {
                      (unsigned)be->min_idr_interval_ms);
         return 1;
     }
+    dl_lat_handle_t h = dl_latency_begin(DL_LAT_IDR);
     int rc = http_get(be->host, be->port, "/request/idr");
+    dl_latency_end(h, rc);
     if (rc == 0) {
         be->last_idr_ms = now_ms;
         be->idr_ever_sent = true;
