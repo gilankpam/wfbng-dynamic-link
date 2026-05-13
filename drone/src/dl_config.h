@@ -53,7 +53,6 @@ typedef struct {
     uint16_t safe_bitrate_kbps;
 
     /* Backends. */
-    char     radio_backend[DL_CONF_MAX_STR];
     char     wlan_dev[DL_CONF_MAX_STR];
     char     encoder_kind[DL_CONF_MAX_STR];
     char     encoder_host[DL_CONF_MAX_STR];

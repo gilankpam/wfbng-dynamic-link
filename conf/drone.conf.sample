@@ -63,7 +63,6 @@ safe_bitrate_kbps  = 2000
 # short_gi always false — pinned by the applier regardless of GS input.
 
 # ---- Backends -------------------------------------------------------
-radio_backend        = iw
 wlan_dev             = wlan0
 # encoder_kind — one of: waybeam | majestic | none
 encoder_kind         = majestic

@@ -333,9 +333,8 @@ def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
         "osd_update_interval_ms": 200,
         "min_idr_interval_ms":    500,
         "health_timeout_ms":      2000,
-        # Keep the radio backend as `iw` but put an empty/nonexistent
-        # wlan to guarantee `iw` fails softly (we're not testing iw).
-        "radio_backend":     "iw",
+        # Nonexistent wlan to guarantee the `iw` backend fails softly
+        # (we're not testing iw).
         "wlan_dev":          "dl-nonexistent0",
         "safe_k": 8, "safe_n": 12, "safe_depth": 1,
         "safe_mcs": 1, "safe_bandwidth": 20,

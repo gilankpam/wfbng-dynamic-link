@@ -13,13 +13,18 @@ wfb_ng:
   drone_addr: 10.5.0.2
   drone_port: 5800
 
+  # GS-side listen endpoint for drone → GS tunnel traffic (PONG packets
+  # and future debug back-channel). Mirrors the drone's
+  # `gs_tunnel_addr/port` in drone.conf.
+  gs_tunnel_listen_addr: 0.0.0.0
+  gs_tunnel_listen_port: 5801
+
   # Local end of wfb-ng's mavlink stream (where drone → GS STATUSTEXT
   # arrives). Matches wfb-ng master.cfg [gs_mavlink] `connect://` port.
   mavlink_local_addr: 127.0.0.1
   mavlink_local_port: 14550
 
 video:
-  framerate: 60
   per_packet_airtime_us: 80
   max_latency_ms: 50
 
@@ -53,13 +58,6 @@ leading_loop:
   # tick (no ramp).
   tx_power_min_dBm: 18
   tx_power_max_dBm: 28
-
-  encoder_degrade_order:
-    - bitrate_half
-    - fps_60
-    - fps_30
-    - roi
-    - resolution
 
 # Two-channel gate (alink_gs port).
 #
@@ -141,8 +139,6 @@ policy:
     enabled: true
     count: 4
     interval_ms: 20
-
-health_timeout_ms: 10000
 
 safe_defaults:
   video:

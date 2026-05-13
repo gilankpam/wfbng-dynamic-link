@@ -106,7 +106,6 @@ async def test_replay_to_bench_captures_encoder_500(tmp_path: Path):
         f"osd_enable = 0\n"
         f"min_idr_interval_ms = 500\n"
         f"health_timeout_ms = 5000\n"
-        f"radio_backend = iw\n"
         f"wlan_dev = dl-nonexistent0\n"
         f"safe_k = 8\nsafe_n = 12\nsafe_depth = 1\n"
         f"safe_mcs = 1\nsafe_bandwidth = 20\n"

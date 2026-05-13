@@ -35,7 +35,6 @@ void dl_config_defaults(dl_config_t *cfg) {
     cfg->safe_tx_power_dBm = 20;
     cfg->safe_bitrate_kbps = 2000;
 
-    strncpy(cfg->radio_backend, "iw", DL_CONF_MAX_STR - 1);
     strncpy(cfg->wlan_dev, "wlan0", DL_CONF_MAX_STR - 1);
     strncpy(cfg->encoder_kind, "majestic", DL_CONF_MAX_STR - 1);
     strncpy(cfg->encoder_host, "127.0.0.1", DL_CONF_MAX_STR - 1);
@@ -182,7 +181,6 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "safe_bandwidth") == 0)     SET_INT_RANGED(safe_bandwidth, uint8_t, 20, 40);
         else if (strcmp(key, "safe_tx_power_dBm") == 0)  SET_INT_RANGED(safe_tx_power_dBm, int8_t, -10, 30);
         else if (strcmp(key, "safe_bitrate_kbps") == 0)  SET_INT_RANGED(safe_bitrate_kbps, uint16_t, 100, 65535);
-        else if (strcmp(key, "radio_backend") == 0)      SET_STR(radio_backend);
         else if (strcmp(key, "wlan_dev") == 0)           SET_STR(wlan_dev);
         else if (strcmp(key, "encoder_kind") == 0)       SET_STR(encoder_kind);
         else if (strcmp(key, "encoder_host") == 0)       SET_STR(encoder_host);
