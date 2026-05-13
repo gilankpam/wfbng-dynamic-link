@@ -13,24 +13,40 @@ wfb_ng:
   drone_addr: 10.5.0.2
   drone_port: 5800
 
+  # GS-side listen endpoint for drone → GS tunnel traffic (PONG packets
+  # and future debug back-channel). Mirrors the drone's
+  # `gs_tunnel_addr/port` in drone.conf.
+  gs_tunnel_listen_addr: 0.0.0.0
+  gs_tunnel_listen_port: 5801
+
   # Local end of wfb-ng's mavlink stream (where drone → GS STATUSTEXT
   # arrives). Matches wfb-ng master.cfg [gs_mavlink] `connect://` port.
   mavlink_local_addr: 127.0.0.1
   mavlink_local_port: 14550
 
 video:
-  framerate: 60
   per_packet_airtime_us: 80
   max_latency_ms: 50
 
+# Dynamic-FEC bounds and escalation. The (k, n) chosen each tick is
+#   k = clamp(packets_per_frame, k_min, k_max)
+#   n = ceil(k * (1 + base_redundancy_ratio)) + escalation
+# `escalation` ramps up on residual_loss > n_loss_threshold and decays
+# on sustained zero-loss windows.
 fec:
-  # `(k, n)` are now per-MCS lookups in the radio profile's
-  # `fec_table` block. The controller never moves them reactively to
-  # loss — see `docs/knob-cadence-bench.md` for why FEC
-  # `CMD_SET_FEC` reconfigs are pinned per-MCS instead of escalated
-  # on loss.
   depth_max: 3
-  mtu_bytes: 1400
+  k_bounds:
+    min: 4
+    max: 16
+  base_redundancy_ratio: 0.5
+  max_redundancy_ratio: 1.0
+  n_loss_threshold: 0.02
+  n_loss_windows: 3
+  n_loss_step: 1
+  n_recover_windows: 10
+  n_recover_step: 1
+  max_n_escalation: 4
+  # `mtu_bytes` removed — now reported by the drone via DLHE.
 
 leading_loop:
   radio_profile: m8812eu2
@@ -42,13 +58,6 @@ leading_loop:
   # tick (no ramp).
   tx_power_min_dBm: 18
   tx_power_max_dBm: 28
-
-  encoder_degrade_order:
-    - bitrate_half
-    - fps_60
-    - fps_30
-    - roi
-    - resolution
 
 # Two-channel gate (alink_gs port).
 #
@@ -109,13 +118,15 @@ policy:
   starvation_windows: 5
 
   # Encoder bitrate is computed each tick as
-  #   data_rate_Mbps_LGI[bw][mcs] * 1000 * utilization_factor * (k/n)
-  # clamped to [min_bitrate_kbps, max_bitrate_kbps]. Operator tunes one
-  # utilization_factor instead of per-MCS bitrate. Defaults from
-  # alink_gs.conf ([dynamic] utilization_factor, [hardware] min_bitrate,
-  # max_bitrate).
+  #   data_rate_Mbps_LGI[bw][mcs] * 1000 * utilization_factor
+  #     * 1/(1 + base_redundancy_ratio)
+  # clamped to [min_bitrate_kbps, max_bitrate_kbps]. The k/n factor is
+  # FIXED (not the live dynamic-FEC (k, n)) so the encoder allocation
+  # stays steady while n_escalation moves — escalation eats the
+  # utilization-factor headroom instead of the encoder budget.
   bitrate:
     utilization_factor: 0.8
+    base_redundancy_ratio: 0.5   # should match fec.base_redundancy_ratio
     min_bitrate_kbps: 1000
     max_bitrate_kbps: 24000
   # On any tick where the policy requests an IDR (residual_loss > 0),
@@ -128,8 +139,6 @@ policy:
     enabled: true
     count: 4
     interval_ms: 20
-
-health_timeout_ms: 10000
 
 safe_defaults:
   video:

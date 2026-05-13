@@ -63,7 +63,6 @@ safe_bitrate_kbps  = 2000
 # short_gi always false — pinned by the applier regardless of GS input.
 
 # ---- Backends -------------------------------------------------------
-radio_backend        = iw
 wlan_dev             = wlan0
 # encoder_kind — one of: waybeam | majestic | none
 encoder_kind         = majestic
@@ -106,3 +105,21 @@ gs_tunnel_port   = 5801
 dbg_log_dir      = /sdcard/dl-events
 dbg_max_bytes    = 33554432
 dbg_fsync_each   = 0
+
+# --- P4a: drone→GS config handshake ----------------------------------
+# Authoritative sources for MTU and FPS, read once at startup.
+# MTU comes from /etc/wfb.yaml `wireless.mlink` (typically 1400 or
+# 3994 depending on wfb-ng's radio_mtu setting). FPS comes from
+# /etc/majestic.yaml `video0.fps`.
+hello_wfb_yaml_path = /etc/wfb.yaml
+hello_majestic_yaml_path = /etc/majestic.yaml
+
+# Cadence of the DLHE announce. The first
+# `hello_announce_initial_count` retries use the "initial" delay;
+# after that the "steady" delay is used until an ACK arrives.
+hello_announce_initial_ms    = 500
+hello_announce_steady_ms     = 5000
+hello_announce_initial_count = 60
+# Once ACKed, DLHE is sent every `hello_keepalive_ms` to keep the
+# GS aware. Three missed keepalive ACKs drop back to ANNOUNCING.
+hello_keepalive_ms = 10000

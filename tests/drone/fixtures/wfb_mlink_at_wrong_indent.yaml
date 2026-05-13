@@ -1,0 +1,6 @@
+wireless:
+  txpower: 50
+  channel: 132
+mlink: 9999
+broadcast:
+  mcs_index: 4

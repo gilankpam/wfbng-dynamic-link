@@ -22,10 +22,17 @@ log = logging.getLogger(__name__)
 PongHandler = Callable[[wire.Pong, int], None]
 """(pong, gs_mono_us_t4_recv) -> None"""
 
+HelloHandler = Callable[[wire.Hello], None]
+
 
 class _Protocol(asyncio.DatagramProtocol):
-    def __init__(self, on_pong: PongHandler) -> None:
+    def __init__(
+        self,
+        on_pong: PongHandler | None,
+        on_hello: HelloHandler | None = None,
+    ) -> None:
         self._on_pong = on_pong
+        self._on_hello = on_hello
         self._unknown_count = 0
 
     def datagram_received(self, data: bytes, addr) -> None:
@@ -34,12 +41,24 @@ class _Protocol(asyncio.DatagramProtocol):
         t4 = time.monotonic_ns() // 1000
         kind = wire.peek_kind(data)
         if kind == "pong":
+            if self._on_pong is None:
+                return
             try:
                 pong = wire.decode_pong(data)
             except ValueError as e:
                 log.warning("tunnel_listener: bad pong from %s: %s", addr, e)
                 return
             self._on_pong(pong, t4)
+            return
+        if kind == "hello":
+            if self._on_hello is None:
+                return
+            try:
+                hello = wire.decode_hello(data)
+            except ValueError as e:
+                log.warning("tunnel_listener: bad hello from %s: %s", addr, e)
+                return
+            self._on_hello(hello)
             return
         if kind == "unknown":
             self._unknown_count += 1
@@ -55,16 +74,23 @@ class _Protocol(asyncio.DatagramProtocol):
 
 
 class TunnelListener:
-    def __init__(self, host: str, port: int, on_pong: PongHandler) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        on_pong: PongHandler | None = None,
+        on_hello: HelloHandler | None = None,
+    ) -> None:
         self.host = host
         self.port = port
         self._on_pong = on_pong
+        self._on_hello = on_hello
         self._transport: asyncio.DatagramTransport | None = None
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
         self._transport, _ = await loop.create_datagram_endpoint(
-            lambda: _Protocol(self._on_pong),
+            lambda: _Protocol(self._on_pong, self._on_hello),
             local_addr=(self.host, self.port),
             allow_broadcast=False,
         )

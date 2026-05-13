@@ -1,0 +1,10 @@
+system:
+  logLevel: info
+video0:
+  enabled: true
+  codec: h265
+  size: 1920x1080
+  fps: 60
+  bitrate: 8192
+records:
+  enabled: false

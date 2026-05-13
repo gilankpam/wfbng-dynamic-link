@@ -13,6 +13,7 @@ import yaml
 
 from . import wire
 from .debug_config import DebugConfig
+from .drone_config import DroneConfigEvent, DroneConfigState
 from .flight_log import FlightDirRotator
 from .latency_sink import LatencySink
 from .observed import derive_observed
@@ -27,6 +28,7 @@ from .policy import (
     SafeDefaults,
 )
 from .bitrate import BitrateConfig
+from .dynamic_fec import DynamicFecConfig
 from .idr_burst import IdrBurstConfig, IdrBurster
 from .predictor import PredictorConfig
 from .profile import load_profile
@@ -44,7 +46,7 @@ from .stats_client import (
 from .timesync import TimeSync
 from .tunnel_listener import TunnelListener
 from .video_tap import VideoRtpSink, VideoTap
-from .wire import Encoder as WireEncoder
+from .wire import Encoder as WireEncoder, encode_hello_ack
 
 log = logging.getLogger("dynamic_link")
 
@@ -106,7 +108,6 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         forced_drop_inhibit_ms=float(
             leading_raw.get("forced_drop_inhibit_ms", 5000.0)
         ),
-        rssi_margin_db=float(leading_raw.get("rssi_margin_db", 8.0)),
         rssi_up_guard_db=float(leading_raw.get("rssi_up_guard_db", 3.0)),
         rssi_up_hold_ms=float(leading_raw.get("rssi_up_hold_ms", 2000.0)),
         rssi_down_hold_ms=float(leading_raw.get("rssi_down_hold_ms", 500.0)),
@@ -175,23 +176,49 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     )
     fec = FECBounds(
         depth_max=int(fec_raw.get("depth_max", 3)),
-        mtu_bytes=int(fec_raw.get("mtu_bytes", 1400)),
     )
-    # `(k, n)` and bitrate now come from the radio profile's
-    # `fec_table` (`docs/knob-cadence-bench.md` rationale). Warn if
-    # the legacy escalation knobs are still in the YAML — they're
-    # silently ignored, but nice to nudge operators to clean up.
+
+    fec_kbounds_raw = fec_raw.get("k_bounds", {})
+    dynamic_fec = DynamicFecConfig(
+        k_min=int(fec_kbounds_raw.get("min", 4)),
+        k_max=int(fec_kbounds_raw.get("max", 16)),
+        base_redundancy_ratio=float(fec_raw.get("base_redundancy_ratio", 0.5)),
+        max_redundancy_ratio=float(fec_raw.get("max_redundancy_ratio", 1.0)),
+        n_loss_threshold=float(fec_raw.get("n_loss_threshold", 0.02)),
+        n_loss_windows=int(fec_raw.get("n_loss_windows", 3)),
+        n_loss_step=int(fec_raw.get("n_loss_step", 1)),
+        n_recover_windows=int(fec_raw.get("n_recover_windows", 10)),
+        n_recover_step=int(fec_raw.get("n_recover_step", 1)),
+        max_n_escalation=int(fec_raw.get("max_n_escalation", 4)),
+    )
+
+    # Legacy fec.* keys: present in old gs.yaml configs but no longer
+    # wired. Log a warning so the operator cleans them up.
     _legacy_fec_keys = (
-        "n_min", "k_min", "k_max", "max_redundancy_ratio",
-        "base_redundancy_ratio", "fec_block_fill_ms_target",
-        "n_loss_step", "n_preempt_step", "n_recover_step",
+        "mtu_bytes",                    # now drone-reported via DLHE (P4a)
+        "fec_block_fill_ms_target",     # removed during the static-table era
+        "n_min", "n_preempt_step",      # removed during the static-table era
     )
+    _legacy_fec_reasons = {
+        "mtu_bytes": "MTU is now reported by the drone at runtime",
+        "fec_block_fill_ms_target": "block-fill is now bounded by k_bounds.max",
+        "n_min": "absorbed into k_bounds.min",
+        "n_preempt_step": "preemptive escalation removed",
+    }
     for k in _legacy_fec_keys:
         if k in fec_raw:
             log.warning(
-                "config: ignoring legacy fec.%s — `(k, n)` is now "
-                "set per-MCS by the radio profile's fec_table", k,
+                "config: ignoring legacy fec.%s — %s", k,
+                _legacy_fec_reasons.get(k, "deprecated"),
             )
+
+    # Legacy encoder keys: encoder.fps moved drone-side.
+    encoder_raw = raw.get("encoder", {})
+    if "fps" in encoder_raw:
+        log.warning(
+            "config: ignoring legacy encoder.fps — FPS is now reported "
+            "by the drone via DLHE (P4a)"
+        )
     safe_video = safe_raw.get("video", {})
     safe = SafeDefaults(
         k=int(safe_video.get("k", 8)),
@@ -206,13 +233,13 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     bitrate_raw = policy_raw.get("bitrate", {})
     try:
         bitrate = BitrateConfig(
-            **{
-                k: (float if k == "utilization_factor" else int)(v)
-                for k, v in bitrate_raw.items()
-                if k in {"utilization_factor",
-                         "min_bitrate_kbps",
-                         "max_bitrate_kbps"}
-            }
+            utilization_factor=float(bitrate_raw.get("utilization_factor", 0.8)),
+            base_redundancy_ratio=float(bitrate_raw.get(
+                "base_redundancy_ratio",
+                float(fec_raw.get("base_redundancy_ratio", 0.5)),
+            )),
+            min_bitrate_kbps=int(bitrate_raw.get("min_bitrate_kbps", 1000)),
+            max_bitrate_kbps=int(bitrate_raw.get("max_bitrate_kbps", 24000)),
         )
     except ValueError as e:
         raise ValueError(f"policy.bitrate.{e}") from e
@@ -224,6 +251,7 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         fec=fec,
         safe=safe,
         bitrate=bitrate,
+        dynamic_fec=dynamic_fec,
         predictor=predictor,
         max_latency_ms=float(video_raw.get("max_latency_ms", 50.0)),
         starvation_windows=int(policy_raw.get("starvation_windows", 5)),
@@ -327,7 +355,8 @@ async def _run(args: argparse.Namespace) -> int:
     log.info("loaded radio profile %s (%s)", profile.name, profile.chipset)
 
     policy_cfg = _build_policy_config(raw)
-    policy = Policy(policy_cfg, profile)
+    drone_config = DroneConfigState()
+    policy = Policy(policy_cfg, profile, drone_config=drone_config)
     aggregator = _build_aggregator(raw)
 
     enabled = bool(raw.get("enabled", False))
@@ -399,12 +428,15 @@ async def _run(args: argparse.Namespace) -> int:
     )
 
     # ---- Phase 2 wiring ----
-    return_link: ReturnLink | None = None
+    # return_link is always constructed: P4a HELLO/HELLO-ACK uses it
+    # even when decision emit is disabled (observer mode). The cost is
+    # one UDP socket. wire_encoder stays gated on `enabled` since it's
+    # only fed by the decision path.
     wire_encoder: WireEncoder | None = None
     drone_addr = wfb.get("drone_addr", "10.5.0.2")
     drone_port = int(wfb.get("drone_port", 5800))
+    return_link: ReturnLink | None = ReturnLink(drone_addr, drone_port)
     if enabled:
-        return_link = ReturnLink(drone_addr, drone_port)
         wire_encoder = WireEncoder(seq=1)
         log.info("enabled=true; emitting decisions to %s:%d",
                  drone_addr, drone_port)
@@ -421,15 +453,30 @@ async def _run(args: argparse.Namespace) -> int:
             idr_burst_cfg.interval_ms,
         )
 
-    # ---- Phase 3 ping/pong wiring ----
-    if debug_cfg.ping_pong:
-        # We need a return_link to send pings, even if Phase-2 emit is
-        # disabled (debugging an observer-only deploy is valid).
+    # P4a HELLO/HELLO-ACK callback. Forwards to the state machine and
+    # ACKs every received HELLO so ANNOUNCING retries always get a
+    # fresh DLHA echo (build_ack is idempotent for the same gen_id).
+    def _on_hello(h: wire.Hello) -> None:
+        event = drone_config.on_hello(h)
+        if event in (DroneConfigEvent.SYNCED, DroneConfigEvent.REBOOT_DETECTED):
+            # State machine already logs the transition; this branch is
+            # the explicit hook for follow-up actions (none yet).
+            pass
         if return_link is None:
-            return_link = ReturnLink(drone_addr, drone_port)
-        gs_listen_addr = wfb.get("gs_tunnel_listen_addr", "0.0.0.0")
-        gs_listen_port = int(wfb.get("gs_tunnel_listen_port", 5801))
+            return
+        ack = drone_config.build_ack()
+        if ack is not None:
+            return_link.send_hello_ack(encode_hello_ack(ack))
 
+    # ---- Tunnel listener (always on) ----
+    # HELLO reception is core to P4a — bind the listener regardless of
+    # `enabled` or `debug.ping_pong`. The pong handler is wired in only
+    # when ping/pong is on; the listener treats it as optional.
+    gs_listen_addr = wfb.get("gs_tunnel_listen_addr", "0.0.0.0")
+    gs_listen_port = int(wfb.get("gs_tunnel_listen_port", 5801))
+
+    _on_pong = None
+    if debug_cfg.ping_pong:
         def _on_pong(pong: wire.Pong, t4_us: int) -> None:
             assert timesync is not None
             sample = timesync.observe(
@@ -447,17 +494,19 @@ async def _run(args: argparse.Namespace) -> int:
                 sample.offset_us, sample.outlier,
             )
 
-        tunnel_listener = TunnelListener(
-            gs_listen_addr, gs_listen_port, on_pong=_on_pong,
-        )
-        try:
-            await tunnel_listener.start()
-        except OSError as e:
-            log.warning("tunnel_listener: bind %s:%d failed: %s; "
-                        "ping/pong disabled",
-                        gs_listen_addr, gs_listen_port, e)
-            tunnel_listener = None
-            timesync = None
+    tunnel_listener = TunnelListener(
+        gs_listen_addr, gs_listen_port,
+        on_pong=_on_pong,
+        on_hello=_on_hello,
+    )
+    try:
+        await tunnel_listener.start()
+    except OSError as e:
+        log.warning("tunnel_listener: bind %s:%d failed: %s; "
+                    "HELLO/HELLO-ACK and ping/pong disabled",
+                    gs_listen_addr, gs_listen_port, e)
+        tunnel_listener = None
+        timesync = None
 
     if debug_cfg.video_tap:
         def _on_frame(rec) -> None:
@@ -524,10 +573,21 @@ async def _run(args: argparse.Namespace) -> int:
         client = StatsClient(endpoint, on_event)
 
     loop = asyncio.get_running_loop()
+
+    def _on_loop_exception(_loop, context):
+        exc = context.get("exception")
+        msg = context.get("message", "")
+        if exc is not None:
+            log.error("asyncio unhandled exception: %s", msg, exc_info=exc)
+        else:
+            log.error("asyncio error: %s context=%r", msg, context)
+    loop.set_exception_handler(_on_loop_exception)
+
     stop_event = asyncio.Event()
 
     pinger_task: asyncio.Task | None = None
-    if tunnel_listener is not None and return_link is not None:
+    if (debug_cfg.ping_pong and tunnel_listener is not None
+            and return_link is not None):
         async def _pinger() -> None:
             seq = 0
             interval_s = 1.0 / 5.0  # 5 Hz

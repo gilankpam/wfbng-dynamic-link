@@ -35,7 +35,6 @@ void dl_config_defaults(dl_config_t *cfg) {
     cfg->safe_tx_power_dBm = 20;
     cfg->safe_bitrate_kbps = 2000;
 
-    strncpy(cfg->radio_backend, "iw", DL_CONF_MAX_STR - 1);
     strncpy(cfg->wlan_dev, "wlan0", DL_CONF_MAX_STR - 1);
     strncpy(cfg->encoder_kind, "majestic", DL_CONF_MAX_STR - 1);
     strncpy(cfg->encoder_host, "127.0.0.1", DL_CONF_MAX_STR - 1);
@@ -54,6 +53,13 @@ void dl_config_defaults(dl_config_t *cfg) {
     strncpy(cfg->dbg_log_dir, "/sdcard/dl-events", DL_CONF_MAX_STR - 1);
     cfg->dbg_max_bytes = 32 * 1024 * 1024;
     cfg->dbg_fsync_each = false;
+
+    cfg->hello_announce_initial_ms = 500;
+    cfg->hello_announce_steady_ms = 5000;
+    cfg->hello_keepalive_ms = 10000;
+    cfg->hello_announce_initial_count = 60;
+    strncpy(cfg->hello_wfb_yaml_path, "/etc/wfb.yaml", DL_CONF_MAX_STR - 1);
+    strncpy(cfg->hello_majestic_yaml_path, "/etc/majestic.yaml", DL_CONF_MAX_STR - 1);
 }
 
 static void trim(char *s) {
@@ -175,7 +181,6 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "safe_bandwidth") == 0)     SET_INT_RANGED(safe_bandwidth, uint8_t, 20, 40);
         else if (strcmp(key, "safe_tx_power_dBm") == 0)  SET_INT_RANGED(safe_tx_power_dBm, int8_t, -10, 30);
         else if (strcmp(key, "safe_bitrate_kbps") == 0)  SET_INT_RANGED(safe_bitrate_kbps, uint16_t, 100, 65535);
-        else if (strcmp(key, "radio_backend") == 0)      SET_STR(radio_backend);
         else if (strcmp(key, "wlan_dev") == 0)           SET_STR(wlan_dev);
         else if (strcmp(key, "encoder_kind") == 0)       SET_STR(encoder_kind);
         else if (strcmp(key, "encoder_host") == 0)       SET_STR(encoder_host);
@@ -192,6 +197,18 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "dbg_log_dir") == 0)        SET_STR(dbg_log_dir);
         else if (strcmp(key, "dbg_max_bytes") == 0)      SET_INT_RANGED(dbg_max_bytes, uint32_t, 4096, 1 << 30);
         else if (strcmp(key, "dbg_fsync_each") == 0)     SET_BOOL(dbg_fsync_each);
+        else if (strcmp(key, "hello_announce_initial_ms") == 0)
+            SET_INT_RANGED(hello_announce_initial_ms, uint32_t, 1, 60000);
+        else if (strcmp(key, "hello_announce_steady_ms") == 0)
+            SET_INT_RANGED(hello_announce_steady_ms, uint32_t, 1, 300000);
+        else if (strcmp(key, "hello_keepalive_ms") == 0)
+            SET_INT_RANGED(hello_keepalive_ms, uint32_t, 1, 300000);
+        else if (strcmp(key, "hello_announce_initial_count") == 0)
+            SET_INT_RANGED(hello_announce_initial_count, uint32_t, 0, 100000);
+        else if (strcmp(key, "hello_wfb_yaml_path") == 0)
+            SET_STR(hello_wfb_yaml_path);
+        else if (strcmp(key, "hello_majestic_yaml_path") == 0)
+            SET_STR(hello_majestic_yaml_path);
         else {
             dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
         }

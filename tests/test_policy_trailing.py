@@ -1,10 +1,11 @@
 """Tests for the trailing loop and Policy-level FEC handling.
 
-`(k, n, bitrate)` are deterministic per-MCS lookups from the radio
-profile's `fec_table`. The trailing loop no longer adjusts `n`
-reactively — it owns depth bootstrap/step-down and an IDR-on-loss
-signal. See `docs/knob-cadence-bench.md` for the empirical
-justification.
+`bitrate` is a deterministic per-MCS computation from the radio
+profile's PHY rate. `(k, n)` are computed at runtime by `dynamic_fec`
+from the live bitrate plus drone-reported `(mtu, fps)` — see
+`gs/dynamic_link/dynamic_fec.py`. The trailing loop owns depth
+bootstrap/step-down and an IDR-on-loss signal. See
+`docs/knob-cadence-bench.md` for the empirical justification.
 """
 from __future__ import annotations
 
@@ -284,20 +285,48 @@ def _settle_at_mcs(p, target_mcs: int, base_ts: float = 0.0) -> float:
     return ts
 
 
-def test_policy_fec_matches_profile_at_each_mcs():
-    """At every MCS the controller settles into, `(k, n)` matches the
-    profile's `fec_table` row and `bitrate_kbps` matches the formula."""
+def test_policy_bitrate_matches_formula_at_each_mcs():
+    """At every MCS the controller settles into, `bitrate_kbps` matches
+    the formula derived from PHY rate and `policy.bitrate` config.
+    `(k, n)` are now runtime-computed by dynamic_fec — see the
+    test_policy_emits_computed_k_n_from_drone_config test below."""
     p = _policy()
     for target in (1, 3, 5):
         _settle_at_mcs(p, target)
         if p.state.mcs != target:
             continue
-        entry = p.profile.fec_for(20, target)
-        assert (p.state.k, p.state.n) == (entry.k, entry.n)
-        expected = compute_bitrate_kbps(
-            p.profile, 20, target, entry.k, entry.n, p.cfg.bitrate,
-        )
+        expected = compute_bitrate_kbps(p.profile, 20, target, p.cfg.bitrate)
         assert p.state.bitrate_kbps == expected
+
+
+def test_policy_emits_computed_k_n_from_drone_config():
+    """With a drone reporting (mtu=1400, fps=60), policy.tick emits a
+    `k` consistent with packets-per-frame at the live bitrate."""
+    from dynamic_link.drone_config import DroneConfigState
+    from dynamic_link.wire import Hello
+
+    prof = load_profile("m8812eu2", [PACKAGED_DIR])
+    cfg = PolicyConfig(
+        leading=LeadingLoopConfig(
+            tx_power_min_dBm=5.0, tx_power_max_dBm=30.0,
+        ),
+        safe=SafeDefaults(k=8, n=12, depth=1, mcs=1),
+    )
+    drone_cfg = DroneConfigState()
+    drone_cfg.on_hello(Hello(
+        generation_id=1, mtu_bytes=1400, fps=60, applier_build_sha=0,
+    ))
+    p = Policy(cfg, prof, drone_config=drone_cfg)
+    # Drive a clean-link tick so the leading selector commits and the
+    # emit-gate fires (first-call always emits).
+    d = p.tick(_clean_sigs(0.0))
+    # compute_k formula: bitrate_kbps * 1000 / (fps * mtu * 8), clamped.
+    expected_k = max(
+        cfg.dynamic_fec.k_min,
+        min(cfg.dynamic_fec.k_max,
+            int(d.bitrate_kbps * 1000 / (60 * 1400 * 8))),
+    )
+    assert d.k == expected_k
 
 
 def test_sub_emergency_loss_does_not_change_fec():
@@ -321,25 +350,6 @@ def test_sub_emergency_loss_does_not_change_fec():
         # IDR is the only same-tick action on residual_loss > 0.
         assert d.idr_request is True
         assert "fec" not in d.knobs_changed
-
-
-def test_survival_band_mcs_bounce_emits_zero_fec_changes():
-    """Bouncing MCS within the 0/1/2 survival band (which shares
-    `(k, n)` in the profile) must NEVER change `(k, n)`. This
-    guarantees the survival regime never pays a `CMD_SET_FEC`
-    cost during fade recovery."""
-    p = _policy()
-    # Force the policy through MCS 0/1/2.
-    fec_history = []
-    for mcs in (0, 1, 2, 1, 0, 2, 1):
-        # Direct state manipulation to drive the test deterministically;
-        # in production the leading loop would walk through these.
-        p.leading.state.current_mcs = mcs
-        p.tick(_clean_sigs(0.0))
-        fec_history.append((p.state.k, p.state.n))
-    # All entries identical → zero `CMD_SET_FEC` would fire.
-    assert len(set(fec_history)) == 1
-    assert fec_history[0] == (2, 5)
 
 
 def test_starvation_needs_n_consecutive_windows():

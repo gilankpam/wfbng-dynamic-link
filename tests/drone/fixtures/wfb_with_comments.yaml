@@ -1,0 +1,7 @@
+# top-level comment
+wireless:
+  # block comment
+  txpower: 50
+  mlink: 4096  # inline comment
+broadcast:
+  mcs_index: 4

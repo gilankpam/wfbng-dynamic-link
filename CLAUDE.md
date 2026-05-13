@@ -104,11 +104,17 @@ Design doc §6 calls the JSON stats feed `stats_port`. In wfb-ng's
 
 ### Operational prerequisites (wfb-ng master.cfg changes)
 
-Two edits the operator must make on wfb-ng before we run end-to-end:
+Edits the operator must make before we run end-to-end:
 
 1. `[common] log_interval = 100` (design doc says 10 Hz cadence).
 2. `[<tx-section>] control_port = 8000` (default 0 picks a random
    port our applier can't target).
+3. `/etc/wfb.yaml` must contain `wireless.mlink: <integer>` — the
+   radio MTU. dl-applier reads this at boot and reports it to the
+   GS via the DLHE handshake; missing key means the applier refuses
+   to send HELLO and the GS stays in safe_defaults.
+4. `/etc/majestic.yaml` must contain `video0.fps: <integer>` —
+   same constraint as above, on the FPS side.
 
 Call these out explicitly in any user-facing doc; they're easy to
 miss and the failures are silent.
@@ -164,6 +170,23 @@ loop.
 - E2E tests spawn the real `dl-applier` against mock `wfb_tx` / mock
   encoder HTTP / mock MAVLink sink — no live radio required. Keep
   it that way; CI runs on a workstation.
+
+### Dynamic FEC (P4b)
+
+`(k, n)` is computed at runtime, not pinned per-MCS in the profile:
+
+  k = clamp(bitrate_kbps * 1000 / (fps * mtu_bytes * 8), k_min, k_max)
+  n = ceil(k * (1 + base_redundancy_ratio)) + n_escalation
+
+`mtu_bytes` and `fps` come from the P4a handshake (drone reads them
+from /etc/wfb.yaml and /etc/majestic.yaml). `n_escalation` ramps on
+sustained residual_loss and decays on sustained clean windows; the
+EmitGate bundles (k, n) rewrites onto MCS-change ticks per
+`docs/knob-cadence-bench.md`.
+
+Bitrate uses a FIXED `k/n = 1/(1 + base_redundancy_ratio)`, not the
+live (k, n), so encoder allocation stays steady when n_escalation
+moves.
 
 ## How to land a new phase
 

@@ -23,8 +23,10 @@ static void usage(const char *prog) {
         "         --bitrate KBPS [--roi-qp QP] [--fps FPS] \\\n"
         "         [--idr] [--sequence N]\n"
         "       %s --ping --gs-seq N --gs-mono US [--target HOST:PORT]\n"
+        "       %s --hello --gen-id N --mtu N --fps N [--build-sha N] --dry-run\n"
+        "       %s --hello-ack --gen-id N --dry-run\n"
         "       %s --dry-run ... (prints hex bytes to stdout; no send)\n",
-        prog, prog, prog);
+        prog, prog, prog, prog, prog);
 }
 
 static int parse_host_port(const char *s, char *host, size_t hostlen,
@@ -59,6 +61,11 @@ int main(int argc, char **argv) {
         { "ping",      no_argument,       0, 'p' },
         { "gs-seq",    required_argument, 0, 'q' },
         { "gs-mono",   required_argument, 0, 'm' },
+        { "hello",     no_argument,       0, 'H' },
+        { "hello-ack", no_argument,       0, 'A' },
+        { "gen-id",    required_argument, 0, 'g' },
+        { "mtu",       required_argument, 0, 'u' },
+        { "build-sha", required_argument, 0, 'S' },
         { "help",      no_argument,       0, 'h' },
         { 0 }
     };
@@ -84,9 +91,13 @@ int main(int argc, char **argv) {
     };
     uint32_t explicit_seq = 0;
     bool have_seq = false;
+    bool hello_mode = false;
+    bool hello_ack_mode = false;
+    dl_hello_t hello = { .version = DL_WIRE_VERSION };
+    dl_hello_ack_t hello_ack = { .version = DL_WIRE_VERSION };
 
     int c;
-    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:Is:Dpq:m:h",
+    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:Is:Dpq:m:HAg:u:S:h",
                             opts, NULL)) != -1) {
         switch (c) {
             case 't': target = optarg; break;
@@ -98,7 +109,8 @@ int main(int argc, char **argv) {
             case 'd': d.depth = (uint8_t)atoi(optarg); break;
             case 'b': d.bitrate_kbps = (uint16_t)atoi(optarg); break;
             case 'r': d.roi_qp = (uint8_t)atoi(optarg); break;
-            case 'f': d.fps = (uint8_t)atoi(optarg); break;
+            case 'f': d.fps = (uint8_t)atoi(optarg);
+                      hello.fps = (uint16_t)atoi(optarg); break;
             case 'I': d.flags |= DL_FLAG_IDR_REQUEST; break;
             case 's': explicit_seq = (uint32_t)strtoul(optarg, NULL, 10);
                       have_seq = true; break;
@@ -106,11 +118,50 @@ int main(int argc, char **argv) {
             case 'p': ping_mode = true; break;
             case 'q': ping_gs_seq = (uint32_t)strtoul(optarg, NULL, 10); break;
             case 'm': ping_gs_mono_us = strtoull(optarg, NULL, 10); break;
+            case 'H': hello_mode = true; break;
+            case 'A': hello_ack_mode = true; break;
+            case 'g': {
+                unsigned long v = strtoul(optarg, NULL, 0);
+                hello.generation_id = (uint32_t)v;
+                hello_ack.generation_id_echo = (uint32_t)v;
+                break;
+            }
+            case 'u': hello.mtu_bytes = (uint16_t)atoi(optarg); break;
+            case 'S': {
+                unsigned long v = strtoul(optarg, NULL, 0);
+                hello.applier_build_sha = (uint32_t)v;
+                break;
+            }
             case 'h': usage(argv[0]); return 0;
             default:  usage(argv[0]); return 2;
         }
     }
     if (!target && !dry_run) { usage(argv[0]); return 2; }
+
+    if (hello_mode) {
+        uint8_t buf[DL_HELLO_ON_WIRE_SIZE];
+        size_t n = dl_wire_encode_hello(&hello, buf, sizeof(buf));
+        if (n == 0) { fprintf(stderr, "encode failed\n"); return 5; }
+        if (dry_run) {
+            for (size_t i = 0; i < n; ++i) printf("%02x", buf[i]);
+            printf("\n");
+            return 0;
+        }
+        fprintf(stderr, "hello: live-send not implemented; use --dry-run\n");
+        return 6;
+    }
+    if (hello_ack_mode) {
+        uint8_t buf[DL_HELLO_ACK_ON_WIRE_SIZE];
+        size_t n = dl_wire_encode_hello_ack(&hello_ack, buf, sizeof(buf));
+        if (n == 0) { fprintf(stderr, "encode failed\n"); return 5; }
+        if (dry_run) {
+            for (size_t i = 0; i < n; ++i) printf("%02x", buf[i]);
+            printf("\n");
+            return 0;
+        }
+        fprintf(stderr, "hello-ack: live-send not implemented; use --dry-run\n");
+        return 6;
+    }
 
     if (ping_mode) {
         dl_ping_t p = {

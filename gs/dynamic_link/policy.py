@@ -11,6 +11,14 @@ from dataclasses import dataclass, field
 
 from .bitrate import BitrateConfig, compute_bitrate_kbps
 from .decision import Decision
+from .drone_config import DroneConfigState
+from .dynamic_fec import (
+    DynamicFecConfig,
+    EmitGate,
+    NEscalator,
+    compute_k,
+    compute_n,
+)
 from .predictor import (
     BudgetExhausted,
     PredictorConfig,
@@ -54,7 +62,6 @@ class LeadingLoopConfig:
     loss_margin_weight: float = 20.0
     fec_margin_weight: float = 20.0
     forced_drop_inhibit_ms: float = 5000.0
-    rssi_margin_db: float = 8.0
     rssi_up_guard_db: float = 3.0
     rssi_up_hold_ms: float = 2000.0
     rssi_down_hold_ms: float = 500.0
@@ -116,21 +123,12 @@ class CooldownConfig:
     min_change_interval_ms_cross: float = 50.0
 
 
-@dataclass
+@dataclass(frozen=True)
 class FECBounds:
-    """FEC ceilings used for safety clamps.
-
-    `(k, n)` is supplied per-MCS by the radio profile's `fec_table`
-    (see `gs/dynamic_link/profile.py` and `docs/knob-cadence-bench.md`).
-    These bounds exist only as defensive limits — the loader rejects
-    any profile that would violate them. The trailing loop no longer
-    adjusts `n` in response to loss; it follows MCS deterministically.
+    """Defensive ceilings for FEC. `(k, n)` is computed at runtime
+    by `dynamic_fec`; only `depth_max` remains here.
     """
     depth_max: int = 3
-    # MTU used by the latency-budget predictor when translating
-    # encoder kbps → inter-packet interval. 1400 B is wfb-ng's
-    # default UDP MTU.
-    mtu_bytes: int = 1400
 
 
 @dataclass
@@ -152,6 +150,7 @@ class PolicyConfig:
     fec: FECBounds = field(default_factory=FECBounds)
     safe: SafeDefaults = field(default_factory=SafeDefaults)
     bitrate: BitrateConfig = field(default_factory=BitrateConfig)
+    dynamic_fec: DynamicFecConfig = field(default_factory=DynamicFecConfig)
     predictor: PredictorConfig = field(default_factory=PredictorConfig)
     max_latency_ms: float = 50.0
     # Trailing-loop depth=1 → 2 bootstrap requires the last N windows
@@ -235,7 +234,6 @@ class LeadingSelector:
         rows = profile.snr_mcs_map(
             leading.bandwidth,
             snr_margin_db=0.0,           # static margin lives in gate
-            rssi_margin_db=leading.rssi_margin_db,
         )
         self.rows: list[MCSRow] = [
             r for r in rows if profile.mcs_min <= r.mcs <= cap
@@ -520,11 +518,11 @@ class LeadingSelector:
 # Trailing loop — depth + IDR signalling.
 # ------------------------------------------------------------------
 #
-# Reactive `n`-escalation was removed when the per-MCS FEC table
-# moved into the radio profile (`fec_table`). FEC `(k, n)` follows
-# MCS deterministically; if the link gets worse the leading loop
-# drops MCS and the row's `(k, n)` is applied with it. The trailing
-# loop now does two things only:
+# `(k, n)` is computed each tick by `dynamic_fec.compute_k` /
+# `compute_n` from `(bitrate, mtu, fps)` plus an `NEscalator` that
+# ramps redundancy on sustained `residual_loss`. `EmitGate` bundles
+# solo `(k, n)` rewrites onto MCS-change ticks to keep the wire
+# cadence cheap. The trailing loop here does two things only:
 #
 #   1. Request an IDR on any window with residual loss — the GOP is
 #      already corrupted, so a fresh keyframe is needed regardless
@@ -695,9 +693,19 @@ class Policy:
     """Composes the dual-gate selector + trailing loop + latency-budget
     predictor."""
 
-    def __init__(self, cfg: PolicyConfig, profile: RadioProfile):
+    def __init__(
+        self,
+        cfg: PolicyConfig,
+        profile: RadioProfile,
+        *,
+        drone_config: DroneConfigState | None = None,
+    ) -> None:
         self.cfg = cfg
         self.profile = profile
+        # P4a: when set, Policy.tick emits safe-defaults until the drone
+        # sends its first HELLO (DroneConfigState transitions to SYNCED).
+        # Left None for back-compat with tests that don't need the gate.
+        self.drone_config = drone_config
         self.leading = LeadingSelector(
             cfg.leading, cfg.gate, cfg.selection, profile
         )
@@ -711,24 +719,59 @@ class Policy:
         # threshold packet rate before declaring blackout.
         self._starvation_count: int = 0
         # Boot at the leading selector's chosen row. `(k, n)` come
-        # from the row; `bitrate_kbps` is computed from those plus
-        # `policy.bitrate.utilization_factor` via
-        # `compute_bitrate_kbps`.
+        # from `cfg.safe` — dynamic-FEC starts emitting computed values
+        # once `tick()` has seen its first signal snapshot.
         row = self.leading.current_row
         self.state = PolicyState(
             mcs=row.mcs,
             bandwidth=cfg.leading.bandwidth,
             tx_power_dBm=int(self.leading.state.tx_power_dBm),
-            k=row.k,
-            n=row.n,
+            k=cfg.safe.k,
+            n=cfg.safe.n,
             depth=cfg.safe.depth,
             bitrate_kbps=compute_bitrate_kbps(
-                profile, cfg.leading.bandwidth, row.mcs,
-                row.k, row.n, cfg.bitrate,
+                profile, cfg.leading.bandwidth, row.mcs, cfg.bitrate,
             ),
+        )
+        # Dynamic-FEC state. `_n_escalator` tracks residual-loss
+        # hysteresis; `_emit_gate` debounces solo (k, n) changes and
+        # bundles them onto MCS-change ticks; `_tick_counter` indexes
+        # those debounce windows.
+        self._n_escalator = NEscalator(cfg.dynamic_fec)
+        self._emit_gate = EmitGate()
+        self._tick_counter = 0
+
+    def _safe_decision(self, *, timestamp: float, reason: str) -> Decision:
+        """Conservative-defaults Decision used while gated (e.g. before
+        the drone's first HELLO). Knobs come from `cfg.safe`; radio
+        bounds come from `cfg.leading`. No knobs_changed and no signal
+        snapshot — this is a placeholder heartbeat, not a real
+        decision."""
+        safe = self.cfg.safe
+        return Decision(
+            timestamp=timestamp,
+            mcs=safe.mcs,
+            bandwidth=self.cfg.leading.bandwidth,
+            tx_power_dBm=int(round(self.cfg.leading.tx_power_min_dBm)),
+            k=safe.k,
+            n=safe.n,
+            depth=safe.depth,
+            bitrate_kbps=int(self.cfg.bitrate.min_bitrate_kbps),
+            idr_request=False,
+            reason=reason,
         )
 
     def tick(self, signals: Signals) -> Decision:
+        # P4a: until the drone has reported its config (mtu, fps,
+        # generation_id) via DLHE, emit a safe-defaults decision
+        # regardless of incoming signals. Keeps the wire heartbeat
+        # alive without applying speculative parameters.
+        if self.drone_config is not None and not self.drone_config.is_synced():
+            return self._safe_decision(
+                timestamp=signals.timestamp,
+                reason="awaiting_drone_config",
+            )
+
         ts_ms = signals.timestamp * 1000.0 if signals.timestamp else 0.0
         prev = PolicyState(**self.state.__dict__)
 
@@ -757,15 +800,53 @@ class Policy:
         )
         row = self.leading.current_row
 
-        # `(k, n, bitrate)` change only when MCS crosses a row boundary
-        # — never reactively to loss / fec_work.
-        new_k = row.k
-        new_n = row.n
+        # Bitrate first (no FEC dependency — bitrate uses the fixed
+        # `base_redundancy_ratio` from BitrateConfig, not the live k/n).
         new_bitrate_kbps = compute_bitrate_kbps(
-            self.profile, self.state.bandwidth, row.mcs,
-            row.k, row.n, self.cfg.bitrate,
+            self.profile, self.state.bandwidth, row.mcs, self.cfg.bitrate,
         )
-        ipi_ms = _ipi_ms_for_encoder(float(new_bitrate_kbps), self.cfg.fec.mtu_bytes)
+
+        # Dynamic FEC: k from packets-per-frame at the live bitrate,
+        # n from base + escalation. (mtu, fps) come from the drone's
+        # HELLO when available; safe fallbacks otherwise.
+        mtu = self.drone_config.mtu_bytes if self.drone_config else 1400
+        fps = self.drone_config.fps if self.drone_config else 60
+        candidate_k = compute_k(
+            bitrate_kbps=new_bitrate_kbps,
+            mtu_bytes=mtu,
+            fps=fps,
+            cfg=self.cfg.dynamic_fec,
+        )
+        escalation = self._n_escalator.update(
+            loss=float(signals.residual_loss_w)
+        )
+        candidate_n = compute_n(
+            k=candidate_k,
+            n_escalation=escalation,
+            cfg=self.cfg.dynamic_fec,
+        )
+
+        # Emit-gating: solo (k, n) changes wait out the debounce
+        # window; MCS-change ticks emit immediately so (k, n) ride
+        # with their cause-and-effect partner.
+        if self._emit_gate.should_emit(
+            candidate_k, candidate_n, mcs_changed,
+            current_tick=self._tick_counter,
+        ):
+            new_k, new_n = candidate_k, candidate_n
+            self._emit_gate.commit(new_k, new_n, self._tick_counter)
+        else:
+            new_k = self._emit_gate.last_k or self.cfg.safe.k
+            new_n = self._emit_gate.last_n or self.cfg.safe.n
+
+        self._tick_counter += 1
+
+        mtu_for_predictor = (
+            self.drone_config.mtu_bytes
+            if self.drone_config and self.drone_config.is_synced()
+            else 1400
+        )
+        ipi_ms = _ipi_ms_for_encoder(float(new_bitrate_kbps), mtu_for_predictor)
         # Per-tick predictor cfg with the live ipi_ms.
         predictor_cfg = PredictorConfig(
             per_packet_airtime_us=self.cfg.predictor.per_packet_airtime_us,
@@ -778,12 +859,13 @@ class Policy:
             signals, self.state.depth, ts_ms,
         )
 
-        # Latency-budget gate — defensive last-resort. The profile's
-        # `fec_table` is operator-validated for budget; this only
-        # fires if a deeper depth (interleaver) raise pushes the
-        # block over the cap. On budget exhaustion we hold the
-        # previous state rather than silently rewriting `(k, n)` —
-        # the bench showed reactive `(k, n)` rewrites are costly.
+        # Latency-budget gate — defensive last-resort. Runs against
+        # the dynamically computed `(k, n)` from `dynamic_fec` plus
+        # whatever depth the trailing loop just picked; fires when
+        # the combined block-decode + interleaver cost overshoots
+        # the cap. On budget exhaustion we hold the previous state
+        # rather than silently rewriting `(k, n)` — the bench showed
+        # reactive `(k, n)` rewrites are costly.
         proposal = Proposal(k=new_k, n=new_n, depth=new_depth)
         reason_budget = ""
         try:

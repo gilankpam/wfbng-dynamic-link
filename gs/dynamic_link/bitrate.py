@@ -1,15 +1,12 @@
-"""Dynamic encoder bitrate from PHY rate × utilization × (k/n).
+"""Encoder bitrate from PHY rate × utilization × k_over_n.
 
-Operator tunes one global `utilization_factor`; FEC overhead is
-folded in via the actual `(k/n)` ratio of the row the leading
-loop selected. PHY data rate comes from the profile's
-`data_rate_Mbps_LGI` table — LGI only because we don't do
-short-GI selection (see design doc).
+`k_over_n` is derived from `base_redundancy_ratio` (a fixed
+operator-set ratio), NOT the live `(k, n)` of the policy state. This
+decouples encoder bitrate from the dynamic `n`-escalation loop —
+escalation reserves additional airtime for parity out of the
+utilization headroom, not out of the encoder's allocation.
 
-Defaults match alink_gs.conf:
-  utilization_factor = 0.8   ([dynamic] utilization_factor)
-  min_bitrate_kbps   = 1000  ([hardware] min_bitrate)
-  max_bitrate_kbps   = 24000 ([hardware] max_bitrate)
+See `docs/superpowers/specs/2026-05-11-drone-config-handshake-and-dynamic-fec-design.md` §"Dynamic FEC algorithm".
 """
 from __future__ import annotations
 
@@ -21,6 +18,7 @@ from .profile import RadioProfile
 @dataclass(frozen=True)
 class BitrateConfig:
     utilization_factor: float = 0.8
+    base_redundancy_ratio: float = 0.5   # k/n = 1/(1+ratio) = 0.667
     min_bitrate_kbps: int = 1000
     max_bitrate_kbps: int = 24000
 
@@ -29,6 +27,11 @@ class BitrateConfig:
             raise ValueError(
                 f"utilization_factor must be in (0, 1]; "
                 f"got {self.utilization_factor}"
+            )
+        if self.base_redundancy_ratio < 0.0:
+            raise ValueError(
+                f"base_redundancy_ratio must be >= 0; "
+                f"got {self.base_redundancy_ratio}"
             )
         if self.min_bitrate_kbps <= 0:
             raise ValueError(
@@ -46,11 +49,11 @@ def compute_bitrate_kbps(
     profile: RadioProfile,
     bandwidth: int,
     mcs: int,
-    k: int,
-    n: int,
     cfg: BitrateConfig,
 ) -> int:
+    """Compute encoder bitrate target in kb/s for `(bandwidth, mcs)`."""
     phy_Mbps = profile.data_rate_Mbps_LGI[bandwidth][mcs]
-    raw_kbps = phy_Mbps * 1000.0 * cfg.utilization_factor * (k / n)
+    k_over_n = 1.0 / (1.0 + cfg.base_redundancy_ratio)
+    raw_kbps = phy_Mbps * 1000.0 * cfg.utilization_factor * k_over_n
     return int(max(cfg.min_bitrate_kbps,
                    min(cfg.max_bitrate_kbps, raw_kbps)))

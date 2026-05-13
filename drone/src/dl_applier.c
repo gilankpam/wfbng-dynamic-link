@@ -18,6 +18,7 @@
 #include "dl_config.h"
 #include "dl_dbg.h"
 #include "dl_dedup.h"
+#include "dl_hello.h"
 #include "dl_log.h"
 #include "dl_mavlink.h"
 #include "dl_osd.h"
@@ -226,15 +227,15 @@ int main(int argc, char **argv) {
     int listen_fd = open_listen_socket(&cfg);
     if (listen_fd < 0) return 4;
 
-    /* GS-side tunnel endpoint for PONG (and future debug back-channel
-     * packets). Opened only when the debug suite's master switch is on;
-     * a closed socket means PINGs are silently dropped, which is fine
-     * — production never sees a PING in the first place. */
+    /* GS-side tunnel endpoint for drone→GS traffic. Originally opened
+     * only under cfg.debug_enable for PONG replies to debug PINGs;
+     * P4a's HELLO handshake (DLHE) also needs this socket in
+     * production, so it is now opened unconditionally. The send path
+     * tolerates a routing failure (uses sendto per packet, no
+     * connect), and a -1 fd just silently drops outbound traffic. */
     int gs_tunnel_fd = -1;
     struct sockaddr_in gs_tunnel_dst = {0};
-    if (cfg.debug_enable) {
-        gs_tunnel_fd = open_gs_tunnel_socket(&cfg, &gs_tunnel_dst);
-    }
+    gs_tunnel_fd = open_gs_tunnel_socket(&cfg, &gs_tunnel_dst);
 
     uint32_t tick_ms = cfg.osd_update_interval_ms;
     if (cfg.health_timeout_ms / 2 < tick_ms) tick_ms = cfg.health_timeout_ms / 2;
@@ -260,6 +261,18 @@ int main(int argc, char **argv) {
     dl_watchdog_t wd;
     dl_watchdog_init(&wd, cfg.health_timeout_ms);
 
+    dl_hello_sm_t hello;
+    int hello_inited = dl_hello_init(&hello, &cfg);
+    int hello_timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (hello_timer_fd < 0) {
+        dl_log_err("hello: timerfd_create: %s", strerror(errno));
+    } else if (hello_inited == 0) {
+        /* Arm immediately so the first DLHE goes out ASAP. */
+        struct itimerspec t = {0};
+        t.it_value.tv_nsec = 1 * 1000 * 1000;  /* 1 ms */
+        timerfd_settime(hello_timer_fd, 0, &t, NULL);
+    }
+
     /* One prev-state per backend — each tracks only the knobs it
      * actually applies, and mutating one must not fool the others. */
     dl_decision_t last_tx = {0};
@@ -273,13 +286,14 @@ int main(int argc, char **argv) {
     apply_state_t apply_state   = APPLY_IDLE;
     dl_decision_t apply_pending = {0};
 
-    struct pollfd pfds[3];
-    pfds[0].fd = listen_fd; pfds[0].events = POLLIN;
-    pfds[1].fd = tick_fd;   pfds[1].events = POLLIN;
-    pfds[2].fd = gap_fd;    pfds[2].events = POLLIN;
+    struct pollfd pfds[4];
+    pfds[0].fd = listen_fd;      pfds[0].events = POLLIN;
+    pfds[1].fd = tick_fd;        pfds[1].events = POLLIN;
+    pfds[2].fd = gap_fd;         pfds[2].events = POLLIN;
+    pfds[3].fd = hello_timer_fd; pfds[3].events = POLLIN;
 
     while (!g_stop) {
-        int n = poll(pfds, 3, -1);
+        int n = poll(pfds, 4, -1);
         if (n < 0) {
             if (errno == EINTR) continue;
             dl_log_err("poll: %s", strerror(errno));
@@ -295,11 +309,14 @@ int main(int argc, char **argv) {
             /* T2 — captured as early as possible after the kernel handed
              * us the datagram. Used only for PING; cheap to take always. */
             uint64_t recv_us = now_monotonic_us();
+            dl_packet_kind_t kind = (got >= 0)
+                ? dl_wire_peek_kind(buf, (size_t)got)
+                : DL_PKT_UNKNOWN;
             if (got < 0) {
                 if (errno != EAGAIN && errno != EINTR) {
                     dl_log_warn("recvfrom: %s", strerror(errno));
                 }
-            } else if (dl_wire_peek_kind(buf, (size_t)got) == DL_PKT_PING) {
+            } else if (kind == DL_PKT_PING) {
                 dl_ping_t ping;
                 if (dl_wire_decode_ping(buf, (size_t)got, &ping) != DL_DECODE_OK) {
                     dl_log_debug("ping: decode failed (%zd bytes from %s:%u)",
@@ -323,6 +340,15 @@ int main(int argc, char **argv) {
                             dl_log_debug("pong: sendto: %s", strerror(errno));
                         }
                     }
+                }
+            } else if (kind == DL_PKT_HELLO_ACK) {
+                dl_hello_ack_t ack;
+                if (dl_wire_decode_hello_ack(buf, (size_t)got, &ack) == DL_DECODE_OK) {
+                    dl_hello_on_ack(&hello, &ack);
+                } else {
+                    dl_log_debug("hello_ack: decode failed (%zd bytes from %s:%u)",
+                                 got, inet_ntoa(src.sin_addr),
+                                 ntohs(src.sin_port));
                 }
             } else {
                 dl_decision_t d;
@@ -487,6 +513,41 @@ int main(int argc, char **argv) {
             }
             apply_state = APPLY_IDLE;
         }
+
+        if (pfds[3].revents & POLLIN) {
+            uint64_t expirations;
+            ssize_t r = read(hello_timer_fd, &expirations, sizeof(expirations));
+            (void)r;
+            if (hello.state == DL_HELLO_STATE_KEEPALIVE) {
+                /* Drop-back to ANNOUNCING is automatic on too many
+                 * missed acks; either way we send a HELLO now. */
+                dl_hello_on_keepalive_tick(&hello);
+            }
+            if (hello.state != DL_HELLO_STATE_DISABLED && gs_tunnel_fd >= 0) {
+                uint8_t out[DL_HELLO_ON_WIRE_SIZE];
+                size_t n_out = dl_hello_build_announce(&hello, out, sizeof(out));
+                if (n_out > 0) {
+                    ssize_t s = sendto(gs_tunnel_fd, out, n_out, 0,
+                                       (struct sockaddr *)&gs_tunnel_dst,
+                                       sizeof(gs_tunnel_dst));
+                    if (s < 0) {
+                        dl_log_debug("hello: sendto: %s", strerror(errno));
+                    }
+                }
+            }
+            /* Re-arm. timerfd_settime with an all-zero it_value disarms
+             * the timer, so coerce a 0-ms delay to 1 ms when we still
+             * want to fire. DISABLED leaves it_value zero -> timer
+             * stays parked. */
+            uint32_t delay_ms = dl_hello_next_delay_ms(&hello);
+            struct itimerspec t = {0};
+            t.it_value.tv_sec = delay_ms / 1000;
+            t.it_value.tv_nsec = (long)(delay_ms % 1000) * 1000000L;
+            if (delay_ms == 0 && hello.state != DL_HELLO_STATE_DISABLED) {
+                t.it_value.tv_nsec = 1 * 1000 * 1000;
+            }
+            timerfd_settime(hello_timer_fd, 0, &t, NULL);
+        }
     }
 
     dl_log_info("dl-applier shutting down");
@@ -494,6 +555,7 @@ int main(int argc, char **argv) {
     close(tick_fd);
     close(gap_fd);
     if (gs_tunnel_fd >= 0) close(gs_tunnel_fd);
+    if (hello_timer_fd >= 0) close(hello_timer_fd);
     dl_mavlink_close(mav);
     dl_osd_close(osd);
     dl_backend_enc_close(be);

@@ -27,25 +27,8 @@ bandwidth_default:   20
 tx_power_min_dBm: 0
 tx_power_max_dBm: 30
 
-sensitivity_dBm:
-  20:
-    0: -96
-    1: -93
-    2: -91
-    3: -88
-    4: -85
-    5: -83
-    6: -80
-    7: -77
-  40:
-    0: -93
-    1: -90
-    2: -88
-    3: -85
-    4: -82
-    5: -80
-    6: -77
-    7: -74
+# RSSI sensitivity (sensitivity_dBm) used to live here; never fed the
+# MCS selector and was dropped — selection runs on snr_floor_dB below.
 
 data_rate_Mbps_LGI:
   20:
@@ -96,38 +79,5 @@ snr_floor_dB:
     6: 26
     7: 28
 
-# Per-MCS FEC `(k, n)`. Pinned per-row, never escalated reactively
-# — `docs/knob-cadence-bench.md` showed FEC `CMD_SET_FEC` reconfigs
-# are the most expensive controller knob. Bitrate is computed at
-# runtime as `phy_data_rate × policy.bitrate.utilization_factor ×
-# (k/n)`; see `gs/dynamic_link/bitrate.py`.
-#
-# Design choices for this profile:
-# - MCS 0/1/2 share `(k=2, n=5)` so MCS bouncing in the survival band
-#   never triggers a `CMD_SET_FEC`.
-# - MCS 3-7 ramp `k` gradually (4 → 6 → 8 → 10 → 12) — each step
-#   doubles block size while PHY also climbs, so block-fill latency
-#   stays in the 5-6 ms band at every row.
-# - Redundancy decreases monotonically with MCS (60% → 17%): cleaner
-#   link needs less parity.
-fec_table:
-  20:
-    0: {k: 2,  n: 5}                        # goodput 2.6,  block-fill 14.9 ms
-    1: {k: 2,  n: 5}                        # goodput 5.2,  block-fill  9.0 ms
-    2: {k: 2,  n: 5}                        # goodput 7.8,  block-fill  5.6 ms
-    3: {k: 4,  n: 7}                        # goodput 14.9, block-fill  6.0 ms
-    4: {k: 6,  n: 9}                        # goodput 26.0, block-fill  5.2 ms
-    5: {k: 8,  n: 10}                       # goodput 41.6, block-fill  5.0 ms
-    6: {k: 10, n: 12}                       # goodput 48.8, block-fill  5.1 ms
-    7: {k: 12, n: 14}                       # goodput 55.7, block-fill  5.4 ms
-  40:
-    # 40 MHz roughly doubles PHY at every MCS; (k, n) carry over
-    # since the redundancy logic is MCS-driven not bandwidth-driven.
-    0: {k: 2,  n: 5}
-    1: {k: 2,  n: 5}
-    2: {k: 2,  n: 5}
-    3: {k: 4,  n: 7}
-    4: {k: 6,  n: 9}
-    5: {k: 8,  n: 10}
-    6: {k: 10, n: 12}
-    7: {k: 12, n: 14}
+# (k, n) are computed at runtime — see gs/dynamic_link/dynamic_fec.py.
+# This profile used to carry a per-MCS fec_table here; P4b removed it.
