@@ -241,10 +241,13 @@ int dl_backend_enc_request_idr(dl_backend_enc_t *be, uint64_t now_ms) {
     dl_lat_handle_t h = dl_latency_begin(DL_LAT_IDR);
     int rc = http_get(be->host, be->port, "/request/idr");
     dl_latency_end(h, rc);
-    if (rc == 0) {
-        be->last_idr_ms = now_ms;
-        be->idr_ever_sent = true;
-    }
+    /* Arm the throttle on ANY attempt — whether the encoder
+     * 2xx'd, 4xx'd, 5xx'd, or the connect failed. The throttle's
+     * purpose is spam prevention; a broken encoder shouldn't get
+     * hammered just because rc != 0. (This restores pre-Task-9
+     * behavior the encoder-contract flip accidentally regressed.) */
+    be->last_idr_ms = now_ms;
+    be->idr_ever_sent = true;
     return rc;
 }
 
