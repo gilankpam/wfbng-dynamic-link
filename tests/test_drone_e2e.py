@@ -130,20 +130,24 @@ class _RecordingHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.server.recorded.append(self.path)  # type: ignore[attr-defined]
         self.server.recv_times.append(time.monotonic())  # type: ignore[attr-defined]
-        self.send_response(200)
+        status = getattr(self.server, "response_status", 200)
+        body = getattr(self.server, "response_body", b"{}")
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", "2")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(b"{}")
+        self.wfile.write(body)
 
     def log_message(self, *args, **kwargs):
         pass  # silence
 
 
-def make_encoder_server() -> HTTPServer:
+def make_encoder_server(status: int = 200, body: bytes = b"{}") -> HTTPServer:
     srv = HTTPServer(("127.0.0.1", 0), _RecordingHandler)
     srv.recorded = []  # type: ignore[attr-defined]
     srv.recv_times = []  # type: ignore[attr-defined]
+    srv.response_status = status  # type: ignore[attr-defined]
+    srv.response_body = body      # type: ignore[attr-defined]
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     srv._thread = t  # type: ignore[attr-defined]
@@ -298,7 +302,9 @@ def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
              **overrides):
     wfb = FakeWfbTx()
     wfb.start()
-    enc = make_encoder_server()
+    enc = make_encoder_server(
+        status=overrides.pop("_encoder_status", 200),
+    )
     enc_port = enc.server_address[1]
     mav = FakeMavlinkSink()
     mav.start()
@@ -817,3 +823,90 @@ def test_drone_e2e_bad_yaml_means_no_hello(tmp_path: Path):
         },
     ) as ctx:
         assert ctx.recv_one_hello(timeout=1.5) is None
+
+
+# -----------------------------------------------------------------
+# debug OSD latency stats (osd_debug_latency flag).
+# -----------------------------------------------------------------
+
+def _osd_text(osd_path: Path) -> str:
+    if not osd_path.exists():
+        return ""
+    return osd_path.read_text(errors="replace")
+
+
+def test_osd_debug_latency_disabled_default(tmp_path: Path):
+    with _sandbox(tmp_path) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2,
+                bitrate=12000, fps=60)
+        assert _wait_until(
+            lambda: "MCS" in _osd_text(s["osd_path"])), "no status line"
+        txt = _osd_text(s["osd_path"])
+        for tag in ("FEC  ", "DPTH ", "RADIO", "TXPWR", "ENC  ", "IDR  "):
+            assert tag not in txt, f"unexpected debug tag {tag!r} in: {txt!r}"
+
+
+def test_osd_debug_latency_enabled_renders_six_lines(tmp_path: Path):
+    with _sandbox(tmp_path, osd_debug_latency=1) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2,
+                bitrate=12000, fps=60)
+        assert _wait_until(
+            lambda: all(tag in _osd_text(s["osd_path"])
+                        for tag in ("FEC  ", "DPTH ", "RADIO",
+                                    "TXPWR", "ENC  ", "IDR  ")),
+            timeout_s=3.0,
+        ), f"missing debug tag(s): {_osd_text(s['osd_path'])!r}"
+
+
+def test_osd_debug_latency_error_counter_increments(tmp_path: Path):
+    with _sandbox(tmp_path, osd_debug_latency=1, _encoder_status=500) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2,
+                bitrate=12000, fps=60)
+
+        def enc_line_has_error():
+            txt = _osd_text(s["osd_path"])
+            for line in txt.splitlines():
+                if "ENC  " in line and "e=0" not in line and "e=" in line:
+                    return True
+            return False
+        assert _wait_until(enc_line_has_error, timeout_s=3.0), \
+            f"no ENC error in: {_osd_text(s['osd_path'])!r}"
+
+
+def test_osd_debug_latency_idr_throttle_not_counted(tmp_path: Path):
+    with _sandbox(tmp_path,
+                  osd_debug_latency=1,
+                  min_idr_interval_ms=10_000) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target, mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2, bitrate=12000, fps=60,
+                idr=True, sequence=1)
+        _inject(target, mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2, bitrate=12000, fps=60,
+                idr=True, sequence=2)
+
+        def idr_line():
+            for line in _osd_text(s["osd_path"]).splitlines():
+                if "IDR  " in line:
+                    return line
+            return None
+
+        def idr_n_is_one():
+            line = idr_line()
+            return line is not None and "n=1" in line
+        assert _wait_until(idr_n_is_one, timeout_s=3.0), \
+            f"expected IDR n=1, got: {_osd_text(s['osd_path'])!r}"
+
+        time.sleep(s["cfg"]["osd_update_interval_ms"] / 1000.0 + 0.3)
+        line = idr_line()
+        assert line is not None
+        assert "n=1" in line, f"expected n=1 (throttled), got line: {line!r}"
