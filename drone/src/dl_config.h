@@ -41,6 +41,8 @@ typedef struct {
     bool     osd_enable;
     char     osd_msg_path[DL_CONF_MAX_STR];
     uint32_t osd_update_interval_ms;
+    /* Debug-OSD: per-apply-call latency stats. Off in prod. */
+    bool     osd_debug_latency;
 
     /* GS-link watchdog + safe_defaults. */
     uint32_t health_timeout_ms;
