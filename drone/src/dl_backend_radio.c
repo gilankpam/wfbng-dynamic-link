@@ -7,6 +7,7 @@
  */
 #include "dl_backend_radio.h"
 #include "dl_dbg.h"
+#include "dl_latency.h"
 #include "dl_log.h"
 
 #include <errno.h>
@@ -40,14 +41,16 @@ static int run_iw(const char *wlan, int8_t dBm) {
         NULL,
     };
 
+    dl_lat_handle_t h = dl_latency_begin(DL_LAT_TXPWR);
     pid_t pid;
-    int rc = posix_spawnp(&pid, "iw", NULL, NULL, argv, environ);
-    if (rc != 0) {
-        dl_log_warn("radio: posix_spawnp iw: %s", strerror(rc));
+    int rc_spawn = posix_spawnp(&pid, "iw", NULL, NULL, argv, environ);
+    if (rc_spawn != 0) {
+        dl_log_warn("radio: posix_spawnp iw: %s", strerror(rc_spawn));
         char detail[96];
         snprintf(detail, sizeof(detail),
-                 "{\"errno\":%d,\"dBm\":%d}", rc, (int)dBm);
+                 "{\"errno\":%d,\"dBm\":%d}", rc_spawn, (int)dBm);
         dl_dbg_emit("RADIO_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
+        dl_latency_end(h, -1);
         return -1;
     }
     int status;
@@ -58,6 +61,7 @@ static int run_iw(const char *wlan, int8_t dBm) {
         snprintf(detail, sizeof(detail),
                  "{\"errno\":%d,\"dBm\":%d}", saved, (int)dBm);
         dl_dbg_emit("RADIO_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
+        dl_latency_end(h, -1);
         return -1;
     }
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
@@ -68,8 +72,10 @@ static int run_iw(const char *wlan, int8_t dBm) {
         snprintf(detail, sizeof(detail),
                  "{\"exit\":%d,\"dBm\":%d}", exit_code, (int)dBm);
         dl_dbg_emit("RADIO_APPLY_FAIL", DL_DBG_SEV_WARN, detail);
+        dl_latency_end(h, -1);
         return -1;
     }
+    dl_latency_end(h, 0);
     dl_log_info("radio: txpower %d dBm (iw dev %s)", (int)dBm, wlan);
     return 0;
 }
