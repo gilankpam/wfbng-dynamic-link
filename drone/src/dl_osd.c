@@ -1,5 +1,6 @@
 /* dl_osd.c */
 #include "dl_osd.h"
+#include "dl_latency.h"
 #include "dl_log.h"
 
 #include <errno.h>
@@ -12,10 +13,12 @@
 struct dl_osd {
     char path[DL_CONF_MAX_STR];
     bool enabled;
+    bool debug_latency_enabled;
     /* Latest status + transient event lines. Written together so
      * msposd can render both. */
     char status_line[128];
     char event_line[128];
+    char debug_block[512];
 };
 
 dl_osd_t *dl_osd_open(const dl_config_t *cfg) {
@@ -23,6 +26,7 @@ dl_osd_t *dl_osd_open(const dl_config_t *cfg) {
     if (!o) return NULL;
     snprintf(o->path, sizeof(o->path), "%s", cfg->osd_msg_path);
     o->enabled = cfg->osd_enable;
+    o->debug_latency_enabled = cfg->osd_debug_latency;
     return o;
 }
 
@@ -42,8 +46,9 @@ static void flush(dl_osd_t *o) {
         dl_log_debug("osd: fopen %s: %s", tmp, strerror(errno));
         return;
     }
-    if (o->status_line[0]) fprintf(fd, "%s\n", o->status_line);
     if (o->event_line[0])  fprintf(fd, "%s\n", o->event_line);
+    if (o->status_line[0]) fprintf(fd, "%s\n", o->status_line);
+    if (o->debug_block[0]) fputs(o->debug_block, fd);
     fflush(fd);
     fclose(fd);
     if (rename(tmp, o->path) < 0) {
@@ -76,6 +81,11 @@ void dl_osd_write_status(dl_osd_t *o, const dl_decision_t *d, int rssi_dBm) {
      * the OSD forever — msposd will keep rendering the last bytes we
      * wrote, so we have to actively unset. */
     o->event_line[0] = '\0';
+    if (o->debug_latency_enabled) {
+        dl_latency_render(o->debug_block, sizeof(o->debug_block));
+    } else {
+        o->debug_block[0] = '\0';
+    }
     flush(o);
 }
 
