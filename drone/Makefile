@@ -24,6 +24,7 @@ APPLIER_SRCS := \
     $(SRCDIR)/dl_dbg.c \
     $(SRCDIR)/dl_dedup.c \
     $(SRCDIR)/dl_hello.c \
+    $(SRCDIR)/dl_latency.c \
     $(SRCDIR)/dl_log.c \
     $(SRCDIR)/dl_mavlink.c \
     $(SRCDIR)/dl_osd.c \
@@ -44,6 +45,7 @@ TEST_SRCS := \
     $(TESTDIR)/test_config.c \
     $(TESTDIR)/test_dbg.c \
     $(TESTDIR)/test_dedup.c \
+    $(TESTDIR)/test_dl_latency.c \
     $(TESTDIR)/test_mavlink.c \
     $(TESTDIR)/test_watchdog.c \
     $(TESTDIR)/test_dl_yaml.c \
@@ -53,6 +55,7 @@ TEST_SRCS := \
     $(SRCDIR)/dl_dbg.c \
     $(SRCDIR)/dl_dedup.c \
     $(SRCDIR)/dl_hello.c \
+    $(SRCDIR)/dl_latency.c \
     $(SRCDIR)/dl_log.c \
     $(SRCDIR)/dl_mavlink.c \
     $(SRCDIR)/dl_watchdog.c \
@@ -85,7 +88,7 @@ $(INJECT): $(INJECT_SRCS) | $(OUTDIR)
 	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $(INJECT_SRCS) $(LDFLAGS)
 
 $(TESTBIN): $(TEST_SRCS) | $(OUTDIR)
-	$(CC) $(CFLAGS) -I$(SRCDIR) -I$(TESTDIR) -o $@ $(TEST_SRCS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -DDL_TESTING -I$(SRCDIR) -I$(TESTDIR) -o $@ $(TEST_SRCS) $(LDFLAGS)
 
 test: $(TESTBIN)
 	./$(TESTBIN)
