@@ -28,13 +28,14 @@ typedef struct {
     uint32_t apply_stagger_ms;
 
     /* Pacing between sub-commands within a single apply phase: the
-     * three CMD_SET_* sub-calls inside dl_backend_tx_apply (FEC,
+     * CMD_SET_* sub-calls inside dl_backend_tx_apply (FEC, optionally
      * DEPTH, RADIO) and the tx<->radio handoff inside the applier.
-     * Both CMD_SET_FEC and CMD_SET_INTERLEAVE_DEPTH trigger
-     * wfb-ng's refresh_session() which closes the open block,
-     * flushes the interleaver and re-broadcasts SESSION packets;
-     * back-to-back issues overlap those bursts and discard more
-     * in-flight video than necessary. 0 disables (legacy). */
+     * Both CMD_SET_FEC and CMD_SET_INTERLEAVE_DEPTH trigger wfb-ng's
+     * refresh_session() which closes the open block, flushes the
+     * interleaver and re-broadcasts SESSION packets; back-to-back
+     * issues overlap those bursts and discard more in-flight video
+     * than necessary. DEPTH is skipped when interleaving_supported
+     * is false (vanilla wfb-ng). 0 disables pacing (legacy). */
     uint32_t apply_sub_pace_ms;
 
     /* OSD sink (§4B). */

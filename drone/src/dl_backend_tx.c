@@ -7,6 +7,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,7 @@ struct dl_backend_tx {
      * See cfg->apply_sub_pace_ms — wfb-ng's refresh_session burst
      * needs space to land before the next SET_* hits. 0 = no pacing. */
     useconds_t pace_us;
+    bool interleaving_supported;
 };
 
 static void pace(const dl_backend_tx_t *bt) {
@@ -156,9 +158,11 @@ dl_backend_tx_t *dl_backend_tx_open(const dl_config_t *cfg) {
     bt->fd = fd;
     bt->dst = dst;
     bt->pace_us = (useconds_t)cfg->apply_sub_pace_ms * 1000u;
-    dl_log_info("tx_cmd: connected to %s:%u (sub_pace=%u ms)",
+    bt->interleaving_supported = cfg->interleaving_supported;
+    dl_log_info("tx_cmd: connected to %s:%u (sub_pace=%u ms, interleaver=%s)",
                 cfg->wfb_tx_ctrl_addr, cfg->wfb_tx_ctrl_port,
-                (unsigned)cfg->apply_sub_pace_ms);
+                (unsigned)cfg->apply_sub_pace_ms,
+                cfg->interleaving_supported ? "enabled" : "vanilla");
     return bt;
 }
 
@@ -226,7 +230,8 @@ int dl_backend_tx_apply(dl_backend_tx_t *bt,
         if (send_fec(bt, d->k, d->n) < 0) rc = -1;
         emitted = true;
     }
-    if (first || prev->depth != d->depth) {
+    if (bt->interleaving_supported &&
+        (first || prev->depth != d->depth)) {
         if (emitted) pace(bt);
         if (send_depth(bt, d->depth) < 0) rc = -1;
         emitted = true;
@@ -243,8 +248,10 @@ int dl_backend_tx_apply(dl_backend_tx_t *bt,
 int dl_backend_tx_apply_safe(dl_backend_tx_t *bt, const dl_config_t *cfg) {
     int rc = 0;
     if (send_fec(bt, cfg->safe_k, cfg->safe_n) < 0) rc = -1;
-    pace(bt);
-    if (send_depth(bt, cfg->safe_depth) < 0) rc = -1;
+    if (bt->interleaving_supported) {
+        pace(bt);
+        if (send_depth(bt, cfg->safe_depth) < 0) rc = -1;
+    }
     pace(bt);
     if (send_radio(bt, cfg->safe_mcs, cfg->safe_bandwidth) < 0) rc = -1;
     return rc;
