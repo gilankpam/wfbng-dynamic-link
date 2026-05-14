@@ -181,3 +181,20 @@ DL_TEST(config_interleaving_supported_parses_one) {
     DL_ASSERT_EQ(rc, 0);
     DL_ASSERT_EQ(cfg.interleaving_supported, true);
 }
+
+DL_TEST(config_hello_waybeam_json_path_default) {
+    dl_config_t c;
+    dl_config_defaults(&c);
+    DL_ASSERT_STR_EQ(c.hello_waybeam_json_path, "/etc/waybeam.json");
+}
+
+DL_TEST(config_hello_waybeam_json_path_parses) {
+    const char *body = "hello_waybeam_json_path = /tmp/wb.json\n";
+    char path[64];
+    DL_ASSERT_EQ(write_tmp(body, path, sizeof(path)), 0);
+    dl_config_t c;
+    dl_config_defaults(&c);
+    DL_ASSERT_EQ(dl_config_load(path, &c), 0);
+    DL_ASSERT_STR_EQ(c.hello_waybeam_json_path, "/tmp/wb.json");
+    unlink(path);
+}

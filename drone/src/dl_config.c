@@ -62,6 +62,7 @@ void dl_config_defaults(dl_config_t *cfg) {
     cfg->hello_announce_initial_count = 60;
     strncpy(cfg->hello_wfb_yaml_path, "/etc/wfb.yaml", DL_CONF_MAX_STR - 1);
     strncpy(cfg->hello_majestic_yaml_path, "/etc/majestic.yaml", DL_CONF_MAX_STR - 1);
+    strncpy(cfg->hello_waybeam_json_path, "/etc/waybeam.json", DL_CONF_MAX_STR - 1);
 }
 
 static void trim(char *s) {
@@ -213,6 +214,8 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
             SET_STR(hello_wfb_yaml_path);
         else if (strcmp(key, "hello_majestic_yaml_path") == 0)
             SET_STR(hello_majestic_yaml_path);
+        else if (strcmp(key, "hello_waybeam_json_path") == 0)
+            SET_STR(hello_waybeam_json_path);
         else {
             dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
         }
