@@ -125,7 +125,7 @@ policy:
   # stays steady while n_escalation moves — escalation eats the
   # utilization-factor headroom instead of the encoder budget.
   bitrate:
-    utilization_factor: 0.8
+    utilization_factor: 0.6
     base_redundancy_ratio: 0.5   # should match fec.base_redundancy_ratio
     min_bitrate_kbps: 1000
     max_bitrate_kbps: 24000
