@@ -133,10 +133,16 @@ dbg_fsync_each   = 0
 # --- P4a: drone→GS config handshake ----------------------------------
 # Authoritative sources for MTU and FPS, read once at startup.
 # MTU comes from /etc/wfb.yaml `wireless.mlink` (typically 1400 or
-# 3994 depending on wfb-ng's radio_mtu setting). FPS comes from
-# /etc/majestic.yaml `video0.fps`.
-hello_wfb_yaml_path = /etc/wfb.yaml
+# 3994 depending on wfb-ng's radio_mtu setting).
+#
+# FPS source depends on `encoder_kind` above:
+#   - majestic → hello_majestic_yaml_path (YAML, key `video0.fps`)
+#   - waybeam  → hello_waybeam_json_path  (JSON, key `video0.fps`)
+# Anything else (e.g. `none`) refuses to send HELLO; GS stays in
+# safe_defaults until the operator picks a real encoder.
+hello_wfb_yaml_path      = /etc/wfb.yaml
 hello_majestic_yaml_path = /etc/majestic.yaml
+hello_waybeam_json_path  = /etc/waybeam.json
 
 # Cadence of the DLHE announce. The first
 # `hello_announce_initial_count` retries use the "initial" delay;
