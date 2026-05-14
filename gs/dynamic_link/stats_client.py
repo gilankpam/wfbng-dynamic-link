@@ -16,7 +16,11 @@ from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
 
-CONTRACT_VERSION_EXPECTED = 2
+# wfb-ng's contract_version field — bumped by upstream on
+# session-record schema changes. Vanilla wfb-ng emits 1; the
+# feat/interleaving_uep branch emits 2. We accept both because we
+# decode the same minimal subset (fec_*, epoch) regardless.
+CONTRACT_VERSIONS_SUPPORTED = frozenset({1, 2})
 
 
 class ContractVersionError(RuntimeError):
@@ -104,7 +108,8 @@ def _parse_session(d: dict) -> SessionInfo:
         fec_k=int(d["fec_k"]),
         fec_n=int(d["fec_n"]),
         epoch=int(d["epoch"]),
-        interleave_depth=int(d["interleave_depth"]),
+        # Vanilla wfb-ng omits this key. Default to 1 (no interleaver).
+        interleave_depth=int(d.get("interleave_depth", 1)),
         contract_version=int(d["contract_version"]),
     )
 
@@ -141,10 +146,10 @@ def parse_record(raw: dict) -> Event | None:
         session = None
         if "session" in raw and raw["session"]:
             session = _parse_session(raw["session"])
-            if session.contract_version != CONTRACT_VERSION_EXPECTED:
+            if session.contract_version not in CONTRACT_VERSIONS_SUPPORTED:
                 raise ContractVersionError(
                     f"contract_version={session.contract_version}, "
-                    f"expected {CONTRACT_VERSION_EXPECTED}"
+                    f"supported {sorted(CONTRACT_VERSIONS_SUPPORTED)}"
                 )
         return RxEvent(
             timestamp=ts,
@@ -162,10 +167,10 @@ def parse_record(raw: dict) -> Event | None:
         )
     if rtype == "new_session":
         session = _parse_session(raw)
-        if session.contract_version != CONTRACT_VERSION_EXPECTED:
+        if session.contract_version not in CONTRACT_VERSIONS_SUPPORTED:
             raise ContractVersionError(
                 f"contract_version={session.contract_version}, "
-                f"expected {CONTRACT_VERSION_EXPECTED}"
+                f"supported {sorted(CONTRACT_VERSIONS_SUPPORTED)}"
             )
         return SessionEvent(
             timestamp=ts,
