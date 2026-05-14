@@ -86,25 +86,34 @@ static void compute_percentiles(const struct dl_lat_slot *s,
     *p95 = tmp[(s->filled * 95) / 100];
 }
 
+/* msposd directive: `&Lxx` is color*10 + position-zone (zones:
+ * 0=TopLeft, 1=TopCenter, 2=TopRight, 3=TopMoving, 4=BottomLeft,
+ * 5=BottomCenter, 6=BottomRight, 7=BottomMoving). `&L50` = yellow +
+ * TopLeft, matching the existing status line so debug lines stack
+ * directly under it. Earlier code treated the second digit as a
+ * row number, which scattered the lines across all eight zones. */
+#define DL_LATENCY_PREFIX "&L50&F30 "
+
 size_t dl_latency_render(char *out, size_t out_len) {
     size_t off = 0;
     for (int i = 0; i < DL_LAT__COUNT; ++i) {
         const struct dl_lat_slot *s = &g_slots[i];
         const char *tag = tag_of((dl_lat_call_t)i);
-        int row = 51 + i;
         int n;
         if (s->filled == 0) {
             n = snprintf(out + off, out_len - off,
-                         "&L%d&F30 %s p50= -- p95= -- mx= -- n=%llu e=%llu\n",
-                         row, tag,
+                         DL_LATENCY_PREFIX
+                         "%s p50= -- p95= -- mx= -- n=%llu e=%llu\n",
+                         tag,
                          (unsigned long long)s->n_total,
                          (unsigned long long)s->n_err);
         } else {
             uint16_t p50 = 0, p95 = 0;
             compute_percentiles(s, &p50, &p95);
             n = snprintf(out + off, out_len - off,
-                         "&L%d&F30 %s p50=%3u p95=%3u mx=%3u n=%llu e=%llu\n",
-                         row, tag,
+                         DL_LATENCY_PREFIX
+                         "%s p50=%3u p95=%3u mx=%3u n=%llu e=%llu\n",
+                         tag,
                          (unsigned)p50, (unsigned)p95, (unsigned)s->max_ms,
                          (unsigned long long)s->n_total,
                          (unsigned long long)s->n_err);

@@ -57,11 +57,12 @@ static void flush(dl_osd_t *o) {
     }
 }
 
-/* msposd directive prefix: line 50 (near bottom of frame), font
- * size 30. Without these directives msposd falls back to its boot-
- * default `&F38 &L43` style (huge font, middle of frame), which
- * causes long lines to marquee-scroll left-to-right. Same prefix
- * the reference alink_drone uses. */
+/* msposd directive prefix: `&Lxx` is color*10 + position-zone — here
+ * 5 = yellow, 0 = TopLeft. `&F30` sets font size 30. Without these
+ * directives msposd falls back to its boot-default `&F38 &L43` style
+ * (huge font, "TopMoving" marquee-scroll). Same prefix the reference
+ * alink_drone uses. dl_latency renders with the same prefix so its
+ * lines stack directly under the status line at the top-left. */
 #define DL_OSD_PREFIX "&L50&F30 "
 
 void dl_osd_write_status(dl_osd_t *o, const dl_decision_t *d, int rssi_dBm) {
