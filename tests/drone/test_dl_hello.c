@@ -129,3 +129,43 @@ DL_TEST(hello_announce_flags_sets_vanilla_bit_when_unsupported) {
     DL_ASSERT_EQ((int)n, DL_HELLO_ON_WIRE_SIZE);
     DL_ASSERT_EQ(buf[5] & DL_HELLO_FLAG_VANILLA_WFB_NG, DL_HELLO_FLAG_VANILLA_WFB_NG);
 }
+
+DL_TEST(hello_init_reads_fps_from_waybeam_json) {
+    dl_config_t cfg; setup_cfg(&cfg);
+    /* Force majestic path to fail so only the waybeam JSON read can
+     * succeed — pins the dispatch branch. */
+    strncpy(cfg.hello_majestic_yaml_path,
+            "../tests/drone/fixtures/does_not_exist.yaml",
+            DL_CONF_MAX_STR - 1);
+    strncpy(cfg.encoder_kind, "waybeam", DL_CONF_MAX_STR - 1);
+    strncpy(cfg.hello_waybeam_json_path,
+            "../tests/drone/fixtures/waybeam_basic.json",
+            DL_CONF_MAX_STR - 1);
+    dl_hello_sm_t h;
+    int rc = dl_hello_init(&h, &cfg);
+    DL_ASSERT_EQ(rc, 0);
+    DL_ASSERT_EQ(h.state, DL_HELLO_STATE_ANNOUNCING);
+    DL_ASSERT_EQ(h.fps, 60);
+    DL_ASSERT_EQ(h.mtu_bytes, 3994);
+}
+
+DL_TEST(hello_init_fails_when_waybeam_json_unreadable) {
+    dl_config_t cfg; setup_cfg(&cfg);
+    strncpy(cfg.encoder_kind, "waybeam", DL_CONF_MAX_STR - 1);
+    strncpy(cfg.hello_waybeam_json_path,
+            "../tests/drone/fixtures/does_not_exist.json",
+            DL_CONF_MAX_STR - 1);
+    dl_hello_sm_t h;
+    int rc = dl_hello_init(&h, &cfg);
+    DL_ASSERT_EQ(rc, -1);
+    DL_ASSERT_EQ(h.state, DL_HELLO_STATE_DISABLED);
+}
+
+DL_TEST(hello_init_fails_for_unknown_encoder_kind) {
+    dl_config_t cfg; setup_cfg(&cfg);
+    strncpy(cfg.encoder_kind, "bogus", DL_CONF_MAX_STR - 1);
+    dl_hello_sm_t h;
+    int rc = dl_hello_init(&h, &cfg);
+    DL_ASSERT_EQ(rc, -1);
+    DL_ASSERT_EQ(h.state, DL_HELLO_STATE_DISABLED);
+}
