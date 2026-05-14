@@ -68,6 +68,24 @@ safe_tx_power_dBm  = 20
 safe_bitrate_kbps  = 2000
 # short_gi always false — pinned by the applier regardless of GS input.
 
+# ---- Interleaver capability ----------------------------------------
+# Whether the underlying wfb-ng supports the runtime
+# CMD_SET_INTERLEAVE_DEPTH opcode. True only on the
+# feat/interleaving_uep branch (vendored at drone/src/vendored/tx_cmd.h
+# from upstream SHA 208ec1d).
+#
+# When 0:
+#   - dl-applier never sends CMD_SET_INTERLEAVE_DEPTH.
+#   - The drone reports DL_HELLO_FLAG_VANILLA_WFB_NG (bit 0 of the
+#     HELLO flags byte); the GS pins depth=1 and short-circuits its
+#     depth state machine.
+#   - safe_depth above is harmless (never reaches wfb_tx).
+#
+# Mismatch warning: setting this to 1 against vanilla wfb_tx produces
+# per-tick TX_APPLY_FAIL events on opcode 5 (visible via the debug
+# log when debug_enable = 1).
+interleaving_supported = 1
+
 # ---- Backends -------------------------------------------------------
 wlan_dev             = wlan0
 # encoder_kind — one of: waybeam | majestic | none
