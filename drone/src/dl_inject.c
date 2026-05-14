@@ -23,7 +23,7 @@ static void usage(const char *prog) {
         "         --bitrate KBPS [--roi-qp QP] [--fps FPS] \\\n"
         "         [--idr] [--sequence N]\n"
         "       %s --ping --gs-seq N --gs-mono US [--target HOST:PORT]\n"
-        "       %s --hello --gen-id N --mtu N --fps N [--build-sha N] --dry-run\n"
+        "       %s --hello --gen-id N --mtu N --fps N [--build-sha N] [--hello-flags N] --dry-run\n"
         "       %s --hello-ack --gen-id N --dry-run\n"
         "       %s --dry-run ... (prints hex bytes to stdout; no send)\n",
         prog, prog, prog, prog, prog);
@@ -65,8 +65,9 @@ int main(int argc, char **argv) {
         { "hello-ack", no_argument,       0, 'A' },
         { "gen-id",    required_argument, 0, 'g' },
         { "mtu",       required_argument, 0, 'u' },
-        { "build-sha", required_argument, 0, 'S' },
-        { "help",      no_argument,       0, 'h' },
+        { "build-sha",   required_argument, 0, 'S' },
+        { "hello-flags", required_argument, 0, 'F' },
+        { "help",        no_argument,       0, 'h' },
         { 0 }
     };
 
@@ -97,7 +98,7 @@ int main(int argc, char **argv) {
     dl_hello_ack_t hello_ack = { .version = DL_WIRE_VERSION };
 
     int c;
-    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:Is:Dpq:m:HAg:u:S:h",
+    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:Is:Dpq:m:HAg:u:S:F:h",
                             opts, NULL)) != -1) {
         switch (c) {
             case 't': target = optarg; break;
@@ -130,6 +131,11 @@ int main(int argc, char **argv) {
             case 'S': {
                 unsigned long v = strtoul(optarg, NULL, 0);
                 hello.applier_build_sha = (uint32_t)v;
+                break;
+            }
+            case 'F': {
+                unsigned long v = strtoul(optarg, NULL, 0);
+                hello.flags = (uint8_t)v;
                 break;
             }
             case 'h': usage(argv[0]); return 0;
