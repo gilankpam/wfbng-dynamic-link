@@ -110,3 +110,42 @@ async def test_tunnel_listener_dispatches_hello_to_handler():
     assert received[0].generation_id == 0x42
     assert received[0].mtu_bytes == 1400
     assert received[0].fps == 30
+
+
+def test_default_interleaving_supported_is_true():
+    """Before any HELLO arrives, assume capable (today's default)."""
+    s = DroneConfigState()
+    assert s.interleaving_supported is True
+
+
+def test_hello_without_vanilla_flag_keeps_interleaving_supported_true():
+    from dynamic_link.wire import Hello
+    s = DroneConfigState()
+    s.on_hello(Hello(generation_id=0xCAFEBABE,
+                     mtu_bytes=3994, fps=60,
+                     applier_build_sha=0xDEADBEEF,
+                     flags=0))
+    assert s.interleaving_supported is True
+
+
+def test_hello_with_vanilla_flag_sets_interleaving_supported_false():
+    from dynamic_link.wire import Hello, HELLO_FLAG_VANILLA_WFB_NG
+    s = DroneConfigState()
+    s.on_hello(Hello(generation_id=0xCAFEBABE,
+                     mtu_bytes=3994, fps=60,
+                     applier_build_sha=0xDEADBEEF,
+                     flags=HELLO_FLAG_VANILLA_WFB_NG))
+    assert s.interleaving_supported is False
+
+
+def test_hello_flips_back_to_true_on_reboot_into_capable_build():
+    """A drone rebuilt with the custom branch (new generation_id, flags=0)
+    must clear the vanilla flag."""
+    from dynamic_link.wire import Hello, HELLO_FLAG_VANILLA_WFB_NG
+    s = DroneConfigState()
+    s.on_hello(Hello(generation_id=0x1111, mtu_bytes=3994, fps=60,
+                     flags=HELLO_FLAG_VANILLA_WFB_NG))
+    assert s.interleaving_supported is False
+    s.on_hello(Hello(generation_id=0x2222, mtu_bytes=3994, fps=60,
+                     flags=0))
+    assert s.interleaving_supported is True

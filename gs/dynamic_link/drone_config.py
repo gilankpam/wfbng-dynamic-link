@@ -12,7 +12,7 @@ import enum
 import logging
 from dataclasses import dataclass
 
-from .wire import Hello, HelloAck
+from .wire import Hello, HelloAck, HELLO_FLAG_VANILLA_WFB_NG
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +36,11 @@ class DroneConfigState:
     mtu_bytes: int | None = None
     fps: int | None = None
     applier_build_sha: int | None = None
+    # Derived from HELLO flags. True until a HELLO clears it; once a
+    # vanilla-flagged HELLO arrives, stays False until a non-vanilla
+    # HELLO replaces it (e.g. drone rebuilt with the custom branch and
+    # rebooted → new generation_id, flags cleared).
+    interleaving_supported: bool = True
 
     def is_synced(self) -> bool:
         return self.state is State.SYNCED
@@ -46,8 +51,9 @@ class DroneConfigState:
         if self.state is State.AWAITING:
             self._adopt(h)
             log.info(
-                "drone_config sync gen=0x%08x mtu=%d fps=%d sha=0x%08x",
+                "drone_config sync gen=0x%08x mtu=%d fps=%d sha=0x%08x interleaver=%s",
                 h.generation_id, h.mtu_bytes, h.fps, h.applier_build_sha,
+                "enabled" if self.interleaving_supported else "vanilla",
             )
             return DroneConfigEvent.SYNCED
         # SYNCED
@@ -55,8 +61,9 @@ class DroneConfigState:
             return DroneConfigEvent.ALREADY_SYNCED
         log.warning(
             "drone_reboot_detected old_gen=0x%08x new_gen=0x%08x "
-            "new_mtu=%d new_fps=%d",
+            "new_mtu=%d new_fps=%d new_interleaver=%s",
             self.generation_id, h.generation_id, h.mtu_bytes, h.fps,
+            "enabled" if (h.flags & HELLO_FLAG_VANILLA_WFB_NG) == 0 else "vanilla",
         )
         self._adopt(h)
         return DroneConfigEvent.REBOOT_DETECTED
@@ -74,3 +81,6 @@ class DroneConfigState:
         self.mtu_bytes = h.mtu_bytes
         self.fps = h.fps
         self.applier_build_sha = h.applier_build_sha
+        self.interleaving_supported = (
+            (h.flags & HELLO_FLAG_VANILLA_WFB_NG) == 0
+        )
