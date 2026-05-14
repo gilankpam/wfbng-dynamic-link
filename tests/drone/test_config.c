@@ -142,3 +142,42 @@ DL_TEST(test_config_parses_debug_block) {
     DL_ASSERT(!dl_config_dbg_log_resolved(&c));
     unlink(path);
 }
+
+DL_TEST(config_interleaving_supported_default_true) {
+    dl_config_t cfg;
+    dl_config_defaults(&cfg);
+    DL_ASSERT_EQ(cfg.interleaving_supported, true);
+}
+
+DL_TEST(config_interleaving_supported_parses_zero) {
+    char path[] = "/tmp/dl_test_conf_XXXXXX";
+    int fd = mkstemp(path);
+    DL_ASSERT(fd >= 0);
+    const char *content = "interleaving_supported = 0\n";
+    DL_ASSERT_EQ((int)write(fd, content, strlen(content)), (int)strlen(content));
+    close(fd);
+
+    dl_config_t cfg;
+    dl_config_defaults(&cfg);
+    int rc = dl_config_load(path, &cfg);
+    unlink(path);
+    DL_ASSERT_EQ(rc, 0);
+    DL_ASSERT_EQ(cfg.interleaving_supported, false);
+}
+
+DL_TEST(config_interleaving_supported_parses_one) {
+    char path[] = "/tmp/dl_test_conf_XXXXXX";
+    int fd = mkstemp(path);
+    DL_ASSERT(fd >= 0);
+    const char *content = "interleaving_supported = 1\n";
+    DL_ASSERT_EQ((int)write(fd, content, strlen(content)), (int)strlen(content));
+    close(fd);
+
+    dl_config_t cfg;
+    dl_config_defaults(&cfg);
+    cfg.interleaving_supported = false;
+    int rc = dl_config_load(path, &cfg);
+    unlink(path);
+    DL_ASSERT_EQ(rc, 0);
+    DL_ASSERT_EQ(cfg.interleaving_supported, true);
+}

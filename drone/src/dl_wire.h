@@ -32,8 +32,13 @@
 #define DL_HELLO_ACK_PAYLOAD_SIZE   28
 #define DL_HELLO_ACK_ON_WIRE_SIZE   32            /* payload + 4-byte CRC */
 
-/* flag bits */
+/* flag bits (decision packet) */
 #define DL_FLAG_IDR_REQUEST 0x01u
+
+/* HELLO flag bits. Bit 0 = "vanilla wfb-ng" — when set the drone is
+ * running upstream wfb-ng (no CMD_SET_INTERLEAVE_DEPTH). Bit clear
+ * (today's default) = the feat/interleaving_uep branch. */
+#define DL_HELLO_FLAG_VANILLA_WFB_NG 0x01u
 
 /* Parsed, host-byte-order representation of a decision packet. */
 typedef struct {

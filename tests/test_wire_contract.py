@@ -212,3 +212,34 @@ def test_contract_hello_ack():
     )
     py_bytes = encode_hello_ack(HelloAck(generation_id_echo=0x12345678))
     assert c_bytes == py_bytes
+
+
+def test_hello_flag_vanilla_constant():
+    from dynamic_link.wire import HELLO_FLAG_VANILLA_WFB_NG
+    assert HELLO_FLAG_VANILLA_WFB_NG == 0x01
+
+
+def test_contract_hello_vanilla_flag():
+    """Round-trip a HELLO with the vanilla bit set; C and Python encoders
+    must produce byte-identical output."""
+    from dynamic_link.wire import HELLO_FLAG_VANILLA_WFB_NG
+    c_bytes = _dl_inject_hex(
+        hello=True,
+        gen_id="0xcafebabe",
+        mtu=3994,
+        fps=60,
+        build_sha="0xdeadbeef",
+        hello_flags=f"0x{HELLO_FLAG_VANILLA_WFB_NG:02x}",
+    )
+    py_bytes = encode_hello(
+        Hello(generation_id=0xCAFEBABE,
+              mtu_bytes=3994,
+              fps=60,
+              applier_build_sha=0xDEADBEEF,
+              flags=HELLO_FLAG_VANILLA_WFB_NG)
+    )
+    assert c_bytes == py_bytes, (
+        f"hello-vanilla mismatch:\n  C : {c_bytes.hex()}\n  Py: {py_bytes.hex()}"
+    )
+    # Byte 5 is the flags byte.
+    assert py_bytes[5] == HELLO_FLAG_VANILLA_WFB_NG

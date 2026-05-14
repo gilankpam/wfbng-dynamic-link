@@ -566,6 +566,8 @@ class TrailingLoop:
         signals: Signals,
         current_depth: int,
         ts_ms: float,
+        *,
+        interleaving_supported: bool = True,
     ) -> tuple[int, bool]:
         """Decide depth + IDR for this tick.
 
@@ -574,6 +576,19 @@ class TrailingLoop:
         loop selected — the trailing loop never moves it.
         """
         self._reasons = []
+
+        if not interleaving_supported:
+            # Vanilla wfb-ng: depth is structurally 1 (no interleaver
+            # exists). Skip the entire depth state machine — bootstrap,
+            # refine, and step-down all become no-ops. IDR signalling
+            # still runs because it's independent of the interleaver.
+            idr = signals.residual_loss_w > 0.0
+            if idr:
+                self._reasons.append(
+                    f"residual_loss={signals.residual_loss_w:.3f} +IDR (vanilla)"
+                )
+            return 1, idr
+
         st = self.state
         had_loss = signals.residual_loss_w > 0.0
 
@@ -857,6 +872,11 @@ class Policy:
 
         new_depth, idr = self.trailing.tick(
             signals, self.state.depth, ts_ms,
+            interleaving_supported=(
+                self.drone_config.interleaving_supported
+                if self.drone_config is not None
+                else True
+            ),
         )
 
         # Latency-budget gate — defensive last-resort. Runs against

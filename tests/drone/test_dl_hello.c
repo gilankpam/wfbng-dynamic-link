@@ -106,3 +106,26 @@ DL_TEST(hello_build_announce_sets_packet_fields_from_init) {
     DL_ASSERT_EQ(decoded.fps, 60);
     DL_ASSERT_EQ(decoded.generation_id, h.generation_id);
 }
+
+DL_TEST(hello_announce_flags_zero_when_interleaving_supported) {
+    dl_config_t cfg; setup_cfg(&cfg);
+    cfg.interleaving_supported = true;
+    dl_hello_sm_t h;
+    DL_ASSERT_EQ(dl_hello_init(&h, &cfg), 0);
+    uint8_t buf[DL_HELLO_ON_WIRE_SIZE];
+    size_t n = dl_hello_build_announce(&h, buf, sizeof(buf));
+    DL_ASSERT_EQ((int)n, DL_HELLO_ON_WIRE_SIZE);
+    /* Byte 5 is the flags field. Capable drone → zero. */
+    DL_ASSERT_EQ(buf[5], 0x00);
+}
+
+DL_TEST(hello_announce_flags_sets_vanilla_bit_when_unsupported) {
+    dl_config_t cfg; setup_cfg(&cfg);
+    cfg.interleaving_supported = false;
+    dl_hello_sm_t h;
+    DL_ASSERT_EQ(dl_hello_init(&h, &cfg), 0);
+    uint8_t buf[DL_HELLO_ON_WIRE_SIZE];
+    size_t n = dl_hello_build_announce(&h, buf, sizeof(buf));
+    DL_ASSERT_EQ((int)n, DL_HELLO_ON_WIRE_SIZE);
+    DL_ASSERT_EQ(buf[5] & DL_HELLO_FLAG_VANILLA_WFB_NG, DL_HELLO_FLAG_VANILLA_WFB_NG);
+}

@@ -24,6 +24,22 @@ No other edits. Do not mutate struct layout; if wfb-ng's layout
 changes we need a refresh (see below) and a matching contract-version
 bump upstream.
 
+## Vanilla wfb-ng compatibility
+
+The vendored header supports both wfb-ng builds:
+
+- The `cmd_req_t` layouts for opcodes 1 (`CMD_SET_FEC`) and 2
+  (`CMD_SET_RADIO`) are byte-identical between vanilla wfb-ng and the
+  `feat/interleaving_uep` branch.
+- Opcode 5 (`CMD_SET_INTERLEAVE_DEPTH`) is custom-branch only. The
+  applier gates emission on `dl_config_t.interleaving_supported`, so
+  vanilla deployments never put opcode 5 on the wire.
+
+`WFB_IPC_CONTRACT_VERSION = 2` in this vendored copy reflects the
+custom branch's value. Vanilla wfb-ng's JSON stats feed advertises
+`contract_version = 1`; the GS accepts both (see
+`gs/dynamic_link/stats_client.py::CONTRACT_VERSIONS_SUPPORTED`).
+
 ## Refresh procedure
 
 When wfb-ng bumps `WFB_IPC_CONTRACT_VERSION` or reshapes `cmd_req_t`

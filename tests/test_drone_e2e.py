@@ -910,3 +910,62 @@ def test_osd_debug_latency_idr_throttle_not_counted(tmp_path: Path):
         line = idr_line()
         assert line is not None
         assert "n=1" in line, f"expected n=1 (throttled), got line: {line!r}"
+
+
+# -----------------------------------------------------------------
+# Vanilla wfb-ng mode (interleaving_supported=0).
+# -----------------------------------------------------------------
+
+def test_vanilla_mode_never_emits_set_interleave_depth(tmp_path: Path):
+    """With interleaving_supported=0, the applier must NOT send opcode
+    5 to wfb_tx — even when decisions arrive with depth != prev.depth.
+    """
+    with _sandbox(tmp_path, interleaving_supported=0) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2,
+                bitrate=12000, fps=60, sequence=1)
+        # First decision: FEC + RADIO arrive (depth skipped in vanilla mode).
+        assert _wait_until(lambda: len(s["wfb"].received) >= 2), \
+            f"wfb_tx got {s['wfb'].received}"
+
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=3,
+                bitrate=12000, fps=60, sequence=2)
+        # Second decision changes only depth — the vanilla applier must
+        # not emit anything at all. Wait past any plausible dispatch
+        # delay to confirm opcode 5 never shows up.
+        time.sleep(0.25)
+
+        cmd_ids = {r["cmd_id"] for r in s["wfb"].received}
+        assert CMD_SET_FEC in cmd_ids
+        assert CMD_SET_RADIO in cmd_ids
+        assert CMD_SET_INTERLEAVE_DEPTH not in cmd_ids, \
+            f"vanilla applier should never emit opcode 5, got {s['wfb'].received}"
+
+
+def test_vanilla_mode_hello_sets_vanilla_flag(tmp_path: Path):
+    """The HELLO emitted by a vanilla-config applier must have the
+    vanilla bit set in byte 5."""
+    from dynamic_link.wire import HELLO_FLAG_VANILLA_WFB_NG
+    wfb_yaml = tmp_path / "wfb.yaml"
+    wfb_yaml.write_text("wireless:\n  mlink: 3994\n")
+    majestic_yaml = tmp_path / "majestic.yaml"
+    majestic_yaml.write_text("video0:\n  fps: 60\n")
+
+    with _sandbox(
+        tmp_path,
+        interleaving_supported=0,
+        extra_drone_conf={
+            "hello_wfb_yaml_path": str(wfb_yaml),
+            "hello_majestic_yaml_path": str(majestic_yaml),
+            "hello_announce_initial_ms": 100,
+        },
+    ) as s:
+        hello = s.recv_one_hello(timeout=3.0)
+        assert hello is not None, "no HELLO arrived within 3 s"
+        assert hello[5] & HELLO_FLAG_VANILLA_WFB_NG, \
+            f"expected vanilla bit set, got byte5=0x{hello[5]:02x}"

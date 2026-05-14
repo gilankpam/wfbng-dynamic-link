@@ -68,9 +68,41 @@ def test_parse_rx_record():
     assert ev.session.contract_version == 2
 
 
-def test_parse_rx_rejects_bad_contract_version():
+def test_parse_rx_accepts_contract_version_1():
+    """Vanilla wfb-ng emits contract_version=1; we must accept it."""
+    ev = parse_record(_rx_record(contract_version=1))
+    assert isinstance(ev, RxEvent)
+    assert ev.session is not None
+    assert ev.session.contract_version == 1
+
+
+def test_parse_rx_rejects_unknown_contract_version():
+    """Versions outside {1, 2} still raise."""
     with pytest.raises(ContractVersionError):
-        parse_record(_rx_record(contract_version=1))
+        parse_record(_rx_record(contract_version=99))
+
+
+def test_parse_session_defaults_interleave_depth_when_missing():
+    """Vanilla wfb-ng's session record omits interleave_depth — default
+    it to 1 rather than raising KeyError."""
+    raw = {
+        "type": "rx",
+        "timestamp": 1.0,
+        "id": "video rx",
+        "tx_wlan": 0,
+        "packets": {"all": [10, 100]},
+        "rx_ant_stats": [],
+        "session": {
+            "fec_type": "VDM_RS",
+            "fec_k": 8, "fec_n": 12, "epoch": 1,
+            "contract_version": 1,
+            # interleave_depth deliberately absent
+        },
+    }
+    ev = parse_record(raw)
+    assert isinstance(ev, RxEvent)
+    assert ev.session is not None
+    assert ev.session.interleave_depth == 1
 
 
 def test_parse_new_session():

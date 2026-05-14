@@ -330,3 +330,10 @@ DL_TEST(wire_hello_ack_bad_version_rejected) {
     DL_ASSERT_EQ(dl_wire_decode_hello_ack(buf, sizeof(buf), &out),
                  DL_DECODE_BAD_VERSION);
 }
+
+DL_TEST(hello_flag_vanilla_macro_value) {
+    /* Bit 0 of the HELLO flags byte. Wire-compatible because old drones
+     * always set flags = 0, which means "capable" — matching today's
+     * behavior. New vanilla drones OR this bit to declare themselves. */
+    DL_ASSERT_EQ(DL_HELLO_FLAG_VANILLA_WFB_NG, 0x01u);
+}

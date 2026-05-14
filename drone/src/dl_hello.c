@@ -65,16 +65,21 @@ int dl_hello_init(dl_hello_sm_t *h, const dl_config_t *cfg) {
     h->state = DL_HELLO_STATE_ANNOUNCING;
     h->announce_count = 0;
     h->keepalives_without_ack = 0;
-    dl_log_info("dl_hello: ANNOUNCING gen=0x%08x mtu=%u fps=%u",
-                h->generation_id, h->mtu_bytes, h->fps);
+    dl_log_info("dl_hello: ANNOUNCING gen=0x%08x mtu=%u fps=%u interleaver=%s",
+                h->generation_id, h->mtu_bytes, h->fps,
+                cfg->interleaving_supported ? "enabled" : "vanilla");
     return 0;
 }
 
 size_t dl_hello_build_announce(dl_hello_sm_t *h, uint8_t *buf, size_t buflen) {
     if (h->state == DL_HELLO_STATE_DISABLED) return 0;
+    uint8_t flags = 0;
+    if (h->cfg && !h->cfg->interleaving_supported) {
+        flags |= DL_HELLO_FLAG_VANILLA_WFB_NG;
+    }
     dl_hello_t pkt = {
         .version = DL_WIRE_VERSION,
-        .flags = 0,
+        .flags = flags,
         .generation_id = h->generation_id,
         .mtu_bytes = h->mtu_bytes,
         .fps = h->fps,
