@@ -9,7 +9,7 @@
  * returns 0. On failure returns a negative errno-ish code: negative
  * errno on open failure (typically -ENOENT), -EINVAL for any
  * structural / parsing problem (block not found, key not found
- * inside block, non-integer value, file too large, etc.).
+ * inside block, non-integer value, file larger than 64 KB, etc.).
  * *out is only written on success. */
 int dl_json_get_int(const char *path,
                     const char *block,

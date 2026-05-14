@@ -66,3 +66,21 @@ DL_TEST(json_accepts_zero_value) {
     DL_ASSERT_EQ(rc, 0);
     DL_ASSERT_EQ(v, 0);
 }
+
+DL_TEST(json_rejects_int_overflow) {
+    int v = 0;
+    int rc = dl_json_get_int(FIX("waybeam_overflow.json"), "video0", "fps", &v);
+    DL_ASSERT_EQ(rc, -EINVAL);
+}
+
+DL_TEST(json_ignores_block_name_appearing_as_string_value) {
+    /* "video0" appears as a string value inside the `record` block.
+     * The scanner must skip past it (skip_string atomically consumes
+     * the entire `"video0"` string) and only match the real
+     * top-level `"video0"` key, returning fps=90. */
+    int v = -1;
+    int rc = dl_json_get_int(FIX("waybeam_video0_as_value.json"),
+                             "video0", "fps", &v);
+    DL_ASSERT_EQ(rc, 0);
+    DL_ASSERT_EQ(v, 90);
+}
