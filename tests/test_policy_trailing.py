@@ -403,3 +403,58 @@ def test_starvation_holds_at_floor_no_climb():
         d = p.tick(_starved_sigs(ts, link_starved=True))
         ts += 100.0
         assert d.mcs == 0
+
+
+# ── TrailingLoop: vanilla wfb-ng (no interleaver) ───────────────────────────
+
+def test_vanilla_mode_pins_depth_at_one_even_under_sustained_loss():
+    """When the drone is vanilla wfb-ng, TrailingLoop must NOT raise depth
+    even when both bootstrap and refine triggers fire."""
+    cfg = PolicyConfig()
+    tl = TrailingLoop(cfg)
+    # First feed several windows so sustained_loss() trips, then a tick
+    # with strong burst/holdoff signals. Without the vanilla guard this
+    # would raise depth to 2.
+    for i in range(cfg.sustained_loss_windows):
+        tl.tick(
+            _sigs(residual_loss_w=0.05, fec_work=0.20, ts=i * 0.1),
+            current_depth=1, ts_ms=i * 100.0,
+            interleaving_supported=False,
+        )
+    depth, idr = tl.tick(
+        _sigs(residual_loss_w=0.05, fec_work=0.20,
+              burst_rate=5.0, holdoff_rate=2.0, ts=1.0),
+        current_depth=1, ts_ms=1000.0,
+        interleaving_supported=False,
+    )
+    assert depth == 1, "vanilla mode must pin depth at 1"
+    # IDR signalling still works in vanilla mode.
+    assert idr is True
+
+
+def test_vanilla_mode_does_not_step_down_below_one():
+    """With current_depth=1 and vanilla, depth stays at 1 across a
+    clean window streak."""
+    cfg = PolicyConfig()
+    tl = TrailingLoop(cfg)
+    for i in range(cfg.clean_windows_for_depth_stepdown + 5):
+        depth, _ = tl.tick(
+            _idle_sigs(i * 100.0),
+            current_depth=1, ts_ms=i * 100.0,
+            interleaving_supported=False,
+        )
+        assert depth == 1
+
+
+def test_capable_mode_still_raises_depth_after_change():
+    """Regression: default (interleaving_supported=True kwarg or omitted)
+    keeps the existing burst+holdoff bootstrap firing."""
+    cfg = PolicyConfig()
+    tl = TrailingLoop(cfg)
+    depth, _ = tl.tick(
+        _sigs(residual_loss_w=0.02, burst_rate=5.0,
+              holdoff_rate=2.0, ts=0.3),
+        current_depth=1, ts_ms=300.0,
+        interleaving_supported=True,
+    )
+    assert depth == 2
