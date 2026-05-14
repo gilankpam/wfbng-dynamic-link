@@ -19,6 +19,7 @@
 #include "dl_dbg.h"
 #include "dl_dedup.h"
 #include "dl_hello.h"
+#include "dl_latency.h"
 #include "dl_log.h"
 #include "dl_mavlink.h"
 #include "dl_osd.h"
@@ -250,6 +251,7 @@ int main(int argc, char **argv) {
         return 4;
     }
 
+    dl_latency_init();
     dl_backend_tx_t    *bt = dl_backend_tx_open(&cfg);
     dl_backend_radio_t *br = dl_backend_radio_open(&cfg);
     dl_backend_enc_t   *be = dl_backend_enc_open(&cfg);

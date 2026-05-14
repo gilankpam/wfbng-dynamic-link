@@ -25,6 +25,7 @@ void dl_config_defaults(dl_config_t *cfg) {
     cfg->osd_enable = true;
     strncpy(cfg->osd_msg_path, "/tmp/MSPOSD.msg", DL_CONF_MAX_STR - 1);
     cfg->osd_update_interval_ms = 1000;
+    cfg->osd_debug_latency = false;
 
     cfg->health_timeout_ms = 10000;
     cfg->safe_k = 8;
@@ -173,6 +174,7 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "osd_enable") == 0)         SET_BOOL(osd_enable);
         else if (strcmp(key, "osd_msg_path") == 0)       SET_STR(osd_msg_path);
         else if (strcmp(key, "osd_update_interval_ms") == 0) SET_INT_RANGED(osd_update_interval_ms, uint32_t, 100, 60000);
+        else if (strcmp(key, "osd_debug_latency") == 0)      SET_BOOL(osd_debug_latency);
         else if (strcmp(key, "health_timeout_ms") == 0)  SET_INT_RANGED(health_timeout_ms, uint32_t, 500, 120000);
         else if (strcmp(key, "safe_k") == 0)             SET_INT_RANGED(safe_k, uint8_t, 1, 32);
         else if (strcmp(key, "safe_n") == 0)             SET_INT_RANGED(safe_n, uint8_t, 2, 255);

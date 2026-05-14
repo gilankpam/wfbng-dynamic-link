@@ -49,6 +49,12 @@ osd_enable              = 1
 osd_msg_path            = /tmp/MSPOSD.msg
 osd_update_interval_ms  = 1000
 
+# Debug OSD: per-apply-call latency stats (p50/p95/max/n/err) for the
+# six parameter-change paths — FEC, DEPTH, RADIO, TXPWR, ENC, IDR.
+# Off by default; flip to 1 on a single drone for diagnosis. Has no
+# effect when osd_enable = 0 (no file is written at all in that case).
+osd_debug_latency       = 0
+
 # ---- GS-link watchdog (failsafe 1) ----------------------------------
 # If no decision packet arrives for this long, push safe_defaults once
 # and stop until a fresh decision arrives.

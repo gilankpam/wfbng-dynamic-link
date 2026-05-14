@@ -128,8 +128,15 @@ static struct dl_lat_slot g_slots[DL_LAT__COUNT];
 
 ### Render format
 
-Each line uses the msposd directive prefix `&L<row>&F30 ` for rows
-51–56 (just under the existing status line at row 50). Per-line
+Each line uses the msposd directive prefix `&L50&F30 ` — the same
+prefix the existing status line uses, where `&L50` decodes as
+*color = 5 (yellow), position zone = 0 (TopLeft)*. Multiple
+messages sharing a layout zone stack in file-write order, so the
+debug lines appear directly under the status line at the top-left.
+(An earlier draft of this spec incorrectly treated `&Lxx`'s second
+digit as a row number, which would have scattered each line to a
+different screen corner. See the msposd `&Lxx` parser in `osd.c`:
+`msg_layout = value % 10; msg_colour = value / 10;`.) Per-line
 template:
 
 ```

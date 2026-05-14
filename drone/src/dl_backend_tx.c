@@ -1,6 +1,7 @@
 /* dl_backend_tx.c — speak the wfb-ng tx_cmd.h protocol on UDP. */
 #include "dl_backend_tx.h"
 #include "dl_dbg.h"
+#include "dl_latency.h"
 #include "dl_log.h"
 #include "vendored/tx_cmd.h"
 
@@ -172,9 +173,12 @@ static int send_fec(dl_backend_tx_t *bt, uint8_t k, uint8_t n) {
     cmd_resp_t resp;
     req.u.cmd_set_fec.k = k;
     req.u.cmd_set_fec.n = n;
-    return send_and_recv(bt->fd, &req,
-                         offsetof(cmd_req_t, u) + sizeof(req.u.cmd_set_fec),
-                         &resp, "set_fec");
+    dl_lat_handle_t h = dl_latency_begin(DL_LAT_FEC);
+    int rc = send_and_recv(bt->fd, &req,
+                           offsetof(cmd_req_t, u) + sizeof(req.u.cmd_set_fec),
+                           &resp, "set_fec");
+    dl_latency_end(h, rc);
+    return rc;
 }
 
 static int send_depth(dl_backend_tx_t *bt, uint8_t depth) {
@@ -184,10 +188,13 @@ static int send_depth(dl_backend_tx_t *bt, uint8_t depth) {
     };
     cmd_resp_t resp;
     req.u.cmd_set_interleave_depth.depth = depth;
-    return send_and_recv(bt->fd, &req,
-                         offsetof(cmd_req_t, u) +
-                             sizeof(req.u.cmd_set_interleave_depth),
-                         &resp, "set_interleave_depth");
+    dl_lat_handle_t h = dl_latency_begin(DL_LAT_DPTH);
+    int rc = send_and_recv(bt->fd, &req,
+                           offsetof(cmd_req_t, u) +
+                               sizeof(req.u.cmd_set_interleave_depth),
+                           &resp, "set_interleave_depth");
+    dl_latency_end(h, rc);
+    return rc;
 }
 
 static int send_radio(dl_backend_tx_t *bt, uint8_t mcs, uint8_t bandwidth) {
@@ -200,9 +207,12 @@ static int send_radio(dl_backend_tx_t *bt, uint8_t mcs, uint8_t bandwidth) {
     req.u.cmd_set_radio.mcs_index  = mcs;
     req.u.cmd_set_radio.vht_mode   = false;
     req.u.cmd_set_radio.vht_nss    = 1;
-    return send_and_recv(bt->fd, &req,
-                         offsetof(cmd_req_t, u) + sizeof(req.u.cmd_set_radio),
-                         &resp, "set_radio");
+    dl_lat_handle_t h = dl_latency_begin(DL_LAT_RADIO);
+    int rc = send_and_recv(bt->fd, &req,
+                           offsetof(cmd_req_t, u) + sizeof(req.u.cmd_set_radio),
+                           &resp, "set_radio");
+    dl_latency_end(h, rc);
+    return rc;
 }
 
 int dl_backend_tx_apply(dl_backend_tx_t *bt,
