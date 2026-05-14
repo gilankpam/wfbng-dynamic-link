@@ -54,6 +54,13 @@ typedef struct {
     int8_t   safe_tx_power_dBm;
     uint16_t safe_bitrate_kbps;
 
+    /* Whether the underlying wfb_tx supports CMD_SET_INTERLEAVE_DEPTH.
+     * True (default) on the feat/interleaving_uep branch. Set to false
+     * for upstream/vanilla wfb-ng builds — the applier then never
+     * emits opcode 5, and HELLO declares the capability to the GS via
+     * DL_HELLO_FLAG_VANILLA_WFB_NG. */
+    bool     interleaving_supported;
+
     /* Backends. */
     char     wlan_dev[DL_CONF_MAX_STR];
     char     encoder_kind[DL_CONF_MAX_STR];
