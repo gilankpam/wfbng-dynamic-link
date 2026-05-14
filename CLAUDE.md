@@ -1,10 +1,8 @@
 # CLAUDE.md — repo conventions and gotchas for Claude
 
 Read this before touching anything. Quick-reference notes, not a
-design doc — for that see `docs/dynamic-link-design.md`, which is the
-authoritative spec, and the phase-specific companions
-`docs/phase0-implementation.md`, `docs/phase1-implementation.md`,
-`docs/phase2-implementation.md` (write these as phases land).
+design doc — per-feature specs and implementation plans live under
+`docs/superpowers/specs/` and `docs/superpowers/plans/`.
 
 ## What this project is
 
@@ -115,6 +113,11 @@ Edits the operator must make before we run end-to-end:
    to send HELLO and the GS stays in safe_defaults.
 4. `/etc/majestic.yaml` must contain `video0.fps: <integer>` —
    same constraint as above, on the FPS side.
+5. `drone.conf` must set `interleaving_supported = 0` if the drone is
+   running upstream/vanilla wfb-ng. Default is 1 (custom
+   `feat/interleaving_uep` branch). Mismatch produces per-tick
+   `TX_APPLY_FAIL` events on `set_interleave_depth` when set wrong on
+   vanilla; degraded loss-recovery when set wrong on the custom branch.
 
 Call these out explicitly in any user-facing doc; they're easy to
 miss and the failures are silent.
@@ -215,8 +218,9 @@ moves.
   private surface.
 - Don't add libraries lightly on the drone side. The drone image is
   resource-constrained; the design explicitly avoids libcurl,
-  libnl, libmavlink. Check `docs/dynamic-link-design.md` §2
-  "Why the asymmetry" before adding anything.
+  libnl, libmavlink — the GS has Python on a full Linux OS, the drone
+  has C on a thin OpenIPC image. Weigh image size and boot time before
+  adding anything.
 - Don't write a shared "contract file" between C and Python wire
   encoders. The two test fixtures (static byte-layout assertions +
   dynamic dl-inject --dry-run diff) are the whole contract.

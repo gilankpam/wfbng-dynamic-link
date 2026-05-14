@@ -1,10 +1,9 @@
 # dynamic-link
 
 Adaptive link controller for wfb-ng — separate repo, pure consumer of
-wfb-ng's already-stable interfaces. See `docs/dynamic-link-design.md` for
-the full design. Implementation notes per phase live at
-`docs/phase0-implementation.md` (GS observer), `docs/phase2-implementation.md`
-(end-to-end wiring), `docs/phase3-implementation.md` (post-flight debug suite).
+wfb-ng's already-stable interfaces. Per-feature specs and
+implementation plans live under `docs/superpowers/specs/` and
+`docs/superpowers/plans/`.
 
 Two components:
 
@@ -44,6 +43,13 @@ for us:
 
 Both are in `wfb-ng/wfb_ng/conf/master.cfg`. Restart wfb-ng after
 editing.
+
+3. **wfb-ng build**: if your drone is running upstream/vanilla wfb-ng
+   (not the `feat/interleaving_uep` branch), set
+   `interleaving_supported = 0` in `drone.conf`. The applier will then
+   never emit `CMD_SET_INTERLEAVE_DEPTH` and the GS will pin
+   `depth = 1`. See `docs/superpowers/specs/2026-05-14-vanilla-wfb-ng-support-design.md`
+   for the full rationale.
 
 ## GS install and run
 
@@ -141,7 +147,7 @@ GS sends decisions to the drone's wfb-ng TUN IP (`10.5.0.2:5800` by
 default — mirrors `drone.conf:listen_port`). Nothing tunnel-specific
 in the code: `sendto()` on one side, `recvfrom()` on the other; the
 kernel routes via wfb-ng's `gs-wfb` / `drone-wfb` TUN interfaces.
-Details in `docs/phase2-implementation.md`.
+Details in `docs/superpowers/specs/`.
 
 ## Debugging
 
@@ -169,11 +175,10 @@ flight-controller telemetry.
 
 ## Port-naming caveat
 
-Design doc §6 refers to the stats endpoint as `stats_port`. In
-wfb-ng's `master.cfg` that name is the **msgpack** feed wfb-cli uses
-(8002/8003); the **JSON** feed dynamic-link subscribes to is bound
-to `api_port` (8102/8103). The sample config points at 8103 by
-default via the neutral endpoint-URL form.
+In wfb-ng's `master.cfg`, `stats_port` is the **msgpack** feed
+wfb-cli uses (8002/8003); the **JSON** feed dynamic-link subscribes
+to is bound to `api_port` (8102/8103). The sample config points at
+8103 by default via the neutral endpoint-URL form.
 
 ## Tests
 
@@ -246,5 +251,5 @@ packaging/
 
 tests/                   pytest suite (unit + e2e)
 tests/drone/             C unit tests (tests/drone/*.c, run via `make -C drone test`)
-docs/                    Design doc + per-phase implementation notes
+docs/superpowers/        Per-feature specs and implementation plans
 ```
