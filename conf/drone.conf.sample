@@ -88,7 +88,11 @@ interleaving_supported = 1
 
 # ---- Backends -------------------------------------------------------
 wlan_dev             = wlan0
-# encoder_kind — one of: waybeam | majestic | none
+# encoder_kind — majestic (default) | waybeam. Any other value
+# (including `none`) causes dl_hello_init to fail loudly at boot:
+# the applier keeps running and dl-inject still works, but DLHE is
+# suppressed and the GS stays in safe_defaults until the operator
+# picks one of the supported encoders and restarts.
 encoder_kind         = majestic
 encoder_host         = 127.0.0.1
 encoder_port         = 80
