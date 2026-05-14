@@ -212,3 +212,8 @@ def test_contract_hello_ack():
     )
     py_bytes = encode_hello_ack(HelloAck(generation_id_echo=0x12345678))
     assert c_bytes == py_bytes
+
+
+def test_hello_flag_vanilla_constant():
+    from dynamic_link.wire import HELLO_FLAG_VANILLA_WFB_NG
+    assert HELLO_FLAG_VANILLA_WFB_NG == 0x01

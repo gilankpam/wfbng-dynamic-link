@@ -40,6 +40,11 @@ PAYLOAD_SIZE     = 28
 ON_WIRE_SIZE     = 32
 FLAG_IDR_REQUEST = 0x01
 
+# HELLO flag bits — mirrors drone/src/dl_wire.h.
+# Bit 0 = "vanilla wfb-ng" (no CMD_SET_INTERLEAVE_DEPTH). Bit clear =
+# the feat/interleaving_uep branch (today's default).
+HELLO_FLAG_VANILLA_WFB_NG = 0x01
+
 # Phase 3 timesync packets carried over the same tunnel UDP socket.
 PING_MAGIC          = 0x444C5047    # 'DLPG'
 PING_PAYLOAD_SIZE   = 20
