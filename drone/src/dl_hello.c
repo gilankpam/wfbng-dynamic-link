@@ -1,6 +1,7 @@
 /* dl_hello.c — see dl_hello.h. */
 #include "dl_hello.h"
 #include "dl_log.h"
+#include "dl_json_get.h"
 #include "dl_yaml_get.h"
 
 #include <errno.h>
@@ -47,11 +48,25 @@ int dl_hello_init(dl_hello_sm_t *h, const dl_config_t *cfg) {
     }
 
     int fps = 0;
-    rc = dl_yaml_get_int(cfg->hello_majestic_yaml_path,
-                         "video0", "fps", &fps);
-    if (rc != 0) {
-        dl_log_err("dl_hello: failed to read fps (%s video0.fps): %d",
-                   cfg->hello_majestic_yaml_path, rc);
+    if (strcmp(cfg->encoder_kind, "majestic") == 0) {
+        rc = dl_yaml_get_int(cfg->hello_majestic_yaml_path,
+                             "video0", "fps", &fps);
+        if (rc != 0) {
+            dl_log_err("dl_hello: failed to read fps (%s video0.fps): %d",
+                       cfg->hello_majestic_yaml_path, rc);
+            return -1;
+        }
+    } else if (strcmp(cfg->encoder_kind, "waybeam") == 0) {
+        rc = dl_json_get_int(cfg->hello_waybeam_json_path,
+                             "video0", "fps", &fps);
+        if (rc != 0) {
+            dl_log_err("dl_hello: failed to read fps (%s video0.fps): %d",
+                       cfg->hello_waybeam_json_path, rc);
+            return -1;
+        }
+    } else {
+        dl_log_err("dl_hello: unknown encoder_kind for fps source: %s",
+                   cfg->encoder_kind);
         return -1;
     }
     if (fps <= 0 || fps > 0xFFFF) {

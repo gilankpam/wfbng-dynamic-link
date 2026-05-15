@@ -1,0 +1,9 @@
+{
+  "record": {
+    "encoder": "video0",
+    "fps": 0
+  },
+  "video0": {
+    "fps": 90
+  }
+}

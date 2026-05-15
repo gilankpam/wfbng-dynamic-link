@@ -101,6 +101,7 @@ typedef struct {
     uint32_t hello_announce_initial_count;
     char     hello_wfb_yaml_path[DL_CONF_MAX_STR];
     char     hello_majestic_yaml_path[DL_CONF_MAX_STR];
+    char     hello_waybeam_json_path[DL_CONF_MAX_STR];
 } dl_config_t;
 
 /* Populate `cfg` with built-in defaults. */

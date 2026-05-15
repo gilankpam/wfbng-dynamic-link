@@ -111,8 +111,12 @@ Edits the operator must make before we run end-to-end:
    radio MTU. dl-applier reads this at boot and reports it to the
    GS via the DLHE handshake; missing key means the applier refuses
    to send HELLO and the GS stays in safe_defaults.
-4. `/etc/majestic.yaml` must contain `video0.fps: <integer>` —
-   same constraint as above, on the FPS side.
+4. The fps source must be readable and contain an integer
+   `video0.fps`. Source depends on `encoder_kind` in drone.conf:
+   `majestic` → `/etc/majestic.yaml` (`video0.fps:` YAML key);
+   `waybeam` → `/etc/waybeam.json` (top-level `video0.fps` JSON
+   key). Missing or unparseable means the applier refuses to send
+   HELLO and the GS stays in safe_defaults.
 5. `drone.conf` must set `interleaving_supported = 0` if the drone is
    running upstream/vanilla wfb-ng. Default is 1 (custom
    `feat/interleaving_uep` branch). Mismatch produces per-tick

@@ -24,6 +24,7 @@ APPLIER_SRCS := \
     $(SRCDIR)/dl_dbg.c \
     $(SRCDIR)/dl_dedup.c \
     $(SRCDIR)/dl_hello.c \
+    $(SRCDIR)/dl_json_get.c \
     $(SRCDIR)/dl_latency.c \
     $(SRCDIR)/dl_log.c \
     $(SRCDIR)/dl_mavlink.c \
@@ -48,6 +49,7 @@ TEST_SRCS := \
     $(TESTDIR)/test_dl_latency.c \
     $(TESTDIR)/test_mavlink.c \
     $(TESTDIR)/test_watchdog.c \
+    $(TESTDIR)/test_dl_json.c \
     $(TESTDIR)/test_dl_yaml.c \
     $(TESTDIR)/test_dl_hello.c \
     $(SRCDIR)/dl_wire.c \
@@ -55,6 +57,7 @@ TEST_SRCS := \
     $(SRCDIR)/dl_dbg.c \
     $(SRCDIR)/dl_dedup.c \
     $(SRCDIR)/dl_hello.c \
+    $(SRCDIR)/dl_json_get.c \
     $(SRCDIR)/dl_latency.c \
     $(SRCDIR)/dl_log.c \
     $(SRCDIR)/dl_mavlink.c \

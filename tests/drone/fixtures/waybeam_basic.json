@@ -1,0 +1,24 @@
+{
+  "system": {
+    "webPort": 80,
+    "overclockLevel": 1,
+    "verbose": false
+  },
+  "video0": {
+    "codec": "h265",
+    "rcMode": "cbr",
+    "fps": 60,
+    "size": "1920x1080",
+    "bitrate": 8192
+  },
+  "record": {
+    "enabled": false,
+    "dir": "/mnt/mmcblk0p1",
+    "fps": 0,
+    "bitrate": 0
+  },
+  "fpv": {
+    "roiEnabled": true,
+    "roiQp": 0
+  }
+}
