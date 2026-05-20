@@ -750,6 +750,9 @@ class Policy:
         # from `cfg.safe` — dynamic-FEC starts emitting computed values
         # once `tick()` has seen its first signal snapshot.
         row = self.leading.current_row
+        # is_synced() guard needed at construction: drone_config may be
+        # non-None but pre-HELLO. Policy.tick() has an early-return guard
+        # for that case so it can use a simpler check.
         mtu_for_init = (
             self.drone_config.mtu_bytes
             if self.drone_config is not None and self.drone_config.is_synced()
