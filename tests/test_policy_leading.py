@@ -656,3 +656,32 @@ def test_climb_from_mcs_0_blocked_by_loss():
                             ts_ms=ts + 1000.0)
     assert not changed
     assert s.state.current_mcs == 0
+
+
+def test_deprecated_hold_fallback_mode_ms_parses(caplog):
+    import logging
+    from dynamic_link.service import _build_policy_config
+
+    raw = {
+        "profile_selection": {
+            "hold_fallback_mode_ms": 1500,
+            "hold_modes_down_ms": 2000,
+            "upward_confidence_loops": 4,
+        },
+        "fec": {}, "gate": {}, "smoothing": {}, "cooldown": {},
+        "policy": {}, "safe_defaults": {},
+        "leading_loop": {
+            "radio_profile": "m8812eu2",
+            "radio_profiles_dir": str(PACKAGED_DIR),
+            "bandwidth": 20,
+            "tx_power_min_dBm": 18,
+            "tx_power_max_dBm": 28,
+        },
+    }
+    with caplog.at_level(logging.WARNING, logger="dynamic_link"):
+        cfg = _build_policy_config(raw)
+    assert cfg.selection.hold_fallback_mode_ms == 1500
+    assert any("hold_fallback_mode_ms" in r.message
+               and "deprecated" in r.message.lower()
+               for r in caplog.records), \
+        f"no deprecation warning emitted; records={[r.message for r in caplog.records]}"

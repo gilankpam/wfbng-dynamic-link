@@ -147,6 +147,13 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
         max_mcs_step_up=int(gate_raw.get("max_mcs_step_up", 1)),
     )
 
+    if "hold_fallback_mode_ms" in selection_raw:
+        log.warning(
+            "profile_selection.hold_fallback_mode_ms is deprecated and no "
+            "longer affects controller behavior — MCS=0 → 1 climbs now use "
+            "the unified confidence-loop gate. Remove the key from gs.yaml."
+        )
+
     selection = ProfileSelectionConfig(
         hold_fallback_mode_ms=int(
             selection_raw.get("hold_fallback_mode_ms", 1000)
