@@ -3,6 +3,8 @@ k_over_n is derived from `base_redundancy_ratio` — NOT from live
 (k, n) — to keep encoder allocation steady under n_escalation."""
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
 from pathlib import Path
 
 from dynamic_link.bitrate import (
@@ -94,12 +96,14 @@ def test_effective_phy_Mbps_monotone_in_mtu():
     assert e500 < e1500 < e3994
 
 
-def test_compute_bitrate_kbps_warns_once_when_preamble_missing(caplog, tmp_path):
-    """Profile without preamble_us_per_frame: WARN once, use 200 µs default."""
-    import logging
-    from dynamic_link.profile import load_profile_file
+def test_compute_bitrate_kbps_warns_once_when_preamble_missing(caplog, monkeypatch):
+    """Profile without preamble_us_per_frame: WARN once, use 200 µs default.
+
+    monkeypatches the module-level dedup set so this test is hermetic and
+    isn't affected by other tests that may have already populated the set.
+    """
+    monkeypatch.setattr("dynamic_link.bitrate._warned_missing_preamble", set())
     p = load_profile_file(Path("conf/radios/m8812eu2.yaml"))
-    from dataclasses import replace
     p = replace(p, preamble_us_per_frame=None, name="m8812eu2-noprmbl-1")
 
     cfg = _cfg(base_ratio=0.5)

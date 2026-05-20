@@ -757,6 +757,7 @@ class Policy:
             k=cfg.safe.k,
             n=cfg.safe.n,
             depth=cfg.safe.depth,
+            # mtu_bytes=1400 placeholder until handshake completes; replaced in Policy.tick.
             bitrate_kbps=compute_bitrate_kbps(
                 profile, cfg.leading.bandwidth, row.mcs, 1400, cfg.bitrate,
             ),
@@ -830,6 +831,7 @@ class Policy:
 
         # Bitrate first (no FEC dependency — bitrate uses the fixed
         # `base_redundancy_ratio` from BitrateConfig, not the live k/n).
+        # mtu_bytes=1400 placeholder; next commit reads drone_config.mtu_bytes.
         new_bitrate_kbps = compute_bitrate_kbps(
             self.profile, self.state.bandwidth, row.mcs, 1400, self.cfg.bitrate,
         )
