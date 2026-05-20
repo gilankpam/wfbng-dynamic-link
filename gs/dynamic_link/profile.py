@@ -43,6 +43,7 @@ class RadioProfile:
     tx_power_max_dBm: int
     snr_floor_dB: dict[int, dict[int, float]]    # bw -> mcs -> dB
     data_rate_Mbps_LGI: dict[int, dict[int, float]]
+    preamble_us_per_frame: float | None = None
 
     def snr_mcs_map(
         self,
@@ -143,6 +144,10 @@ def _validate(data: dict, source: str) -> RadioProfile:
                     f"{source}: data_rate_Mbps_LGI[{bw}] missing mcs={mcs}"
                 )
 
+    preamble_us_per_frame = data.get("preamble_us_per_frame")
+    if preamble_us_per_frame is not None:
+        preamble_us_per_frame = float(preamble_us_per_frame)
+
     return RadioProfile(
         name=str(req("name")),
         chipset=str(req("chipset")),
@@ -154,4 +159,5 @@ def _validate(data: dict, source: str) -> RadioProfile:
         tx_power_max_dBm=tx_max,
         snr_floor_dB=snr_floor,
         data_rate_Mbps_LGI=data_rate,
+        preamble_us_per_frame=preamble_us_per_frame,
     )
