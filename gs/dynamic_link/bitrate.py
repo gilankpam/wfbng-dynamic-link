@@ -46,7 +46,7 @@ class BitrateConfig:
 
 
 def effective_phy_Mbps(
-    phy_Mbps: float, mtu_bytes: int, preamble_us: float,
+    phy_Mbps: float, mtu_bytes: int, preamble_us: float
 ) -> float:
     """Per-packet airtime model. Returns the wire bandwidth a
     sustained stream of `mtu_bytes` packets can actually achieve at

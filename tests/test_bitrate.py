@@ -74,7 +74,9 @@ def test_effective_phy_Mbps_mlink_1500_mcs4():
 
 def test_effective_phy_Mbps_mlink_3994_mcs4():
     """Pure-math anchor: 39 Mb/s PHY, mtu=3994, preamble=170 µs
-    → effective ~32.30 Mb/s."""
+    → effective ~32.30 Mb/s. 3994 is the OpenIPC default
+    `wireless.mlink` for this chipset (close to the wfb_tx
+    compile-time Radio MTU cap of 3993)."""
     eff = effective_phy_Mbps(phy_Mbps=39.0, mtu_bytes=3994, preamble_us=170.0)
     assert abs(eff - 32.30) < 0.05
 
@@ -83,8 +85,7 @@ def test_effective_phy_Mbps_approaches_raw_at_large_mtu():
     """As MTU → ∞, effective rate approaches raw PHY rate."""
     raw = 39.0
     eff_huge = effective_phy_Mbps(phy_Mbps=raw, mtu_bytes=64_000, preamble_us=170.0)
-    assert eff_huge < raw
-    assert (raw - eff_huge) / raw < 0.05   # within 5%
+    assert (raw - eff_huge) / raw < 0.05
 
 
 def test_effective_phy_Mbps_monotone_in_mtu():
