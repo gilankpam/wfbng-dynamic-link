@@ -113,3 +113,59 @@ def test_compute_bitrate_kbps_warns_once_when_preamble_missing(caplog, monkeypat
     warnings = [r for r in caplog.records if "preamble_us_per_frame missing" in r.message]
     assert len(warnings) == 1
     assert "m8812eu2-noprmbl-1" in warnings[0].message
+
+
+def test_compute_bitrate_kbps_mcs4_mlink_1500_bench_anchor():
+    """Anchored to docs/mlink-airtime-bench.md table cell:
+    MCS4 HT20 + mlink=1500 + U=0.8 + n/k=1.4 → ~14400 kbps."""
+    p = _profile()
+    p = replace(p, preamble_us_per_frame=170.0, name="m8812eu2-bench-1")
+    cfg = BitrateConfig(
+        utilization_factor=0.8,
+        base_redundancy_ratio=0.4,    # k/n = 1/1.4
+        min_bitrate_kbps=1000,
+        max_bitrate_kbps=24000,
+    )
+    # eff = 12000/(170e-6 + 12000/39e6) ≈ 25.12 Mb/s
+    # bitrate = 25120 * 0.8 / 1.4 ≈ 14353 → within ±300 of published 14400
+    got = compute_bitrate_kbps(p, 20, 4, 1500, cfg)
+    assert 14100 <= got <= 14700, f"expected ~14400, got {got}"
+
+
+def test_compute_bitrate_kbps_mcs4_mlink_3994_bench_anchor():
+    """Anchored to docs/mlink-airtime-bench.md table cell:
+    MCS4 HT20 + mlink=3994 + U=0.8 + n/k=1.4 → ~18600 kbps."""
+    p = _profile()
+    p = replace(p, preamble_us_per_frame=170.0, name="m8812eu2-bench-2")
+    cfg = BitrateConfig(
+        utilization_factor=0.8,
+        base_redundancy_ratio=0.4,
+        min_bitrate_kbps=1000,
+        max_bitrate_kbps=24000,
+    )
+    # eff = 31952/(170e-6 + 31952/39e6) ≈ 32.30 Mb/s
+    # bitrate = 32300 * 0.8 / 1.4 ≈ 18457 → within ±300 of published 18600
+    got = compute_bitrate_kbps(p, 20, 4, 3994, cfg)
+    assert 18300 <= got <= 18900, f"expected ~18600, got {got}"
+
+
+def test_compute_bitrate_kbps_monotone_in_mtu():
+    """Larger MTU → at least as much encoder bitrate (more airtime efficiency)."""
+    p = _profile()
+    p = replace(p, preamble_us_per_frame=170.0, name="m8812eu2-mono")
+    cfg = _cfg(base_ratio=0.4)
+    vals = [compute_bitrate_kbps(p, 20, 4, m, cfg) for m in (500, 1500, 3994, 8000)]
+    assert vals[0] < vals[1] < vals[2] < vals[3], vals
+
+
+def test_compute_bitrate_kbps_max_clamp_still_applies():
+    """At high MCS + large MTU + low cap, the cap wins."""
+    p = _profile()
+    p = replace(p, preamble_us_per_frame=170.0, name="m8812eu2-clamp")
+    cfg = BitrateConfig(
+        utilization_factor=0.8,
+        base_redundancy_ratio=0.4,
+        min_bitrate_kbps=1000,
+        max_bitrate_kbps=12000,    # well below natural MCS5 setpoint
+    )
+    assert compute_bitrate_kbps(p, 20, 5, 3994, cfg) == 12000
