@@ -160,8 +160,8 @@ def test_search_dir_ordering(tmp_path):
     assert prof.name == "override_wins"
 
 
-def test_load_profile_reads_preamble_us_per_frame(tmp_path):
-    """When the YAML carries preamble_us_per_frame, it surfaces on the dataclass."""
+def test_load_profile_reads_preamble_us_per_frame_as_float(tmp_path):
+    # Coerces integer YAML scalars to float on the dataclass.
     d = _valid_dict()
     d["preamble_us_per_frame"] = 157
     p = _write_profile(tmp_path, d)
@@ -170,9 +170,8 @@ def test_load_profile_reads_preamble_us_per_frame(tmp_path):
 
 
 def test_load_profile_preamble_us_per_frame_optional(tmp_path):
-    """Profiles without the field load cleanly with preamble_us_per_frame=None."""
     d = _valid_dict()
-    d.pop("preamble_us_per_frame", None)
+    assert "preamble_us_per_frame" not in d, "_valid_dict changed; test premise broken"
     p = _write_profile(tmp_path, d)
     prof = load_profile_file(p)
     assert prof.preamble_us_per_frame is None
