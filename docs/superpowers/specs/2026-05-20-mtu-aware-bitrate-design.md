@@ -111,9 +111,16 @@ Monotonicity properties (verified by test):
 `conf/radios/m8812eu2.yaml` — add one field:
 
 ```yaml
-preamble_us_per_frame: 157   # 2026-05-20 bench, HT20 LGI broadcast.
+preamble_us_per_frame: 170   # 2026-05-20 bench, HT20 LGI broadcast.
                               # See docs/mlink-airtime-bench.md for the fit.
 ```
+
+The bench doc's raw physical fit is 157 µs against the on-air payload
+(naluSize = mlink − 100). The implementation feeds `mtu_bytes = mlink`
+straight into `compute_bitrate_kbps`, so the YAML constant absorbs
+the small OpenIPC framing offset between mlink and naluSize. 170 µs
+reproduces the published bench table cells when called with
+mtu_bytes = mlink.
 
 `gs/dynamic_link/profile.py::RadioProfile` gains an optional field:
 
