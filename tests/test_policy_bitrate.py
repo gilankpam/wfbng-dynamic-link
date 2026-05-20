@@ -59,3 +59,12 @@ def test_bitrate_higher_mcs_has_higher_bitrate(profile):
     a = compute_bitrate_kbps(profile, 20, 1, 1400, cfg)
     b = compute_bitrate_kbps(profile, 20, 5, 1400, cfg)
     assert b > a
+
+
+def test_bitrate_drops_when_mtu_shrinks(profile):
+    """At MCS4, encoder bitrate is strictly lower for mtu=1500 than
+    for mtu=3994 (smaller packets eat more airtime on overhead)."""
+    cfg = _cfg(base_ratio=0.4)
+    br_small = compute_bitrate_kbps(profile, 20, 4, 1500, cfg)
+    br_large = compute_bitrate_kbps(profile, 20, 4, 3994, cfg)
+    assert br_small < br_large, (br_small, br_large)

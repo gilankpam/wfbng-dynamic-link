@@ -750,6 +750,11 @@ class Policy:
         # from `cfg.safe` — dynamic-FEC starts emitting computed values
         # once `tick()` has seen its first signal snapshot.
         row = self.leading.current_row
+        mtu_for_init = (
+            self.drone_config.mtu_bytes
+            if self.drone_config is not None and self.drone_config.is_synced()
+            else 1400
+        )
         self.state = PolicyState(
             mcs=row.mcs,
             bandwidth=cfg.leading.bandwidth,
@@ -757,9 +762,8 @@ class Policy:
             k=cfg.safe.k,
             n=cfg.safe.n,
             depth=cfg.safe.depth,
-            # mtu_bytes=1400 placeholder until handshake completes; replaced in Policy.tick.
             bitrate_kbps=compute_bitrate_kbps(
-                profile, cfg.leading.bandwidth, row.mcs, 1400, cfg.bitrate,
+                profile, cfg.leading.bandwidth, row.mcs, mtu_for_init, cfg.bitrate,
             ),
         )
         # Dynamic-FEC state. `_n_escalator` tracks residual-loss
@@ -829,18 +833,19 @@ class Policy:
         )
         row = self.leading.current_row
 
+        # mtu/fps come from drone HELLO when available; safe fallbacks otherwise.
+        mtu = self.drone_config.mtu_bytes if self.drone_config else 1400
+        fps = self.drone_config.fps if self.drone_config else 60
+
         # Bitrate first (no FEC dependency — bitrate uses the fixed
         # `base_redundancy_ratio` from BitrateConfig, not the live k/n).
-        # mtu_bytes=1400 placeholder; next commit reads drone_config.mtu_bytes.
         new_bitrate_kbps = compute_bitrate_kbps(
-            self.profile, self.state.bandwidth, row.mcs, 1400, self.cfg.bitrate,
+            self.profile, self.state.bandwidth, row.mcs,
+            mtu, self.cfg.bitrate,
         )
 
         # Dynamic FEC: k from packets-per-frame at the live bitrate,
-        # n from base + escalation. (mtu, fps) come from the drone's
-        # HELLO when available; safe fallbacks otherwise.
-        mtu = self.drone_config.mtu_bytes if self.drone_config else 1400
-        fps = self.drone_config.fps if self.drone_config else 60
+        # n from base + escalation.
         candidate_k = compute_k(
             bitrate_kbps=new_bitrate_kbps,
             mtu_bytes=mtu,
