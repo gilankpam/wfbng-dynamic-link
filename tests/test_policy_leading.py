@@ -592,3 +592,53 @@ def test_policy_emits_safe_defaults_until_drone_synced():
     decision_after = policy.tick(signals)
     # The real path runs; reason is no longer the gate sentinel.
     assert decision_after.reason != "awaiting_drone_config"
+
+
+def test_climb_blocked_by_residual_loss():
+    s = _selector(hysteresis_up_db=2.5, snr_safety_margin=3.0,
+                  upward_confidence_loops=4, hold_modes_down_ms=0)
+    for i in range(3):
+        _, _, changed = _select(s, snr=20.0, ts_ms=i * 100.0)
+        assert not changed, f"climb fired prematurely at tick {i}"
+    assert s.state.up_confidence_count == 3
+    assert s.state.up_target_mcs == 2
+    # loss below emergency_loss_rate (0.05) exercises the residual-loss
+    # veto path, not the emergency forced downgrade.
+    _, _, changed = _select(s, snr=20.0, loss=0.01, ts_ms=300.0)
+    assert not changed
+    assert s.state.up_confidence_count == 0
+    assert s.state.up_target_mcs == -1
+    assert any("climb_blocked" in r and "mcs " in r and "->" in r
+               for r in s.reasons), f"reasons={s.reasons}"
+    assert s.state.current_mcs == 1  # no climb, no emergency demote
+
+
+def test_try_confidence_feed_blocked_by_residual_loss():
+    s = _selector(hysteresis_up_db=10.0, snr_safety_margin=3.0,
+                  upward_confidence_loops=4, hold_modes_down_ms=0)
+    for i in range(3):
+        _select(s, snr=20.0, ts_ms=i * 100.0)
+    assert s.state.up_confidence_count == 3
+    assert s.state.up_target_mcs == 2
+    # loss below emergency_loss_rate (0.05) exercises the veto path
+    # rather than the emergency forced-downgrade path.
+    _select(s, snr=20.0, loss=0.01, ts_ms=300.0)
+    assert s.state.up_confidence_count == 0
+    assert s.state.up_target_mcs == -1
+
+
+def test_climb_proceeds_after_clean_window():
+    s = _selector(hysteresis_up_db=2.5, snr_safety_margin=3.0,
+                  upward_confidence_loops=4, hold_modes_down_ms=0)
+    _select(s, snr=20.0, ts_ms=0.0)
+    _select(s, snr=20.0, ts_ms=100.0)
+    assert s.state.up_confidence_count == 2
+    # loss below emergency_loss_rate (0.05) exercises the veto path.
+    _select(s, snr=20.0, loss=0.01, ts_ms=200.0)
+    assert s.state.up_confidence_count == 0
+    for i in range(3):
+        _, _, changed = _select(s, snr=20.0, ts_ms=300.0 + i * 100.0)
+        assert not changed, f"premature climb at tick {i}"
+    _, _, changed = _select(s, snr=20.0, ts_ms=600.0)
+    assert changed
+    assert s.state.current_mcs == 2
