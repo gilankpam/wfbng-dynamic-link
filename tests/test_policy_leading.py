@@ -356,23 +356,6 @@ def test_hold_modes_down_ms_blocks_consecutive_upgrades():
     assert s.state.current_mcs == pre
 
 
-def test_hold_fallback_mode_ms_when_at_mcs_zero():
-    """Climbing out of MCS 0 has its own (typically longer) hold."""
-    s = _selector(hold_fallback_mode_ms=1000, hold_modes_down_ms=0,
-                  upward_confidence_loops=1, max_mcs=5)
-    # Force MCS to 0 via emergency.
-    ts = 0.0
-    while s.state.current_mcs > 0:
-        _select(s, snr=40.0, link_starved=True, ts_ms=ts)
-        ts += 100.0
-    # Just after settling at 0 — try to climb.
-    _, _, changed = _select(s, snr=40.0, ts_ms=ts + 100.0)
-    assert not changed
-    # Past hold_fallback_mode_ms → climb succeeds.
-    _, _, changed = _select(s, snr=40.0, ts_ms=ts + 1500.0)
-    assert changed
-
-
 # ── Inverse MCS↔TX power coupling ──────────────────────────────────────────
 
 
@@ -642,3 +625,34 @@ def test_climb_proceeds_after_clean_window():
     _, _, changed = _select(s, snr=20.0, ts_ms=600.0)
     assert changed
     assert s.state.current_mcs == 2
+
+
+def test_climb_from_mcs_0_uses_confidence_loop():
+    s = _selector(hold_modes_down_ms=0, hold_fallback_mode_ms=999999,
+                  upward_confidence_loops=4, max_mcs=5)
+    ts = 0.0
+    while s.state.current_mcs > 0:
+        _select(s, snr=40.0, link_starved=True, ts_ms=ts)
+        ts += 100.0
+    for i in range(3):
+        _, _, changed = _select(s, snr=40.0,
+                                ts_ms=ts + 100.0 + i * 100.0)
+        assert not changed, f"premature climb from MCS=0 at tick {i}"
+    _, _, changed = _select(s, snr=40.0, ts_ms=ts + 400.0)
+    assert changed
+    assert s.state.current_mcs == 1
+
+
+def test_climb_from_mcs_0_blocked_by_loss():
+    s = _selector(hold_modes_down_ms=0, upward_confidence_loops=1,
+                  max_mcs=5)
+    ts = 0.0
+    while s.state.current_mcs > 0:
+        _select(s, snr=40.0, link_starved=True, ts_ms=ts)
+        ts += 100.0
+    _select(s, snr=40.0, ts_ms=ts + 100.0)
+    # loss below emergency_loss_rate (0.05) exercises the veto path.
+    _, _, changed = _select(s, snr=40.0, loss=0.01,
+                            ts_ms=ts + 1000.0)
+    assert not changed
+    assert s.state.current_mcs == 0

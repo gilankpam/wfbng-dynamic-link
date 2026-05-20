@@ -465,12 +465,6 @@ class LeadingSelector:
                 return cur, tx, False
             st.up_confidence_count = 0
             st.up_target_mcs = -1
-        elif cur == self.profile.mcs_min:
-            # Climbing out of fallback — extra-conservative hold.
-            if elapsed_since_mcs_ms < self.sel.hold_fallback_mode_ms:
-                tx = self._compute_tx_power(cur)
-                st.tx_power_dBm = tx
-                return cur, tx, False
         else:
             if loss_rate > 0:
                 if st.up_confidence_count > 0:
