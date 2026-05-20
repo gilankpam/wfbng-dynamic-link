@@ -758,7 +758,7 @@ class Policy:
             n=cfg.safe.n,
             depth=cfg.safe.depth,
             bitrate_kbps=compute_bitrate_kbps(
-                profile, cfg.leading.bandwidth, row.mcs, cfg.bitrate,
+                profile, cfg.leading.bandwidth, row.mcs, 1400, cfg.bitrate,
             ),
         )
         # Dynamic-FEC state. `_n_escalator` tracks residual-loss
@@ -831,7 +831,7 @@ class Policy:
         # Bitrate first (no FEC dependency — bitrate uses the fixed
         # `base_redundancy_ratio` from BitrateConfig, not the live k/n).
         new_bitrate_kbps = compute_bitrate_kbps(
-            self.profile, self.state.bandwidth, row.mcs, self.cfg.bitrate,
+            self.profile, self.state.bandwidth, row.mcs, 1400, self.cfg.bitrate,
         )
 
         # Dynamic FEC: k from packets-per-frame at the live bitrate,

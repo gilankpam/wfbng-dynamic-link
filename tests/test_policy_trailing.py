@@ -295,7 +295,7 @@ def test_policy_bitrate_matches_formula_at_each_mcs():
         _settle_at_mcs(p, target)
         if p.state.mcs != target:
             continue
-        expected = compute_bitrate_kbps(p.profile, 20, target, p.cfg.bitrate)
+        expected = compute_bitrate_kbps(p.profile, 20, target, 1400, p.cfg.bitrate)
         assert p.state.bitrate_kbps == expected
 
 

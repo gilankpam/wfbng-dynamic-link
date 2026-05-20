@@ -25,14 +25,13 @@ def _profile():
 
 
 def test_bitrate_uses_base_redundancy_ratio_not_live_kn():
-    """Same inputs should produce the same bitrate regardless of any
-    live `(k, n)` — the function takes no `(k, n)` argument."""
     p = _profile()
     cfg = _cfg(base_ratio=0.25)
-    # PHY rate for MCS 5, BW 20 in m8812eu2: 39 Mb/s
-    # bitrate = 39 * 1000 * 0.8 * (1/(1+0.25)) = 39 * 1000 * 0.8 * 0.8 = 24960
-    # Clamped to max_bitrate_kbps=24000.
-    assert compute_bitrate_kbps(p, 20, 5, cfg) == 24000
+    # MCS=5 → PHY=52 Mb/s; mtu=1400, preamble=200 µs (DEFAULT — m8812eu2
+    # hasn't gained the field yet at this commit; Task 5 calibrates it).
+    # eff = 11200/(200e-6 + 11200/52e6) = 11200/415.38e-6 = 26.96 Mb/s
+    # bitrate = 26963 * 0.8 / 1.25 = 17256 → no clamp
+    assert compute_bitrate_kbps(p, 20, 5, 1400, cfg) == 17256
 
 
 def test_bitrate_clamped_to_min():
@@ -40,26 +39,25 @@ def test_bitrate_clamped_to_min():
     cfg = BitrateConfig(
         utilization_factor=0.8,
         base_redundancy_ratio=0.5,
-        min_bitrate_kbps=8000,    # raise the floor
+        min_bitrate_kbps=8000,
         max_bitrate_kbps=24000,
     )
-    # MCS 0 at BW 20 has PHY ~ 6.5 Mb/s → 6500 * 0.8 * (1/1.5) = 3466
-    # Clamped up to 8000.
-    assert compute_bitrate_kbps(p, 20, 0, cfg) == 8000
+    # MCS 0 PHY=6.5 Mb/s, mtu=1400, preamble=200 → eff ≈ 5.82, raw ≈ 3106 → clamped to 8000
+    assert compute_bitrate_kbps(p, 20, 0, 1400, cfg) == 8000
 
 
 def test_bitrate_changes_with_base_ratio():
     p = _profile()
-    a = compute_bitrate_kbps(p, 20, 4, _cfg(base_ratio=0.25))  # k/n = 0.80
-    b = compute_bitrate_kbps(p, 20, 4, _cfg(base_ratio=0.50))  # k/n = 0.667
+    a = compute_bitrate_kbps(p, 20, 4, 1400, _cfg(base_ratio=0.25))
+    b = compute_bitrate_kbps(p, 20, 4, 1400, _cfg(base_ratio=0.50))
     assert b < a
 
 
 def test_bitrate_bw40_higher_than_bw20_for_same_mcs():
     p = _profile()
     cfg = _cfg()
-    a = compute_bitrate_kbps(p, 20, 4, cfg)
-    b = compute_bitrate_kbps(p, 40, 4, cfg)
+    a = compute_bitrate_kbps(p, 20, 4, 1400, cfg)
+    b = compute_bitrate_kbps(p, 40, 4, 1400, cfg)
     assert b >= a
 
 
@@ -94,3 +92,20 @@ def test_effective_phy_Mbps_monotone_in_mtu():
     e1500 = effective_phy_Mbps(39.0, 1500, 170.0)
     e3994 = effective_phy_Mbps(39.0, 3994, 170.0)
     assert e500 < e1500 < e3994
+
+
+def test_compute_bitrate_kbps_warns_once_when_preamble_missing(caplog, tmp_path):
+    """Profile without preamble_us_per_frame: WARN once, use 200 µs default."""
+    import logging
+    from dynamic_link.profile import load_profile_file
+    p = load_profile_file(Path("conf/radios/m8812eu2.yaml"))
+    from dataclasses import replace
+    p = replace(p, preamble_us_per_frame=None, name="m8812eu2-noprmbl-1")
+
+    cfg = _cfg(base_ratio=0.5)
+    caplog.set_level(logging.WARNING, logger="dynamic_link.bitrate")
+    compute_bitrate_kbps(p, 20, 4, 1400, cfg)
+    compute_bitrate_kbps(p, 20, 4, 1400, cfg)   # second call — should NOT re-warn
+    warnings = [r for r in caplog.records if "preamble_us_per_frame missing" in r.message]
+    assert len(warnings) == 1
+    assert "m8812eu2-noprmbl-1" in warnings[0].message
