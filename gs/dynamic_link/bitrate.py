@@ -45,6 +45,21 @@ class BitrateConfig:
             )
 
 
+def effective_phy_Mbps(
+    phy_Mbps: float, mtu_bytes: int, preamble_us: float,
+) -> float:
+    """Per-packet airtime model. Returns the wire bandwidth a
+    sustained stream of `mtu_bytes` packets can actually achieve at
+    this PHY rate, given `preamble_us` of fixed per-frame overhead.
+
+    See `docs/mlink-airtime-bench.md` for derivation and calibration.
+    """
+    mtu_bits = mtu_bytes * 8
+    preamble_s = preamble_us * 1e-6
+    payload_s = mtu_bits / (phy_Mbps * 1_000_000.0)
+    return mtu_bits / (preamble_s + payload_s) / 1_000_000.0
+
+
 def compute_bitrate_kbps(
     profile: RadioProfile,
     bandwidth: int,

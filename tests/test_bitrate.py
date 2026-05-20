@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dynamic_link.bitrate import BitrateConfig, compute_bitrate_kbps
+from dynamic_link.bitrate import (
+    BitrateConfig, compute_bitrate_kbps, effective_phy_Mbps,
+)
 from dynamic_link.profile import load_profile_file
 
 
@@ -59,3 +61,35 @@ def test_bitrate_bw40_higher_than_bw20_for_same_mcs():
     a = compute_bitrate_kbps(p, 20, 4, cfg)
     b = compute_bitrate_kbps(p, 40, 4, cfg)
     assert b >= a
+
+
+def test_effective_phy_Mbps_mlink_1500_mcs4():
+    """Pure-math anchor: 39 Mb/s PHY, mtu=1500, preamble=170 µs
+    → effective ~25.12 Mb/s. (Choice of preamble=170 is what the
+    calibrated m8812eu2 profile uses; see Task 5 for why 170 vs the
+    bench doc's raw 157 µs.)"""
+    eff = effective_phy_Mbps(phy_Mbps=39.0, mtu_bytes=1500, preamble_us=170.0)
+    assert abs(eff - 25.12) < 0.05
+
+
+def test_effective_phy_Mbps_mlink_3994_mcs4():
+    """Pure-math anchor: 39 Mb/s PHY, mtu=3994, preamble=170 µs
+    → effective ~32.30 Mb/s."""
+    eff = effective_phy_Mbps(phy_Mbps=39.0, mtu_bytes=3994, preamble_us=170.0)
+    assert abs(eff - 32.30) < 0.05
+
+
+def test_effective_phy_Mbps_approaches_raw_at_large_mtu():
+    """As MTU → ∞, effective rate approaches raw PHY rate."""
+    raw = 39.0
+    eff_huge = effective_phy_Mbps(phy_Mbps=raw, mtu_bytes=64_000, preamble_us=170.0)
+    assert eff_huge < raw
+    assert (raw - eff_huge) / raw < 0.05   # within 5%
+
+
+def test_effective_phy_Mbps_monotone_in_mtu():
+    """Bigger packets are at least as efficient as smaller ones."""
+    e500  = effective_phy_Mbps(39.0, 500,  170.0)
+    e1500 = effective_phy_Mbps(39.0, 1500, 170.0)
+    e3994 = effective_phy_Mbps(39.0, 3994, 170.0)
+    assert e500 < e1500 < e3994
