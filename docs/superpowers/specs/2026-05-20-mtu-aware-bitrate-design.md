@@ -315,7 +315,12 @@ numbers drift, those tests fail and point straight at
   loss pushes us back into saturation, that's a sign the operator's
   `utilization_factor` is too high — same as today.
 
-## Follow-up (out of scope here, mentioned for the record)
+## Follow-up: MTU-aware predictor airtime
+
+Captured 2026-05-20 from a brainstorm that didn't get specced —
+park here until flight data motivates the change.
+
+### Scope of the bug
 
 `gs/dynamic_link/predictor.py` has the parallel airtime-blindness
 issue: `block_air = n × per_packet_airtime_us / 1000` treats
@@ -323,5 +328,89 @@ per-packet airtime as a fixed gs.yaml constant (default 80 µs)
 instead of deriving it from `(mtu, preamble, phy_rate)`. The same
 `profile.preamble_us_per_frame` would feed it cleanly; the
 `predictor.per_packet_airtime_us` knob in gs.yaml would become
-redundant. Separate spec when the predictor's underestimate
-actually bites in flight data.
+redundant.
+
+The 80 µs constant is also wrong at its claimed reference point
+(MCS7 HT40, 1400B): the payload alone takes 83 µs; total airtime
+including PHY preamble + MAC header is ~130-200 µs. So even
+matching the claimed reference, the value undercounts. And it's
+held constant across all MCS/MTU combinations, which the bench
+(`docs/mlink-airtime-bench.md`) shows is wrong by ~6× at the
+typical operating point (MCS4 HT20 + mlink=1500: 478 µs actual
+vs 80 µs configured).
+
+### Downstream effect
+
+The predictor's output flows into exactly one production caller:
+`fit_or_degrade` at `policy.py:916`, which uses the predicted
+`latency_ms` to walk depth down (3→2→1) until the proposal fits
+`cfg.max_latency_ms`. On `BudgetExhausted` (depth=1 still
+overruns) the controller reverts `(k, n, depth)` to the previous
+tick's values.
+
+- `compute_k` / `compute_n` math is **not** touched by the
+  predictor — their inputs are `(bitrate, mtu, fps, escalation)`,
+  none of which depend on `predict()`.
+- The only knob `fit_or_degrade` actually moves is **depth**.
+- `BudgetExhausted` can indirectly suppress a new (k, n) update
+  by reverting to the previous tick — but only when the budget is
+  genuinely exhausted, not when the predictor merely under-predicts.
+
+Current production envelope (`depth_max=3`, `max_latency_ms=50`,
+`max_mcs=5`): actual latency tops out around 40 ms even at depth=3,
+so `fit_or_degrade` never drops depth and `BudgetExhausted` never
+fires. **The bug is silent in production today.** It would bite
+under any of:
+
+- `max_latency_ms` tightened below ~40 ms (racing FPV profile).
+- `depth_max` raised above 3 (more interleaver depth available).
+- A future MCS row pushing actual airtime past today's headroom.
+
+Plus: the predicted `latency_ms` ends up in flight logs and the
+debug OSD's apply-latency display. Operators reading those numbers
+for forensic analysis are seeing a 6× under-count of `block_air`.
+
+### Sketched fix shape (when we get to it)
+
+1. Add a sibling helper to `bitrate.effective_phy_Mbps`:
+   ```python
+   def per_packet_airtime_us(phy_Mbps, mtu_bytes, preamble_us) -> float:
+       return preamble_us + (mtu_bytes * 8) / phy_Mbps
+   ```
+   (Algebraic inverse of `effective_phy_Mbps`; same physics, same
+   `profile.preamble_us_per_frame` constant.)
+
+2. Have `policy.tick()` compute it per-tick from the live MCS, MTU,
+   and profile (`policy.py` around line 887 — `ipi_ms` is already
+   being computed in the same spot from the same inputs), and pass
+   the result into the per-tick `PredictorConfig`.
+
+3. Drop `video.per_packet_airtime_us` from `gs.yaml.sample` and add
+   it to the legacy-key reject list in `service.py:205-211`,
+   matching the pattern used for `mtu_bytes` in the bitrate change.
+
+4. Update `tests/test_predictor.py`: the existing reference cases
+   (`MCS7 HT40 / 80 µs / 1.4 ms`) can stay if we keep accepting a
+   manually-set value in `PredictorConfig`; otherwise rewrite the
+   reference cfg to compute airtime from the now-calibrated
+   `(MCS7 HT40, mtu=1400)` values.
+
+### Scope decisions already made
+
+- **block_air only.** `block_duration_ms = 12` constant (interleave
+  term) has the same flavor of staleness but the bench doesn't
+  validate it. Defer.
+- **Drop the gs.yaml field**, don't keep as override. Matches the
+  bitrate refactor's treatment of `mtu_bytes`.
+
+### Trigger to actually do this
+
+Pick this up when one of the following lands:
+
+- Operator profile that wants `max_latency_ms < 40` (e.g. racing).
+- `depth_max` configuration raised above 3 in any deployment.
+- Flight-log forensics where the under-counted `latency_ms` actively
+  confuses an investigation.
+
+Until then it's a known-but-silent bug; the bitrate fix already
+prevents the airtime saturation that motivated the work.
