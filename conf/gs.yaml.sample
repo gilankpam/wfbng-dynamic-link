@@ -91,7 +91,6 @@ gate:
 
 # Cadence / hold timers for the dual-gate selector.
 profile_selection:
-  hold_fallback_mode_ms: 1000       # extra hold when climbing out of MCS 0
   hold_modes_down_ms: 2000          # min between MCS changes
   min_between_changes_ms: 200       # rate limit (skipped during emergency)
   fast_downgrade: true              # downgrade bypasses hold_modes_down_ms

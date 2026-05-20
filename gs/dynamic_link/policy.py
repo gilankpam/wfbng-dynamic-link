@@ -305,7 +305,7 @@ class LeadingSelector:
                    - self.leading.tx_power_min_dBm)
         )
 
-    def _try_confidence_feed(self, target: int) -> None:
+    def _try_confidence_feed(self, target: int, loss_rate: float) -> None:
         """Bump the upward-confidence counter even when hysteresis blocks,
         so when conditions improve the upgrade fires quickly."""
         cur = self.state.current_mcs
@@ -315,6 +315,15 @@ class LeadingSelector:
         if self.gate.max_mcs_step_up > 0:
             target = min(target, cur + self.gate.max_mcs_step_up)
         if target == cur:
+            return
+        if loss_rate > 0:
+            if self.state.up_confidence_count > 0:
+                self._reasons.append(
+                    f"climb_blocked residual_loss={loss_rate:.3f} "
+                    f"mcs {self.state.current_mcs}->{target}"
+                )
+            self.state.up_confidence_count = 0
+            self.state.up_target_mcs = -1
             return
         if target != self.state.up_target_mcs:
             self.state.up_target_mcs = target
@@ -410,7 +419,7 @@ class LeadingSelector:
                 if (tgt_margin < self.gate.hysteresis_up_db
                         or predicted < 0):
                     # Block the upgrade — keep confidence bumping toward it.
-                    self._try_confidence_feed(candidate)
+                    self._try_confidence_feed(candidate, loss_rate)
                     tx = self._compute_tx_power(cur)
                     st.tx_power_dBm = tx
                     return cur, tx, False
@@ -456,14 +465,18 @@ class LeadingSelector:
                 return cur, tx, False
             st.up_confidence_count = 0
             st.up_target_mcs = -1
-        elif cur == self.profile.mcs_min:
-            # Climbing out of fallback — extra-conservative hold.
-            if elapsed_since_mcs_ms < self.sel.hold_fallback_mode_ms:
+        else:
+            if loss_rate > 0:
+                if st.up_confidence_count > 0:
+                    self._reasons.append(
+                        f"climb_blocked residual_loss={loss_rate:.3f} "
+                        f"mcs {cur}->{st.up_target_mcs}"
+                    )
+                st.up_confidence_count = 0
+                st.up_target_mcs = -1
                 tx = self._compute_tx_power(cur)
                 st.tx_power_dBm = tx
                 return cur, tx, False
-        else:
-            # Upgrade: confidence-loop gating + hold timer.
             if candidate != st.up_target_mcs:
                 st.up_target_mcs = candidate
                 st.up_confidence_count = 1

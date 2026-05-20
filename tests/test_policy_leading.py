@@ -356,23 +356,6 @@ def test_hold_modes_down_ms_blocks_consecutive_upgrades():
     assert s.state.current_mcs == pre
 
 
-def test_hold_fallback_mode_ms_when_at_mcs_zero():
-    """Climbing out of MCS 0 has its own (typically longer) hold."""
-    s = _selector(hold_fallback_mode_ms=1000, hold_modes_down_ms=0,
-                  upward_confidence_loops=1, max_mcs=5)
-    # Force MCS to 0 via emergency.
-    ts = 0.0
-    while s.state.current_mcs > 0:
-        _select(s, snr=40.0, link_starved=True, ts_ms=ts)
-        ts += 100.0
-    # Just after settling at 0 — try to climb.
-    _, _, changed = _select(s, snr=40.0, ts_ms=ts + 100.0)
-    assert not changed
-    # Past hold_fallback_mode_ms → climb succeeds.
-    _, _, changed = _select(s, snr=40.0, ts_ms=ts + 1500.0)
-    assert changed
-
-
 # ── Inverse MCS↔TX power coupling ──────────────────────────────────────────
 
 
@@ -592,3 +575,113 @@ def test_policy_emits_safe_defaults_until_drone_synced():
     decision_after = policy.tick(signals)
     # The real path runs; reason is no longer the gate sentinel.
     assert decision_after.reason != "awaiting_drone_config"
+
+
+def test_climb_blocked_by_residual_loss():
+    s = _selector(hysteresis_up_db=2.5, snr_safety_margin=3.0,
+                  upward_confidence_loops=4, hold_modes_down_ms=0)
+    for i in range(3):
+        _, _, changed = _select(s, snr=20.0, ts_ms=i * 100.0)
+        assert not changed, f"climb fired prematurely at tick {i}"
+    assert s.state.up_confidence_count == 3
+    assert s.state.up_target_mcs == 2
+    # loss below emergency_loss_rate (0.05) exercises the residual-loss
+    # veto path, not the emergency forced downgrade.
+    _, _, changed = _select(s, snr=20.0, loss=0.01, ts_ms=300.0)
+    assert not changed
+    assert s.state.up_confidence_count == 0
+    assert s.state.up_target_mcs == -1
+    assert any("climb_blocked" in r and "mcs " in r and "->" in r
+               for r in s.reasons), f"reasons={s.reasons}"
+    assert s.state.current_mcs == 1  # no climb, no emergency demote
+
+
+def test_try_confidence_feed_blocked_by_residual_loss():
+    s = _selector(hysteresis_up_db=10.0, snr_safety_margin=3.0,
+                  upward_confidence_loops=4, hold_modes_down_ms=0)
+    for i in range(3):
+        _select(s, snr=20.0, ts_ms=i * 100.0)
+    assert s.state.up_confidence_count == 3
+    assert s.state.up_target_mcs == 2
+    # loss below emergency_loss_rate (0.05) exercises the veto path
+    # rather than the emergency forced-downgrade path.
+    _select(s, snr=20.0, loss=0.01, ts_ms=300.0)
+    assert s.state.up_confidence_count == 0
+    assert s.state.up_target_mcs == -1
+
+
+def test_climb_proceeds_after_clean_window():
+    s = _selector(hysteresis_up_db=2.5, snr_safety_margin=3.0,
+                  upward_confidence_loops=4, hold_modes_down_ms=0)
+    _select(s, snr=20.0, ts_ms=0.0)
+    _select(s, snr=20.0, ts_ms=100.0)
+    assert s.state.up_confidence_count == 2
+    # loss below emergency_loss_rate (0.05) exercises the veto path.
+    _select(s, snr=20.0, loss=0.01, ts_ms=200.0)
+    assert s.state.up_confidence_count == 0
+    for i in range(3):
+        _, _, changed = _select(s, snr=20.0, ts_ms=300.0 + i * 100.0)
+        assert not changed, f"premature climb at tick {i}"
+    _, _, changed = _select(s, snr=20.0, ts_ms=600.0)
+    assert changed
+    assert s.state.current_mcs == 2
+
+
+def test_climb_from_mcs_0_uses_confidence_loop():
+    s = _selector(hold_modes_down_ms=0, hold_fallback_mode_ms=999999,
+                  upward_confidence_loops=4, max_mcs=5)
+    ts = 0.0
+    while s.state.current_mcs > 0:
+        _select(s, snr=40.0, link_starved=True, ts_ms=ts)
+        ts += 100.0
+    for i in range(3):
+        _, _, changed = _select(s, snr=40.0,
+                                ts_ms=ts + 100.0 + i * 100.0)
+        assert not changed, f"premature climb from MCS=0 at tick {i}"
+    _, _, changed = _select(s, snr=40.0, ts_ms=ts + 400.0)
+    assert changed
+    assert s.state.current_mcs == 1
+
+
+def test_climb_from_mcs_0_blocked_by_loss():
+    s = _selector(hold_modes_down_ms=0, upward_confidence_loops=1,
+                  max_mcs=5)
+    ts = 0.0
+    while s.state.current_mcs > 0:
+        _select(s, snr=40.0, link_starved=True, ts_ms=ts)
+        ts += 100.0
+    _select(s, snr=40.0, ts_ms=ts + 100.0)
+    # loss below emergency_loss_rate (0.05) exercises the veto path.
+    _, _, changed = _select(s, snr=40.0, loss=0.01,
+                            ts_ms=ts + 1000.0)
+    assert not changed
+    assert s.state.current_mcs == 0
+
+
+def test_deprecated_hold_fallback_mode_ms_parses(caplog):
+    import logging
+    from dynamic_link.service import _build_policy_config
+
+    raw = {
+        "profile_selection": {
+            "hold_fallback_mode_ms": 1500,
+            "hold_modes_down_ms": 2000,
+            "upward_confidence_loops": 4,
+        },
+        "fec": {}, "gate": {}, "smoothing": {}, "cooldown": {},
+        "policy": {}, "safe_defaults": {},
+        "leading_loop": {
+            "radio_profile": "m8812eu2",
+            "radio_profiles_dir": str(PACKAGED_DIR),
+            "bandwidth": 20,
+            "tx_power_min_dBm": 18,
+            "tx_power_max_dBm": 28,
+        },
+    }
+    with caplog.at_level(logging.WARNING, logger="dynamic_link"):
+        cfg = _build_policy_config(raw)
+    assert cfg.selection.hold_fallback_mode_ms == 1500
+    assert any("hold_fallback_mode_ms" in r.message
+               and "deprecated" in r.message.lower()
+               for r in caplog.records), \
+        f"no deprecation warning emitted; records={[r.message for r in caplog.records]}"
