@@ -79,5 +79,22 @@ snr_floor_dB:
     6: 26
     7: 28
 
+# Per-802.11-frame fixed overhead (PHY preamble + MAC header at PHY rate
+# + DIFS/backoff), broadcast/no-ACK. Bench-fitted 2026-05-20 against the
+# MCS3 + mlink=1500 saturation crossover on this chipset; see
+# docs/mlink-airtime-bench.md for method and refit procedure.
+#
+# The bench's raw physical fit is 157 µs against the on-air payload
+# (naluSize = mlink - 100 = 1400 B). The implementation feeds
+# `mtu_bytes = wireless.mlink` straight into compute_bitrate_kbps
+# (1500 B in that example), so this constant absorbs the small
+# OpenIPC framing offset between mlink and naluSize. Net: 170 µs
+# here reproduces the published table cells when called with
+# mtu_bytes = mlink.
+#
+# Re-measure if you change the wfb_tx ACK policy or move to HT40 —
+# the constant is bandwidth-and-mode-dependent.
+preamble_us_per_frame: 170
+
 # (k, n) are computed at runtime — see gs/dynamic_link/dynamic_fec.py.
 # This profile used to carry a per-MCS fec_table here; P4b removed it.

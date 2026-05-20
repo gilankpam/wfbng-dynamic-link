@@ -29,11 +29,10 @@ def _profile():
 def test_bitrate_uses_base_redundancy_ratio_not_live_kn():
     p = _profile()
     cfg = _cfg(base_ratio=0.25)
-    # MCS=5 → PHY=52 Mb/s; mtu=1400, preamble=200 µs (DEFAULT — m8812eu2
-    # hasn't gained the field yet at this commit; Task 5 calibrates it).
-    # eff = 11200/(200e-6 + 11200/52e6) = 11200/415.38e-6 = 26.96 Mb/s
-    # bitrate = 26963 * 0.8 / 1.25 = 17256 → no clamp
-    assert compute_bitrate_kbps(p, 20, 5, 1400, cfg) == 17256
+    # MCS=5 → PHY=52 Mb/s; mtu=1400, preamble=170 µs (now calibrated in the packaged profile).
+    # eff = 11200/(170e-6 + 11200/52e6) = 11200/385.38e-6 = 29.06 Mb/s
+    # bitrate = 29061 * 0.8 / 1.25 = 18599 → no clamp
+    assert compute_bitrate_kbps(p, 20, 5, 1400, cfg) == 18599
 
 
 def test_bitrate_clamped_to_min():
