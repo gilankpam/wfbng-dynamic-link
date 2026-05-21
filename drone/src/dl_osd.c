@@ -19,6 +19,7 @@ struct dl_osd {
     char status_line[128];
     char event_line[128];
     char debug_block[512];
+    uint32_t idr_requests;
 };
 
 dl_osd_t *dl_osd_open(const dl_config_t *cfg) {
@@ -32,6 +33,11 @@ dl_osd_t *dl_osd_open(const dl_config_t *cfg) {
 
 void dl_osd_close(dl_osd_t *o) {
     free(o);
+}
+
+void dl_osd_bump_idr(dl_osd_t *o) {
+    if (!o) return;
+    o->idr_requests++;
 }
 
 static void flush(dl_osd_t *o) {
@@ -71,12 +77,13 @@ void dl_osd_write_status(dl_osd_t *o, const dl_decision_t *d, int rssi_dBm) {
      * video bitrate+fps, cpu%); msposd substitutes at render time. */
     snprintf(o->status_line, sizeof(o->status_line),
              DL_OSD_PREFIX
-             "MCS%u %uM (%u,%u)d%u TX%d R%d | &B T&T W&W CPU&C",
+             "MCS%u %uM (%u,%u)d%u TX%d R%d I%u | &B T&T W&W CPU&C",
              d->mcs,
              (unsigned)((d->bitrate_kbps + 500) / 1000),
              d->k, d->n, d->depth,
              (int)d->tx_power_dBm,
-             rssi_dBm);
+             rssi_dBm,
+             (unsigned)o->idr_requests);
     /* Fresh status = the link recovered (or never tripped). Clear any
      * stale event line so a past WATCHDOG/REJECT toast doesn't sit on
      * the OSD forever — msposd will keep rendering the last bytes we

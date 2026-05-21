@@ -19,6 +19,10 @@ void dl_osd_write_status(dl_osd_t *o, const dl_decision_t *d, int rssi_dBm);
  * renders both if present. */
 void dl_osd_write_event(dl_osd_t *o, const char *text);
 
+/* Increment the running counter of received IDR requests. Cheap;
+ * safe to call from the main poll loop on every drain wake. */
+void dl_osd_bump_idr(dl_osd_t *o);
+
 /* Convenience events. */
 void dl_osd_event_watchdog(dl_osd_t *o);
 void dl_osd_event_reject(dl_osd_t *o, const char *reason);

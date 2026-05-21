@@ -561,6 +561,7 @@ int main(int argc, char **argv) {
             size_t got = dl_idr_listen_drain(idr_listen);
             if (got > 0) {
                 dl_log_debug("idr_listen: drained %zu datagram(s)", got);
+                dl_osd_bump_idr(osd);
                 dl_backend_enc_request_idr(be, now_monotonic_ms());
             }
         }
