@@ -44,17 +44,28 @@ struct dl_backend_enc {
     uint8_t  last_fps;
 };
 
-int dl_compute_roi_qp(uint16_t bitrate_kbps, const dl_config_t *cfg) {
-    if (bitrate_kbps >= cfg->roi_qp_threshold_kbps) return 0;
-    int span = (int)cfg->roi_qp_threshold_kbps - (int)cfg->roi_qp_low_anchor_kbps;
-    int delta = (int)bitrate_kbps - (int)cfg->roi_qp_low_anchor_kbps;
+int dl_compute_roi_qp_raw(uint16_t bitrate_kbps,
+                          uint16_t threshold_kbps,
+                          uint16_t low_anchor_kbps,
+                          int8_t   floor,
+                          uint8_t  step) {
+    if (bitrate_kbps >= threshold_kbps) return 0;
+    int span = (int)threshold_kbps - (int)low_anchor_kbps;
+    int delta = (int)bitrate_kbps - (int)low_anchor_kbps;
     if (delta < 0) delta = 0;
-    int raw = ((int)cfg->roi_qp_floor * (span - delta)) / span;   /* negative */
-    int step = (int)cfg->roi_qp_step;
-    int q = (raw / step) * step;                                   /* truncate toward zero */
-    if (q < (int)cfg->roi_qp_floor) q = (int)cfg->roi_qp_floor;
+    int raw = ((int)floor * (span - delta)) / span;   /* negative */
+    int q = (raw / (int)step) * (int)step;            /* truncate toward zero */
+    if (q < (int)floor) q = (int)floor;
     if (q > 0) q = 0;
     return q;
+}
+
+int dl_compute_roi_qp(uint16_t bitrate_kbps, const dl_config_t *cfg) {
+    return dl_compute_roi_qp_raw(bitrate_kbps,
+                                 cfg->roi_qp_threshold_kbps,
+                                 cfg->roi_qp_low_anchor_kbps,
+                                 cfg->roi_qp_floor,
+                                 cfg->roi_qp_step);
 }
 
 /* Parse "HTTP/1.x NNN " out of the first line of a response buffer.
@@ -215,15 +226,6 @@ dl_backend_enc_t *dl_backend_enc_open(const dl_config_t *cfg) {
     return be;
 }
 
-static int compute_roi_qp_from_be(dl_backend_enc_t *be, uint16_t bitrate_kbps) {
-    dl_config_t snap = {0};
-    snap.roi_qp_threshold_kbps  = be->roi_qp_threshold_kbps;
-    snap.roi_qp_low_anchor_kbps = be->roi_qp_low_anchor_kbps;
-    snap.roi_qp_floor           = be->roi_qp_floor;
-    snap.roi_qp_step            = be->roi_qp_step;
-    return dl_compute_roi_qp(bitrate_kbps, &snap);
-}
-
 void dl_backend_enc_close(dl_backend_enc_t *be) {
     free(be);
 }
@@ -257,7 +259,12 @@ int dl_backend_enc_apply(dl_backend_enc_t *be, const dl_decision_t *d) {
     if (!be) return -1;
     if (d->bitrate_kbps == 0) return 0;   /* sentinel: don't push */
 
-    int8_t roi_qp = (int8_t)compute_roi_qp_from_be(be, d->bitrate_kbps);
+    int8_t roi_qp = (int8_t)dl_compute_roi_qp_raw(
+        d->bitrate_kbps,
+        be->roi_qp_threshold_kbps,
+        be->roi_qp_low_anchor_kbps,
+        be->roi_qp_floor,
+        be->roi_qp_step);
 
     if (be->last_valid &&
         be->last_bitrate_kbps == d->bitrate_kbps &&

@@ -42,3 +42,11 @@ int dl_backend_enc_apply_safe(dl_backend_enc_t *be, const dl_config_t *cfg);
  * quantized to multiples of step. Returns a signed delta in [floor, 0].
  */
 int dl_compute_roi_qp(uint16_t bitrate_kbps, const dl_config_t *cfg);
+
+/* Same as above but takes the four knobs directly, avoiding a
+ * 1.7KB dl_config_t copy on hot paths. */
+int dl_compute_roi_qp_raw(uint16_t bitrate_kbps,
+                          uint16_t threshold_kbps,
+                          uint16_t low_anchor_kbps,
+                          int8_t   floor,
+                          uint8_t  step);
