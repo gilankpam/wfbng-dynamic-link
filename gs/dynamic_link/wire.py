@@ -1,16 +1,16 @@
 """Phase 2 — decision-packet serialiser.
 
-Byte-for-byte mirror of `drone/src/dl_wire.c`. The authority is the
-C implementation; this module must match it exactly. The test at
+Byte-for-byte mirror of `drone/src/dl_wire.c` (v2). The authority is
+the C implementation; this module must match it exactly. The test at
 `tests/test_wire_contract.py` cross-checks by running
 `drone/build/dl-inject --dry-run` and diffing its hex output against
 what this module produces for the same inputs.
 
-Wire layout (big-endian, 32 bytes on-wire = 28 payload + 4 CRC32):
+Wire layout (big-endian, 31 bytes on-wire = 27 payload + 4 CRC32):
 
     off  size  field
      0    4    magic       = 0x444C4B31 ('DLK1')
-     4    1    version     = 1
+     4    1    version     = 2
      5    1    flags
      6    2    _pad
      8    4    sequence
@@ -22,10 +22,9 @@ Wire layout (big-endian, 32 bytes on-wire = 28 payload + 4 CRC32):
     20    1    n
     21    1    depth
     22    2    bitrate_kbps
-    24    1    roi_qp
-    25    1    fps
-    26    2    _pad2
-    28    4    crc32(bytes[0..27])
+    24    1    fps
+    25    2    _pad2
+    27    4    crc32(bytes[0..26])
 """
 from __future__ import annotations
 
@@ -35,9 +34,9 @@ from dataclasses import dataclass
 from .decision import Decision
 
 MAGIC            = 0x444C4B31    # 'DLK1'
-VERSION          = 1
-PAYLOAD_SIZE     = 28
-ON_WIRE_SIZE     = 32
+VERSION          = 2
+PAYLOAD_SIZE     = 27
+ON_WIRE_SIZE     = 31
 
 # HELLO flag bits — mirrors drone/src/dl_wire.h.
 # Bit 0 = "vanilla wfb-ng" (no CMD_SET_INTERLEAVE_DEPTH). Bit clear =
@@ -110,8 +109,7 @@ class Encoder:
             n=int(decision.n),
             depth=int(decision.depth),
             bitrate_kbps=int(decision.bitrate_kbps),
-            roi_qp=0,  # policy engine doesn't set ROI yet
-            fps=0,     # ditto for fps (sentinel 0 = "leave alone")
+            fps=0,     # policy engine doesn't set fps yet (sentinel 0 = "leave alone")
         )
 
 
@@ -128,7 +126,6 @@ def _encode_raw(
     n: int,
     depth: int,
     bitrate_kbps: int,
-    roi_qp: int,
     fps: int,
 ) -> bytes:
     payload = bytearray(PAYLOAD_SIZE)
@@ -145,9 +142,8 @@ def _encode_raw(
     payload[20] = n & 0xFF
     payload[21] = depth & 0xFF
     struct.pack_into(">H", payload, 22, bitrate_kbps & 0xFFFF)
-    payload[24] = roi_qp & 0xFF
-    payload[25] = fps & 0xFF
-    # [26..27] = _pad2
+    payload[24] = fps & 0xFF
+    # [25..26] = _pad2
     crc = _crc32(bytes(payload))
     return bytes(payload) + struct.pack(">I", crc)
 
