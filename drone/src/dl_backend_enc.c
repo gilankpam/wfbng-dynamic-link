@@ -30,6 +30,19 @@ struct dl_backend_enc {
     bool     idr_ever_sent;
 };
 
+int dl_compute_roi_qp(uint16_t bitrate_kbps, const dl_config_t *cfg) {
+    if (bitrate_kbps >= cfg->roi_qp_threshold_kbps) return 0;
+    int span = (int)cfg->roi_qp_threshold_kbps - (int)cfg->roi_qp_low_anchor_kbps;
+    int delta = (int)bitrate_kbps - (int)cfg->roi_qp_low_anchor_kbps;
+    if (delta < 0) delta = 0;
+    int raw = ((int)cfg->roi_qp_floor * (span - delta)) / span;   /* negative */
+    int step = (int)cfg->roi_qp_step;
+    int q = (raw / step) * step;                                   /* truncate toward zero */
+    if (q < (int)cfg->roi_qp_floor) q = (int)cfg->roi_qp_floor;
+    if (q > 0) q = 0;
+    return q;
+}
+
 /* Parse "HTTP/1.x NNN " out of the first line of a response buffer.
  * Returns the status code, or 0 if the buffer doesn't look like an
  * HTTP reply (silent encoder, garbage, etc.). */

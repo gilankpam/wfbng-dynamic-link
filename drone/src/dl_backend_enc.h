@@ -35,3 +35,12 @@ int dl_backend_enc_request_idr(dl_backend_enc_t *be, uint64_t now_ms);
 /* Push safe_defaults on watchdog trip (bitrate only — ROI/fps stay
  * where they are). */
 int dl_backend_enc_apply_safe(dl_backend_enc_t *be, const dl_config_t *cfg);
+
+/* Pure function. Maps bitrate → roi_qp using cfg->roi_qp_* knobs.
+ * Exposed for unit tests; production callers go through
+ * dl_backend_enc_apply.
+ *
+ * Formula: linear ramp from 0 at >= threshold down to floor at <= anchor,
+ * quantized to multiples of step. Returns a signed delta in [floor, 0].
+ */
+int dl_compute_roi_qp(uint16_t bitrate_kbps, const dl_config_t *cfg);

@@ -55,6 +55,8 @@ TEST_SRCS := \
     $(TESTDIR)/test_dl_hello.c \
     $(TESTDIR)/test_idr_listen.c \
     $(TESTDIR)/test_osd.c \
+    $(TESTDIR)/test_roi_qp.c \
+    $(SRCDIR)/dl_backend_enc.c \
     $(SRCDIR)/dl_wire.c \
     $(SRCDIR)/dl_config.c \
     $(SRCDIR)/dl_dbg.c \
