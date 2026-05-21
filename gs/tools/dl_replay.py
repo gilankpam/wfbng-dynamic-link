@@ -67,7 +67,6 @@ def _decision_from_record(rec: dict) -> Decision:
         n=int(rec["n"]),
         depth=int(rec["depth"]),
         bitrate_kbps=int(rec["bitrate_kbps"]),
-        idr_request=bool(rec["idr_request"]),
         reason=str(rec.get("reason", "")),
         knobs_changed=list(rec.get("knobs_changed", [])),
         signals_snapshot=dict(rec.get("signals_snapshot", {})),

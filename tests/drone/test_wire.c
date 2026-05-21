@@ -6,7 +6,7 @@
 
 DL_TEST(test_wire_round_trip) {
     dl_decision_t d = {
-        .flags = DL_FLAG_IDR_REQUEST,
+        .flags = 0,
         .sequence = 0xDEADBEEF,
         .timestamp_ms = 12345,
         .mcs = 5,
@@ -35,7 +35,7 @@ DL_TEST(test_wire_round_trip) {
     DL_ASSERT_EQ(r.bitrate_kbps, d.bitrate_kbps);
     DL_ASSERT_EQ(r.roi_qp, d.roi_qp);
     DL_ASSERT_EQ(r.fps, d.fps);
-    DL_ASSERT_EQ(r.flags & DL_FLAG_IDR_REQUEST, DL_FLAG_IDR_REQUEST);
+    DL_ASSERT_EQ(r.flags, 0);
 }
 
 DL_TEST(test_wire_endianness_big) {

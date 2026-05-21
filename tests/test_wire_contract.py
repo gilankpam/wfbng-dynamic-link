@@ -55,7 +55,6 @@ def _decision(**overrides) -> Decision:
         mcs=5, bandwidth=20, tx_power_dBm=18,
         k=8, n=14, depth=2,
         bitrate_kbps=12000,
-        idr_request=False,
     )
     for k, v in overrides.items():
         setattr(base, k, v)
@@ -72,20 +71,6 @@ def test_contract_golden_values():
     assert c_bytes == py_bytes, (
         f"contract mismatch:\n  C : {c_bytes.hex()}\n  Py: {py_bytes.hex()}"
     )
-
-
-def test_contract_idr_flag():
-    c_bytes = _dl_inject_hex(
-        mcs=7, bandwidth=40, tx_power=20,
-        k=8, n=12, depth=1, bitrate=26000, sequence=42, idr=True,
-    )
-    py_bytes = encode(
-        _decision(mcs=7, bandwidth=40, tx_power_dBm=20,
-                  k=8, n=12, depth=1, bitrate_kbps=26000,
-                  idr_request=True),
-        sequence=42,
-    )
-    assert c_bytes == py_bytes
 
 
 def test_contract_signed_tx_power():

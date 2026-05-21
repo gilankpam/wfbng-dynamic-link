@@ -51,6 +51,22 @@ editing.
    `depth = 1`. See `docs/superpowers/specs/2026-05-14-vanilla-wfb-ng-support-design.md`
    for the full rationale.
 
+## IDR (keyframe) requests
+
+dynamic-link does not generate IDR requests on its own. Instead,
+`dl-applier` binds a UDP socket on port **11223** (configurable via
+`idr_listen_port` in `drone.conf`) and accepts the IDR-token
+datagrams that PixelPilot_rk's RTP receiver sends when it detects a
+sequence gap or decode stall. Any datagram on this port produces
+one `GET /request/idr` call to the local encoder, rate-limited by
+`min_idr_interval_ms`.
+
+If you are running a GS video player other than PixelPilot_rk
+(gstreamer pipeline, QGC, ffplay), IDR requests will not be sent.
+PixelPilot's burst parameters (3 packets × 100 ms, 500 ms gap
+cooldown, 700 ms decode-stall cooldown) are hardcoded in
+`gstrtpreceiver.cpp:118–133` — retuning requires forking PixelPilot.
+
 ## GS install and run
 
 ```bash

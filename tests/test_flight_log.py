@@ -255,7 +255,6 @@ def test_logsink_rotates_with_rotator(tmp_path: Path):
             timestamp=0.0,
             mcs=5, bandwidth=20, tx_power_dBm=18,
             k=8, n=14, depth=2, bitrate_kbps=12000,
-            idr_request=False,
             reason=f"test-{tag}",
             knobs_changed=["mcs"] if changed else [],
             signals_snapshot={"tag": tag},

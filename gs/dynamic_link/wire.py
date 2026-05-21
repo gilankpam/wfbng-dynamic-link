@@ -38,7 +38,6 @@ MAGIC            = 0x444C4B31    # 'DLK1'
 VERSION          = 1
 PAYLOAD_SIZE     = 28
 ON_WIRE_SIZE     = 32
-FLAG_IDR_REQUEST = 0x01
 
 # HELLO flag bits — mirrors drone/src/dl_wire.h.
 # Bit 0 = "vanilla wfb-ng" (no CMD_SET_INTERLEAVE_DEPTH). Bit clear =
@@ -79,30 +78,26 @@ class Encoder:
         self,
         decision: Decision,
         *,
-        idr_request: bool | None = None,
         timestamp_ms: int | None = None,
         sequence: int | None = None,
     ) -> bytes:
         """Serialise one Decision to the 32-byte on-wire form.
 
-        `idr_request` / `timestamp_ms` / `sequence` override the
-        corresponding Decision fields if provided; useful for tests
-        and for the contract harness. Otherwise `idr_request` comes
-        from `decision.idr_request`, `sequence` from the internal
-        counter (which is then post-incremented), and `timestamp_ms`
-        defaults to the sequence value (matches dl-inject behaviour
-        when no explicit timestamp is supplied — the drone doesn't
-        parse it meaningfully).
+        `timestamp_ms` / `sequence` override their auto-generated
+        values if provided; useful for tests and for the contract
+        harness. Otherwise `sequence` comes from the internal counter
+        (which is then post-incremented), and `timestamp_ms` defaults
+        to the sequence value (matches dl-inject behaviour when no
+        explicit timestamp is supplied — the drone doesn't parse it
+        meaningfully).
         """
         if sequence is None:
             sequence = self.seq
             self.seq = (self.seq + 1) & 0xFFFFFFFF
         if timestamp_ms is None:
             timestamp_ms = sequence
-        if idr_request is None:
-            idr_request = bool(decision.idr_request)
 
-        flags = FLAG_IDR_REQUEST if idr_request else 0
+        flags = 0
         return _encode_raw(
             version=VERSION,
             flags=flags,

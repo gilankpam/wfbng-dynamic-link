@@ -21,7 +21,7 @@ static void usage(const char *prog) {
         "         --mcs N --bandwidth {20|40} --tx-power DBM \\\n"
         "         --k N --n N --depth N \\\n"
         "         --bitrate KBPS [--roi-qp QP] [--fps FPS] \\\n"
-        "         [--idr] [--sequence N]\n"
+        "         [--sequence N]\n"
         "       %s --ping --gs-seq N --gs-mono US [--target HOST:PORT]\n"
         "       %s --hello --gen-id N --mtu N --fps N [--build-sha N] [--hello-flags N] --dry-run\n"
         "       %s --hello-ack --gen-id N --dry-run\n"
@@ -55,7 +55,6 @@ int main(int argc, char **argv) {
         { "bitrate",   required_argument, 0, 'b' },
         { "roi-qp",    required_argument, 0, 'r' },
         { "fps",       required_argument, 0, 'f' },
-        { "idr",       no_argument,       0, 'I' },
         { "sequence",  required_argument, 0, 's' },
         { "dry-run",   no_argument,       0, 'D' },
         { "ping",      no_argument,       0, 'p' },
@@ -98,7 +97,7 @@ int main(int argc, char **argv) {
     dl_hello_ack_t hello_ack = { .version = DL_WIRE_VERSION };
 
     int c;
-    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:Is:Dpq:m:HAg:u:S:F:h",
+    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:s:Dpq:m:HAg:u:S:F:h",
                             opts, NULL)) != -1) {
         switch (c) {
             case 't': target = optarg; break;
@@ -112,7 +111,6 @@ int main(int argc, char **argv) {
             case 'r': d.roi_qp = (uint8_t)atoi(optarg); break;
             case 'f': d.fps = (uint8_t)atoi(optarg);
                       hello.fps = (uint16_t)atoi(optarg); break;
-            case 'I': d.flags |= DL_FLAG_IDR_REQUEST; break;
             case 's': explicit_seq = (uint32_t)strtoul(optarg, NULL, 10);
                       have_seq = true; break;
             case 'D': dry_run = true; break;
@@ -266,10 +264,9 @@ int main(int argc, char **argv) {
     close(fd);
     fprintf(stderr,
             "sent seq=%u mcs=%u bw=%u tx=%d k=%u n=%u depth=%u "
-            "bitrate=%u roi_qp=%u fps=%u%s -> %s:%u\n",
+            "bitrate=%u roi_qp=%u fps=%u -> %s:%u\n",
             d.sequence, d.mcs, d.bandwidth, d.tx_power_dBm,
             d.k, d.n, d.depth, d.bitrate_kbps, d.roi_qp, d.fps,
-            (d.flags & DL_FLAG_IDR_REQUEST) ? " IDR" : "",
             host, port);
     return 0;
 }

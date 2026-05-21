@@ -19,12 +19,11 @@ from dynamic_link import wire  # noqa: E402
 def _verbose_record(seq: int, *, timestamp: float, mcs: int = 5,
                     bandwidth: int = 20, tx: int = 18,
                     k: int = 8, n: int = 14, depth: int = 2,
-                    bitrate: int = 12000, idr: bool = False) -> dict:
+                    bitrate: int = 12000) -> dict:
     return {
         "timestamp": timestamp,
         "mcs": mcs, "bandwidth": bandwidth, "tx_power_dBm": tx,
         "k": k, "n": n, "depth": depth, "bitrate_kbps": bitrate,
-        "idr_request": idr,
         "reason": "test",
         "knobs_changed": [],
         "signals_snapshot": {},

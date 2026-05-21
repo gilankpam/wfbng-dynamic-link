@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -27,18 +28,18 @@ def _make_bundle_dir(tmp_path: Path) -> Path:
     _write_jsonl(d / "gs.jsonl", [
         {"timestamp": 100.000, "mcs": 5, "bandwidth": 20,
          "tx_power_dBm": 18, "k": 8, "n": 14, "depth": 2,
-         "bitrate_kbps": 12000, "idr_request": False,
+         "bitrate_kbps": 12000,
          "reason": "boot", "knobs_changed": ["mcs", "k", "n"],
          "signals_snapshot": {}},
     ])
     _write_jsonl(d / "gs.verbose.jsonl", [
         {"timestamp": 99.900, "mcs": 5, "bandwidth": 20,
          "tx_power_dBm": 18, "k": 8, "n": 14, "depth": 2,
-         "bitrate_kbps": 12000, "idr_request": False,
+         "bitrate_kbps": 12000,
          "reason": "tick", "knobs_changed": [], "signals_snapshot": {}},
         {"timestamp": 100.000, "mcs": 5, "bandwidth": 20,
          "tx_power_dBm": 18, "k": 8, "n": 14, "depth": 2,
-         "bitrate_kbps": 12000, "idr_request": False,
+         "bitrate_kbps": 12000,
          "reason": "boot", "knobs_changed": ["mcs"], "signals_snapshot": {}},
     ])
     _write_jsonl(d / "latency.jsonl", [
@@ -157,7 +158,7 @@ def test_dl_bundle_script_runs_against_a_log_dir(tmp_path: Path):
     result = subprocess.run(
         [str(script), "flight-test"],
         env={"LOG_DIR": str(log_dir), "OUT_DIR": str(out_dir),
-             "TAG": "flight-test", "PATH": "/usr/bin:/bin"},
+             "TAG": "flight-test", "PATH": os.environ.get("PATH", "")},
         capture_output=True, text=True, check=True,
     )
     tar = out_dir / "flight-test.tar.gz"

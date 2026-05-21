@@ -68,7 +68,7 @@ def _verbose_record(*, timestamp: float, mcs: int = 5, k: int = 8,
         "timestamp": timestamp,
         "mcs": mcs, "bandwidth": 20, "tx_power_dBm": tx,
         "k": k, "n": n, "depth": depth,
-        "bitrate_kbps": bitrate, "idr_request": False,
+        "bitrate_kbps": bitrate,
         "reason": "test", "knobs_changed": [],
         "signals_snapshot": {},
     }

@@ -18,6 +18,8 @@ void dl_config_defaults(dl_config_t *cfg) {
     cfg->wfb_tx_ctrl_port = 8000;
 
     cfg->min_idr_interval_ms = 500;
+    cfg->idr_listen_port = 11223;
+    strncpy(cfg->idr_listen_addr, "0.0.0.0", DL_CONF_MAX_STR - 1);
 
     cfg->apply_stagger_ms = 50;
     cfg->apply_sub_pace_ms = 5;
@@ -171,6 +173,8 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
             continue;
         }
         else if (strcmp(key, "min_idr_interval_ms") == 0) SET_INT_RANGED(min_idr_interval_ms, uint32_t, 0, 60000);
+        else if (strcmp(key, "idr_listen_port") == 0) SET_INT_RANGED(idr_listen_port, uint16_t, 0, 65535);
+        else if (strcmp(key, "idr_listen_addr") == 0) SET_STR(idr_listen_addr);
         else if (strcmp(key, "apply_stagger_ms") == 0)   SET_INT_RANGED(apply_stagger_ms, uint32_t, 0, 500);
         else if (strcmp(key, "apply_sub_pace_ms") == 0)  SET_INT_RANGED(apply_sub_pace_ms, uint32_t, 0, 50);
         else if (strcmp(key, "osd_enable") == 0)         SET_BOOL(osd_enable);
