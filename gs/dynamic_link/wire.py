@@ -80,7 +80,7 @@ class Encoder:
         timestamp_ms: int | None = None,
         sequence: int | None = None,
     ) -> bytes:
-        """Serialise one Decision to the 32-byte on-wire form.
+        """Serialise one Decision to the 31-byte on-wire form.
 
         `timestamp_ms` / `sequence` override their auto-generated
         values if provided; useful for tests and for the contract
