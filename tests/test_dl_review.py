@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -157,7 +158,7 @@ def test_dl_bundle_script_runs_against_a_log_dir(tmp_path: Path):
     result = subprocess.run(
         [str(script), "flight-test"],
         env={"LOG_DIR": str(log_dir), "OUT_DIR": str(out_dir),
-             "TAG": "flight-test", "PATH": "/usr/bin:/bin"},
+             "TAG": "flight-test", "PATH": os.environ.get("PATH", "")},
         capture_output=True, text=True, check=True,
     )
     tar = out_dir / "flight-test.tar.gz"

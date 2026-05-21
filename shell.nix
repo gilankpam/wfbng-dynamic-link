@@ -13,4 +13,8 @@ pkgs.mkShell {
       pytest-asyncio
     ]))
   ];
+
+  shellHook = ''
+    export PYTHONPATH="$PWD/gs:$PYTHONPATH"
+  '';
 }

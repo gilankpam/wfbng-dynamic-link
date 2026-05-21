@@ -48,6 +48,12 @@ wfb-ng/             Reference checkout (GITIGNORED — not our code)
 
 ## Commands
 
+On NixOS (or with Nix installed), `shell.nix` provides the full toolchain
+(gcc, gnumake, armv7l musl cross-cc, python3 + pyyaml/pytest/pytest-asyncio).
+Wrap commands with `nix-shell --run '…'` or drop into `nix-shell` first.
+The shellHook prepends `gs/` to `PYTHONPATH` so `dynamic_link` and `tools`
+import without installing the package.
+
 | Need | Command |
 |---|---|
 | Run pytest (GS unit + Python e2e) | `python3 -m pytest --ignore=tests/test_mavlink_status.py` (from repo root) |
