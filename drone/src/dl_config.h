@@ -23,6 +23,10 @@ typedef struct {
     /* IDR throttle. */
     uint32_t min_idr_interval_ms;
 
+    /* PixelPilot IDR-token listener. port == 0 disables. */
+    uint16_t idr_listen_port;
+    char     idr_listen_addr[DL_CONF_MAX_STR];
+
     /* Inter-stage gap for direction-aware staggered apply. 0 disables
      * staggering (all backends fire in one shot, legacy behaviour). */
     uint32_t apply_stagger_ms;

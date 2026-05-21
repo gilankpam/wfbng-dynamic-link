@@ -198,3 +198,24 @@ DL_TEST(config_hello_waybeam_json_path_parses) {
     DL_ASSERT_STR_EQ(c.hello_waybeam_json_path, "/tmp/wb.json");
     unlink(path);
 }
+
+DL_TEST(test_config_idr_listen_defaults) {
+    dl_config_t c;
+    dl_config_defaults(&c);
+    DL_ASSERT_EQ(c.idr_listen_port, 11223);
+    DL_ASSERT_STR_EQ(c.idr_listen_addr, "0.0.0.0");
+}
+
+DL_TEST(test_config_idr_listen_parses) {
+    const char *body =
+        "idr_listen_port = 22334\n"
+        "idr_listen_addr = 10.0.0.5\n";
+    char path[64];
+    DL_ASSERT_EQ(write_tmp(body, path, sizeof(path)), 0);
+    dl_config_t c;
+    dl_config_defaults(&c);
+    DL_ASSERT_EQ(dl_config_load(path, &c), 0);
+    DL_ASSERT_EQ(c.idr_listen_port, 22334);
+    DL_ASSERT_STR_EQ(c.idr_listen_addr, "10.0.0.5");
+    unlink(path);
+}

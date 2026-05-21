@@ -24,6 +24,14 @@ wfb_tx_ctrl_port = 8000
 # keyframes, but longer corruption window after a missed primary.
 min_idr_interval_ms = 500
 
+# ---- PixelPilot IDR-token listener -----------------------------------
+# Bind a UDP socket and accept PixelPilot_rk's IDR-request tokens.
+# Any datagram arriving on this socket is treated as an IDR request;
+# min_idr_interval_ms above governs the actual encoder API rate.
+# Set idr_listen_port = 0 to disable (no socket bound).
+idr_listen_port = 11223
+idr_listen_addr = 0.0.0.0
+
 # ---- Direction-aware apply stagger ----------------------------------
 # When a decision changes the encoder bitrate, the applier splits the
 # apply into two phases separated by this many milliseconds:

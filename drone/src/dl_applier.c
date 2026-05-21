@@ -19,6 +19,7 @@
 #include "dl_dbg.h"
 #include "dl_dedup.h"
 #include "dl_hello.h"
+#include "dl_idr_listen.h"
 #include "dl_latency.h"
 #include "dl_log.h"
 #include "dl_mavlink.h"
@@ -251,6 +252,9 @@ int main(int argc, char **argv) {
         return 4;
     }
 
+    dl_idr_listen_t *idr_listen = dl_idr_listen_open(cfg.idr_listen_addr,
+                                                     cfg.idr_listen_port);
+
     dl_latency_init();
     dl_backend_tx_t    *bt = dl_backend_tx_open(&cfg);
     dl_backend_radio_t *br = dl_backend_radio_open(&cfg);
@@ -288,14 +292,16 @@ int main(int argc, char **argv) {
     apply_state_t apply_state   = APPLY_IDLE;
     dl_decision_t apply_pending = {0};
 
-    struct pollfd pfds[4];
+    struct pollfd pfds[5];
     pfds[0].fd = listen_fd;      pfds[0].events = POLLIN;
     pfds[1].fd = tick_fd;        pfds[1].events = POLLIN;
     pfds[2].fd = gap_fd;         pfds[2].events = POLLIN;
     pfds[3].fd = hello_timer_fd; pfds[3].events = POLLIN;
+    pfds[4].fd = dl_idr_listen_fd(idr_listen);
+    pfds[4].events = POLLIN;
 
     while (!g_stop) {
-        int n = poll(pfds, 4, -1);
+        int n = poll(pfds, 5, -1);
         if (n < 0) {
             if (errno == EINTR) continue;
             dl_log_err("poll: %s", strerror(errno));
@@ -550,6 +556,14 @@ int main(int argc, char **argv) {
             }
             timerfd_settime(hello_timer_fd, 0, &t, NULL);
         }
+
+        if (pfds[4].revents & POLLIN) {
+            size_t got = dl_idr_listen_drain(idr_listen);
+            if (got > 0) {
+                dl_log_debug("idr_listen: drained %zu datagram(s)", got);
+                dl_backend_enc_request_idr(be, now_monotonic_ms());
+            }
+        }
     }
 
     dl_log_info("dl-applier shutting down");
@@ -558,6 +572,7 @@ int main(int argc, char **argv) {
     close(gap_fd);
     if (gs_tunnel_fd >= 0) close(gs_tunnel_fd);
     if (hello_timer_fd >= 0) close(hello_timer_fd);
+    dl_idr_listen_close(idr_listen);
     dl_mavlink_close(mav);
     dl_osd_close(osd);
     dl_backend_enc_close(be);
