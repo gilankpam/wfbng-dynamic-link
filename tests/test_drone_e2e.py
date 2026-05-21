@@ -487,6 +487,7 @@ def test_golden_path_dispatches_all_backends(tmp_path: Path):
                    for p in paths), paths
 
 
+@pytest.mark.skip(reason="removed in Task 6")
 def test_idr_throttle_drops_duplicates(tmp_path: Path):
     with _sandbox(tmp_path, min_idr_interval_ms=500) as s:
         target = f"{s['listen_addr']}:{s['listen_port']}"
@@ -538,6 +539,7 @@ def test_pixelpilot_udp_burst_collapses_to_one_idr(tmp_path: Path):
         assert len(idrs) == 1, s["encoder"].recorded
 
 
+@pytest.mark.skip(reason="removed in Task 6")
 @pytest.mark.asyncio
 async def test_idr_burst_delivers_multiple_packets(tmp_path: Path):
     """End-to-end: when IdrBurster fires count=4 packets at 20ms
@@ -928,6 +930,7 @@ def test_osd_debug_latency_error_counter_increments(tmp_path: Path):
             f"no ENC error in: {_osd_text(s['osd_path'])!r}"
 
 
+@pytest.mark.skip(reason="removed in Task 6")
 def test_osd_debug_latency_idr_throttle_not_counted(tmp_path: Path):
     with _sandbox(tmp_path,
                   osd_debug_latency=1,

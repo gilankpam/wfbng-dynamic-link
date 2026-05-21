@@ -394,9 +394,6 @@ int main(int argc, char **argv) {
                         if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
                         if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
                         if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
-                        if (d.flags & DL_FLAG_IDR_REQUEST) {
-                            dl_backend_enc_request_idr(be, now);
-                        }
                     } else if (dir == DL_APPLY_DIR_UP) {
                         /* Power up BEFORE MCS up so the new (higher)
                          * MCS rate has the headroom on the very first
@@ -418,9 +415,6 @@ int main(int argc, char **argv) {
                          * radio (power down) so we don't transmit
                          * the old high MCS at reduced power. */
                         if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
-                        if (d.flags & DL_FLAG_IDR_REQUEST) {
-                            dl_backend_enc_request_idr(be, now);
-                        }
                         apply_pending = d;
                         apply_state   = APPLY_DOWN_GAP;
                         arm_gap(gap_fd, cfg.apply_stagger_ms);
@@ -491,9 +485,6 @@ int main(int argc, char **argv) {
             if (apply_state == APPLY_UP_GAP) {
                 if (be && dl_backend_enc_apply(be, &apply_pending, &last_enc) < 0)
                     drc = -1;
-                if (apply_pending.flags & DL_FLAG_IDR_REQUEST) {
-                    dl_backend_enc_request_idr(be, now_monotonic_ms());
-                }
             } else if (apply_state == APPLY_DOWN_GAP) {
                 if (bt && dl_backend_tx_apply(bt, &apply_pending, &last_tx) < 0)
                     drc = -1;

@@ -74,20 +74,6 @@ def test_contract_golden_values():
     )
 
 
-def test_contract_idr_flag():
-    c_bytes = _dl_inject_hex(
-        mcs=7, bandwidth=40, tx_power=20,
-        k=8, n=12, depth=1, bitrate=26000, sequence=42, idr=True,
-    )
-    py_bytes = encode(
-        _decision(mcs=7, bandwidth=40, tx_power_dBm=20,
-                  k=8, n=12, depth=1, bitrate_kbps=26000,
-                  idr_request=True),
-        sequence=42,
-    )
-    assert c_bytes == py_bytes
-
-
 def test_contract_signed_tx_power():
     c_bytes = _dl_inject_hex(
         mcs=0, bandwidth=20, tx_power=-10,

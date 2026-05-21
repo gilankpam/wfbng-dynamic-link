@@ -32,8 +32,7 @@
 #define DL_HELLO_ACK_PAYLOAD_SIZE   28
 #define DL_HELLO_ACK_ON_WIRE_SIZE   32            /* payload + 4-byte CRC */
 
-/* flag bits (decision packet) */
-#define DL_FLAG_IDR_REQUEST 0x01u
+/* flag bits (decision packet) — currently unused; reserved zero. */
 
 /* HELLO flag bits. Bit 0 = "vanilla wfb-ng" — when set the drone is
  * running upstream wfb-ng (no CMD_SET_INTERLEAVE_DEPTH). Bit clear
