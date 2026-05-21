@@ -315,6 +315,12 @@ def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
     listen_port = s.getsockname()[1]
     s.close()
 
+    # Free port for the applier's PixelPilot IDR listener.
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    idr_listen_port = s.getsockname()[1]
+    s.close()
+
     # Pre-bind the GS-side tunnel listener. The applier sends PONGs and
     # (P4a) HELLOs here. Binding now guarantees the port is taken before
     # we tell the applier about it, so its first sendto doesn't lose to
@@ -338,6 +344,8 @@ def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
         "osd_msg_path":      str(osd_path),
         "osd_update_interval_ms": 200,
         "min_idr_interval_ms":    500,
+        "idr_listen_port":        idr_listen_port,
+        "idr_listen_addr":        "127.0.0.1",
         "health_timeout_ms":      2000,
         # Nonexistent wlan to guarantee the `iw` backend fails softly
         # (we're not testing iw).
@@ -392,6 +400,7 @@ def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
         "mavlink": mav,
         "listen_addr": defaults["listen_addr"],
         "listen_port": listen_port,
+        "idr_listen_port": idr_listen_port,
         "gs_tunnel_port": gs_tunnel_port,
         "osd_path": osd_path,
         "proc": proc,
@@ -488,6 +497,43 @@ def test_idr_throttle_drops_duplicates(tmp_path: Path):
         _inject(target, mcs=5, bandwidth=20, tx_power=15,
                 k=8, n=12, depth=1, bitrate=8000, idr=True, sequence=2)
         time.sleep(0.25)
+        idrs = [p for p in s["encoder"].recorded if p == "/request/idr"]
+        assert len(idrs) == 1, s["encoder"].recorded
+
+
+def test_pixelpilot_udp_token_triggers_idr(tmp_path: Path):
+    """A single UDP datagram on the applier's IDR listener port
+    produces exactly one /request/idr HTTP call to the mock encoder."""
+    with _sandbox(tmp_path) as s:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.sendto(b"abc\n", ("127.0.0.1", s["idr_listen_port"]))
+        finally:
+            sock.close()
+        assert _wait_until(
+            lambda: any(p == "/request/idr" for p in s["encoder"].recorded),
+            timeout_s=2.0,
+        ), s["encoder"].recorded
+        idrs = [p for p in s["encoder"].recorded if p == "/request/idr"]
+        assert len(idrs) == 1, s["encoder"].recorded
+
+
+def test_pixelpilot_udp_burst_collapses_to_one_idr(tmp_path: Path):
+    """Three UDP datagrams in quick succession (PixelPilot's 3-packet
+    burst pattern) collapse to one HTTP call: the drone drains them
+    in a single poll wake and calls dl_backend_enc_request_idr once."""
+    with _sandbox(tmp_path) as s:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            for _ in range(3):
+                sock.sendto(b"xyz\n", ("127.0.0.1", s["idr_listen_port"]))
+        finally:
+            sock.close()
+        assert _wait_until(
+            lambda: any(p == "/request/idr" for p in s["encoder"].recorded),
+            timeout_s=2.0,
+        ), s["encoder"].recorded
+        time.sleep(0.3)   # allow any delayed extras to land
         idrs = [p for p in s["encoder"].recorded if p == "/request/idr"]
         assert len(idrs) == 1, s["encoder"].recorded
 
