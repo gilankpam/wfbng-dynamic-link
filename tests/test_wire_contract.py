@@ -36,7 +36,7 @@ def ensure_dl_inject_built():
 
 
 def _dl_inject_hex(**kwargs) -> bytes:
-    """Call dl-inject --dry-run with named flags; return the 32 bytes."""
+    """Call dl-inject --dry-run with named flags; return the on-wire bytes."""
     args = [str(DL_INJECT), "--dry-run"]
     for k, v in kwargs.items():
         if isinstance(v, bool):
@@ -45,7 +45,8 @@ def _dl_inject_hex(**kwargs) -> bytes:
         else:
             args.extend([f"--{k.replace('_', '-')}", str(v)])
     out = subprocess.check_output(args, text=True).strip()
-    assert len(out) == 64, f"expected 64 hex chars, got {len(out)}: {out!r}"
+    # Decision is 31 bytes (v2 = 62 hex chars); HELLO/HELLO_ACK are 32 bytes (64 hex chars).
+    assert len(out) in (62, 64), f"expected 62 or 64 hex chars, got {len(out)}: {out!r}"
     return bytes.fromhex(out)
 
 
@@ -105,8 +106,8 @@ def test_contract_magic_and_version():
     py_bytes = encode(_decision(), sequence=1)
     # First 4 bytes = "DLK1"
     assert py_bytes[:4] == b"DLK1"
-    # Byte 4 = version 1
-    assert py_bytes[4] == 1
+    # Byte 4 = version 2 (v2 wire)
+    assert py_bytes[4] == 2
 
 
 def _dl_inject_ping_hex(*, gs_seq: int, gs_mono_us: int) -> bytes:
@@ -142,7 +143,7 @@ def test_contract_ping_max_values():
 def test_contract_ping_magic():
     py = encode_ping(Ping(gs_seq=1, gs_mono_us=1))
     assert py[:4] == b"DLPG"
-    assert py[4] == 1   # version
+    assert py[4] == 2   # version (v2 wire)
 
 
 def test_contract_hello_basic():
