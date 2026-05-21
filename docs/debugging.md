@@ -143,7 +143,7 @@ The HTML is self-contained (~6 MB inline, ~1 MB with `--cdn`).
 
 Both formats share three sections, in this order:
 
-1. **TL;DR — diagnosis**: verdict counts + emergency / IDR list.
+1. **TL;DR — diagnosis**: verdict counts + emergency list.
 2. **Summary stats**: one row per metric, percentiles for everything
    distribution-shaped.
 3. **Anomaly leaderboard**: full top-N table with raw metrics.
@@ -166,7 +166,6 @@ Example output:
     14× Link stress (FEC absorbed)
 
     6 emergency events in the controller log
-    4 controller-requested IDR keyframes
 
 The verdict counts come from `classify_anomaly` (`gs/tools/dl_report.py`),
 which buckets each top-N 1-second anomaly window into one of the
@@ -187,9 +186,8 @@ Reading the *mix* tells you the high-level story:
 - Any **Encoder restart** (SSRC change) → drone encoder process
   crashed/restarted mid-flight.
 
-The emergency / IDR lists are taken straight off the controller
-log. They're independent of the anomaly classifier — see the IDR
-vs emergency note below.
+The emergency list is taken straight off the controller log.
+It's independent of the anomaly classifier.
 
 #### Verdict reference
 
@@ -274,40 +272,15 @@ the legend to toggle a severity group.
 |--------|---------------|-------|
 | 🔴 red    | long-dash    | Emergency (controller log "emergency …") |
 | 🟠 orange | dash-dot     | Watchdog (failsafe 1 — GS-link silence) |
-| 🟢 green  | dot          | IDR request from the controller |
 | 🟣 purple | dash         | Drone-side failure (from `dl-events.jsonl`, re-stamped via PING/PONG offset) |
 
-Distinct dash patterns matter because **two events can fire on the
-same tick** — the most common case is an emergency that also
-triggers an IDR. With distinct patterns, both lines stay visible
-when overlapping.
+Distinct dash patterns matter because two events can fire on the
+same tick (e.g. emergency + drone-side failure). With distinct
+patterns, both lines stay visible when overlapping.
 
 The markers also appear as triangles on the MCS panel with a clickable
 legend; toggling the legend hides every same-color triangle and rule
 together.
-
-#### IDR vs emergency — independent triggers
-
-It's easy to assume IDRs only fire on emergencies. They don't:
-
-- An **IDR** fires whenever `residual_loss_w > 0` (any FEC overrun
-  at all → bump n + request IDR + force a clean keyframe).
-- An **emergency** fires when `loss_rate >= emergency_loss_rate`
-  (default `0.05` = 5 %). Much higher bar.
-
-So in practice you'll see:
-- Below-emergency residual_loss bumps (e.g. 3 %) → IDR alone, no
-  emergency line at the same x.
-- Catastrophic loss (e.g. 44 %) → both an emergency *and* an IDR
-  at the same x (red long-dash + green dot together).
-- Starvation-driven emergencies (`emergency starved …`) → red line,
-  *no* green IDR. The controller doesn't request an IDR when the
-  link can't deliver — sending a giant keyframe into a starved link
-  would just queue behind the existing pile-up.
-
-Reading these together at a particular t value tells you whether
-the controller's recovery action was loss-driven, starvation-driven,
-or just precautionary FEC bumping.
 
 #### Distributions — what to look at
 
@@ -339,7 +312,7 @@ Four panels:
 | Video loss | Decoded loss after FEC — should be < 0.1 % on a healthy flight. |
 | Video SSRCs | Should be 1. If > 1, the encoder restarted mid-flight (`⚠ encoder restarted` flag added). |
 | Drift range | (max − min) of post-warmup drift. Anything > 100 ms is felt. |
-| IDR requests / emergencies | Counts straight from the controller log; full lists in the TL;DR. |
+| Emergencies | Counts straight from the controller log; full list in the TL;DR. |
 
 ### 3b. CLI review (when you know the moment and want raw data)
 
