@@ -16,7 +16,6 @@ DL_TEST(test_wire_round_trip) {
         .n = 14,
         .depth = 2,
         .bitrate_kbps = 12000,
-        .roi_qp = 30,
         .fps = 60,
     };
     uint8_t buf[DL_WIRE_ON_WIRE_SIZE];
@@ -33,7 +32,6 @@ DL_TEST(test_wire_round_trip) {
     DL_ASSERT_EQ(r.n, d.n);
     DL_ASSERT_EQ(r.depth, d.depth);
     DL_ASSERT_EQ(r.bitrate_kbps, d.bitrate_kbps);
-    DL_ASSERT_EQ(r.roi_qp, d.roi_qp);
     DL_ASSERT_EQ(r.fps, d.fps);
     DL_ASSERT_EQ(r.flags, 0);
 }
@@ -110,6 +108,19 @@ DL_TEST(test_wire_signed_tx_power) {
     dl_decision_t r;
     DL_ASSERT_EQ(dl_wire_decode(buf, sizeof(buf), &r), DL_DECODE_OK);
     DL_ASSERT_EQ(r.tx_power_dBm, -5);
+}
+
+DL_TEST(test_wire_v2_constants) {
+    DL_ASSERT_EQ(DL_WIRE_VERSION, 2);
+    DL_ASSERT_EQ(DL_WIRE_PAYLOAD_SIZE, 27);
+    DL_ASSERT_EQ(DL_WIRE_ON_WIRE_SIZE, 31);
+}
+
+DL_TEST(test_wire_v2_fps_offset_24) {
+    dl_decision_t d = { .fps = 0xAB };
+    uint8_t buf[DL_WIRE_ON_WIRE_SIZE];
+    dl_wire_encode(&d, buf, sizeof(buf));
+    DL_ASSERT_EQ(buf[24], 0xAB);
 }
 
 DL_TEST(test_wire_ping_round_trip) {

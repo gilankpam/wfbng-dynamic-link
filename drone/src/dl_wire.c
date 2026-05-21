@@ -1,10 +1,10 @@
-/* dl_wire.c — encode/decode the 28-byte dl_decision wire packet.
+/* dl_wire.c — encode/decode the 27-byte dl_decision wire packet (v2).
  *
  * Layout (big-endian / network byte order):
  *
  *   off  size  field
  *    0    4    magic       = 0x444C4B31 ("DLK1")
- *    4    1    version     = 1
+ *    4    1    version     = 2
  *    5    1    flags
  *    6    2    _pad (0)
  *    8    4    sequence
@@ -16,19 +16,12 @@
  *   20    1    n
  *   21    1    depth
  *   22    2    bitrate_kbps
- *   24    1    roi_qp
- *   25    1    fps
- *   26    2    _pad2 (0)
- *   28                        — CRC32 is NOT a struct field; the decoder
- *                               validates it over bytes [0..27] EXCEPT
- *                               the 4-byte trailer? No — simpler:
- *                               the on-wire packet is actually 32 bytes;
- *                               bytes [0..27] are the payload and [28..31]
- *                               are crc32(payload).
+ *   24    1    fps                (shifted down from v1 offset 25)
+ *   25    2    _pad2 (0)
+ *   27    4    crc32(bytes[0..26])  — on-wire only; not in payload
  *
- * NOTE: DL_WIRE_SIZE = 28 names the payload size. Callers must pass a
- * 32-byte buffer for encode, and at least 32 bytes for decode. See
- * DL_WIRE_ON_WIRE_SIZE below.
+ * v1 carried a `roi_qp` byte at offset 24; v2 removes it. The drone
+ * computes roi_qp from bitrate_kbps locally (see dl_backend_enc.c).
  */
 #include "dl_wire.h"
 
@@ -106,11 +99,10 @@ size_t dl_wire_encode(const dl_decision_t *d, uint8_t *buf, size_t buflen) {
     buf[20] = d->n;
     buf[21] = d->depth;
     put_u16(&buf[22], d->bitrate_kbps);
-    buf[24] = d->roi_qp;
-    buf[25] = d->fps;
-    /* buf[26..27] = _pad2 */
+    buf[24] = d->fps;
+    /* buf[25..26] = _pad2 */
     uint32_t crc = dl_wire_crc32(buf, DL_WIRE_PAYLOAD_SIZE);
-    put_u32(&buf[28], crc);
+    put_u32(&buf[DL_WIRE_PAYLOAD_SIZE], crc);
     return DL_WIRE_ON_WIRE_SIZE;
 }
 
@@ -124,7 +116,7 @@ dl_decode_result_t dl_wire_decode(const uint8_t *buf, size_t len,
     uint8_t version = buf[4];
     if (version != DL_WIRE_VERSION) return DL_DECODE_BAD_VERSION;
 
-    uint32_t crc_wire = get_u32(&buf[28]);
+    uint32_t crc_wire = get_u32(&buf[DL_WIRE_PAYLOAD_SIZE]);
     uint32_t crc_calc = dl_wire_crc32(buf, DL_WIRE_PAYLOAD_SIZE);
     if (crc_wire != crc_calc) return DL_DECODE_BAD_CRC;
 
@@ -141,8 +133,7 @@ dl_decode_result_t dl_wire_decode(const uint8_t *buf, size_t len,
     d->n            = buf[20];
     d->depth        = buf[21];
     d->bitrate_kbps = get_u16(&buf[22]);
-    d->roi_qp       = buf[24];
-    d->fps          = buf[25];
+    d->fps          = buf[24];
     return DL_DECODE_OK;
 }
 

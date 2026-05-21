@@ -85,7 +85,6 @@ int main(int argc, char **argv) {
         .n = 12,
         .depth = 1,
         .bitrate_kbps = 8000,
-        .roi_qp = 0,
         .fps = 0,
         .flags = 0,
     };
@@ -108,7 +107,7 @@ int main(int argc, char **argv) {
             case 'n': d.n = (uint8_t)atoi(optarg); break;
             case 'd': d.depth = (uint8_t)atoi(optarg); break;
             case 'b': d.bitrate_kbps = (uint16_t)atoi(optarg); break;
-            case 'r': d.roi_qp = (uint8_t)atoi(optarg); break;
+            case 'r': (void)optarg; break;  /* roi_qp dropped in v2 wire (Task 5) */
             case 'f': d.fps = (uint8_t)atoi(optarg);
                       hello.fps = (uint16_t)atoi(optarg); break;
             case 's': explicit_seq = (uint32_t)strtoul(optarg, NULL, 10);
@@ -264,9 +263,9 @@ int main(int argc, char **argv) {
     close(fd);
     fprintf(stderr,
             "sent seq=%u mcs=%u bw=%u tx=%d k=%u n=%u depth=%u "
-            "bitrate=%u roi_qp=%u fps=%u -> %s:%u\n",
+            "bitrate=%u fps=%u -> %s:%u\n",
             d.sequence, d.mcs, d.bandwidth, d.tx_power_dBm,
-            d.k, d.n, d.depth, d.bitrate_kbps, d.roi_qp, d.fps,
+            d.k, d.n, d.depth, d.bitrate_kbps, d.fps,
             host, port);
     return 0;
 }

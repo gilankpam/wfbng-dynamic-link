@@ -232,11 +232,12 @@ int dl_backend_enc_apply(dl_backend_enc_t *be,
     bool first = (prev == NULL) || prev->magic != DL_WIRE_MAGIC;
     bool changed = first
                 || prev->bitrate_kbps != d->bitrate_kbps
-                || prev->roi_qp       != d->roi_qp
                 || prev->fps          != d->fps;
     int rc = 0;
     if (changed && d->bitrate_kbps > 0) {
-        rc = apply_set(be, d->bitrate_kbps, d->roi_qp, d->fps);
+        /* Task 6 wires real drone-computed roi_qp here; for now use 0
+         * to keep the C build green with the v2 wire (no roi_qp byte). */
+        rc = apply_set(be, d->bitrate_kbps, 0, d->fps);
     }
     if (prev) *prev = *d;
     return rc;
