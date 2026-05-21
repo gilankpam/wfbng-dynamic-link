@@ -219,3 +219,73 @@ DL_TEST(test_config_idr_listen_parses) {
     DL_ASSERT_STR_EQ(c.idr_listen_addr, "10.0.0.5");
     unlink(path);
 }
+
+DL_TEST(test_config_roi_qp_defaults) {
+    dl_config_t cfg;
+    dl_config_defaults(&cfg);
+    DL_ASSERT_EQ(cfg.roi_qp_threshold_kbps,  6000);
+    DL_ASSERT_EQ(cfg.roi_qp_low_anchor_kbps, 2000);
+    DL_ASSERT_EQ(cfg.roi_qp_floor,           -24);
+    DL_ASSERT_EQ(cfg.roi_qp_step,            3);
+}
+
+DL_TEST(test_config_roi_qp_invalid_threshold_below_anchor) {
+    /* threshold must be > low_anchor (validated post-parse). */
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/dlc_roi_inv_%d.conf", getpid());
+    FILE *f = fopen(path, "w");
+    fprintf(f, "roi_qp_threshold_kbps = 1500\n"
+               "roi_qp_low_anchor_kbps = 2000\n");
+    fclose(f);
+    dl_config_t cfg;
+    dl_config_defaults(&cfg);
+    int rc = dl_config_load(path, &cfg);
+    unlink(path);
+    DL_ASSERT_EQ(rc, -1);
+}
+
+DL_TEST(test_config_roi_qp_floor_out_of_range_rejected) {
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/dlc_roi_floor_%d.conf", getpid());
+    FILE *f = fopen(path, "w");
+    fprintf(f, "roi_qp_floor = 5\n");   /* positive not allowed */
+    fclose(f);
+    dl_config_t cfg;
+    dl_config_defaults(&cfg);
+    int rc = dl_config_load(path, &cfg);
+    unlink(path);
+    DL_ASSERT_EQ(rc, -1);
+}
+
+DL_TEST(test_config_roi_qp_step_zero_rejected) {
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/dlc_roi_step_%d.conf", getpid());
+    FILE *f = fopen(path, "w");
+    fprintf(f, "roi_qp_step = 0\n");
+    fclose(f);
+    dl_config_t cfg;
+    dl_config_defaults(&cfg);
+    int rc = dl_config_load(path, &cfg);
+    unlink(path);
+    DL_ASSERT_EQ(rc, -1);
+}
+
+DL_TEST(test_config_roi_qp_loads_overrides) {
+    char path[64];
+    snprintf(path, sizeof(path), "/tmp/dlc_roi_ok_%d.conf", getpid());
+    FILE *f = fopen(path, "w");
+    fprintf(f, "roi_qp_threshold_kbps = 8000\n"
+               "roi_qp_low_anchor_kbps = 3000\n"
+               "roi_qp_floor = -18\n"
+               "roi_qp_step = 2\n");
+    fclose(f);
+    dl_config_t cfg;
+    dl_config_defaults(&cfg);
+    int rc = dl_config_load(path, &cfg);
+    unlink(path);
+    DL_ASSERT_EQ(rc, 0);
+    DL_ASSERT_EQ(cfg.roi_qp_threshold_kbps, 8000);
+    DL_ASSERT_EQ(cfg.roi_qp_low_anchor_kbps, 3000);
+    DL_ASSERT_EQ(cfg.roi_qp_floor, -18);
+    DL_ASSERT_EQ(cfg.roi_qp_step, 2);
+}
