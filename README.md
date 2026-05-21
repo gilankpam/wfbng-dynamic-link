@@ -51,6 +51,25 @@ editing.
    `depth = 1`. See `docs/superpowers/specs/2026-05-14-vanilla-wfb-ng-support-design.md`
    for the full rationale.
 
+### ROI QP (waybeam)
+
+`dl-applier` computes `fpv.roiQp` from the live bitrate and pushes
+it on every encoder apply. For the value to take visible effect,
+`/etc/waybeam.json` must have ROI pre-enabled:
+
+```json
+"fpv": {
+    "roiEnabled": true,
+    "roiSteps": 2,
+    "roiCenter": 0.25,
+    "roiQp": 0
+}
+```
+
+If `roiEnabled` is `false`, the applier's updates are stored but
+produce no visible ROI banding. Tune `roi_qp_*` in `drone.conf` to
+match the airframe — see the sample conf for the formula.
+
 ## IDR (keyframe) requests
 
 dynamic-link does not generate IDR requests on its own. Instead,

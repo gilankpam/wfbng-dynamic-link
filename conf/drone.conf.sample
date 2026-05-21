@@ -105,6 +105,26 @@ encoder_kind         = majestic
 encoder_host         = 127.0.0.1
 encoder_port         = 80
 
+# ---- Drone-side ROI QP policy --------------------------------------
+# The applier computes fpv.roiQp from the most-recently-applied
+# bitrate using a linear ramp, and sends it to the encoder on every
+# bitrate apply. Negative values sharpen the frame center (FPV
+# default); 0 disables ROI banding. Operator must pre-configure
+# fpv.roiEnabled=true and sensible fpv.roiSteps/roiCenter in
+# /etc/waybeam.json — see README.md for details.
+#
+# Formula:
+#   roi_qp = 0                                     if bitrate >= threshold
+#   roi_qp = quantize(floor*(threshold-bitrate)/(threshold-low_anchor))
+#                                                  in [floor, 0]
+#   roi_qp = floor                                 if bitrate <= low_anchor
+#
+# Defaults map: 6000 kbps → 0, 4000 → -12, 2000 → -24.
+roi_qp_threshold_kbps  = 6000
+roi_qp_low_anchor_kbps = 2000
+roi_qp_floor           = -24
+roi_qp_step            = 3
+
 # ---- MAVLink status channel (Phase 2) -------------------------------
 # Drone → GS status events over wfb-ng's existing `mavlink` stream.
 # We write STATUSTEXT frames to this local UDP port; wfb-ng's wfb_tx
