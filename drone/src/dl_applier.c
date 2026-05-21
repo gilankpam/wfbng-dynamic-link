@@ -283,6 +283,10 @@ int main(int argc, char **argv) {
      * actually applies, and mutating one must not fool the others. */
     dl_decision_t last_tx = {0};
     dl_decision_t last_radio = {0};
+    /* last_enc is no longer maintained by the encoder backend (it owns
+     * its own per-knob prev now). We still track it here purely to
+     * feed dl_apply_direction's UP/DOWN/EQUAL classification, which
+     * keys off bitrate. */
     dl_decision_t last_enc = {0};
     dl_decision_t last_applied = {0};  /* for OSD display only */
     dl_dedup_t dedup;
@@ -393,7 +397,8 @@ int main(int argc, char **argv) {
                         dir == DL_APPLY_DIR_EQUAL) {
                         if (bt && dl_backend_tx_apply(bt, &d, &last_tx) < 0) drc = -1;
                         if (br && dl_backend_radio_apply(br, &d, &last_radio) < 0) drc = -1;
-                        if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
+                        if (be && dl_backend_enc_apply(be, &d) < 0) drc = -1;
+                        last_enc = d;
                     } else if (dir == DL_APPLY_DIR_UP) {
                         /* Power up BEFORE MCS up so the new (higher)
                          * MCS rate has the headroom on the very first
@@ -414,7 +419,8 @@ int main(int argc, char **argv) {
                          * the encoder phase. tx (MCS down) before
                          * radio (power down) so we don't transmit
                          * the old high MCS at reduced power. */
-                        if (be && dl_backend_enc_apply(be, &d, &last_enc) < 0) drc = -1;
+                        if (be && dl_backend_enc_apply(be, &d) < 0) drc = -1;
+                        last_enc = d;
                         apply_pending = d;
                         apply_state   = APPLY_DOWN_GAP;
                         arm_gap(gap_fd, cfg.apply_stagger_ms);
@@ -483,8 +489,9 @@ int main(int argc, char **argv) {
             (void)r;  /* always drain to clear POLLIN */
             int drc = 0;
             if (apply_state == APPLY_UP_GAP) {
-                if (be && dl_backend_enc_apply(be, &apply_pending, &last_enc) < 0)
+                if (be && dl_backend_enc_apply(be, &apply_pending) < 0)
                     drc = -1;
+                last_enc = apply_pending;
             } else if (apply_state == APPLY_DOWN_GAP) {
                 if (bt && dl_backend_tx_apply(bt, &apply_pending, &last_tx) < 0)
                     drc = -1;

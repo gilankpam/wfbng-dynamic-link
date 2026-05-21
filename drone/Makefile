@@ -56,6 +56,7 @@ TEST_SRCS := \
     $(TESTDIR)/test_idr_listen.c \
     $(TESTDIR)/test_osd.c \
     $(TESTDIR)/test_roi_qp.c \
+    $(TESTDIR)/test_dl_backend_enc.c \
     $(SRCDIR)/dl_backend_enc.c \
     $(SRCDIR)/dl_wire.c \
     $(SRCDIR)/dl_config.c \
@@ -98,7 +99,7 @@ $(INJECT): $(INJECT_SRCS) | $(OUTDIR)
 	$(CC) $(CFLAGS) -I$(SRCDIR) -o $@ $(INJECT_SRCS) $(LDFLAGS)
 
 $(TESTBIN): $(TEST_SRCS) | $(OUTDIR)
-	$(CC) $(CFLAGS) -DDL_TESTING -I$(SRCDIR) -I$(TESTDIR) -o $@ $(TEST_SRCS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -DDL_TESTING -I$(SRCDIR) -I$(TESTDIR) -o $@ $(TEST_SRCS) $(LDFLAGS) -lpthread
 
 test: $(TESTBIN)
 	./$(TESTBIN)

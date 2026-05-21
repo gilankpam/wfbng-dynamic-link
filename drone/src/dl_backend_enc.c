@@ -28,6 +28,20 @@ struct dl_backend_enc {
     uint32_t min_idr_interval_ms;
     uint64_t last_idr_ms;
     bool     idr_ever_sent;
+
+    /* Cached config for compute_roi_qp. Snapshotted at open time so
+     * subsequent reloads don't drift mid-flight (config reload isn't
+     * supported anyway, but the snapshot makes the dependency explicit). */
+    uint16_t roi_qp_threshold_kbps;
+    uint16_t roi_qp_low_anchor_kbps;
+    int8_t   roi_qp_floor;
+    uint8_t  roi_qp_step;
+
+    /* Last-applied state (per-backend prev, per CLAUDE.md convention). */
+    bool     last_valid;
+    uint16_t last_bitrate_kbps;
+    int8_t   last_roi_qp;
+    uint8_t  last_fps;
 };
 
 int dl_compute_roi_qp(uint16_t bitrate_kbps, const dl_config_t *cfg) {
@@ -193,8 +207,21 @@ dl_backend_enc_t *dl_backend_enc_open(const dl_config_t *cfg) {
     snprintf(be->host, sizeof(be->host), "%s", cfg->encoder_host);
     be->port = cfg->encoder_port;
     be->min_idr_interval_ms = cfg->min_idr_interval_ms;
+    be->roi_qp_threshold_kbps  = cfg->roi_qp_threshold_kbps;
+    be->roi_qp_low_anchor_kbps = cfg->roi_qp_low_anchor_kbps;
+    be->roi_qp_floor           = cfg->roi_qp_floor;
+    be->roi_qp_step            = cfg->roi_qp_step;
     dl_log_info("enc: %s at %s:%u", cfg->encoder_kind, be->host, be->port);
     return be;
+}
+
+static int compute_roi_qp_from_be(dl_backend_enc_t *be, uint16_t bitrate_kbps) {
+    dl_config_t snap = {0};
+    snap.roi_qp_threshold_kbps  = be->roi_qp_threshold_kbps;
+    snap.roi_qp_low_anchor_kbps = be->roi_qp_low_anchor_kbps;
+    snap.roi_qp_floor           = be->roi_qp_floor;
+    snap.roi_qp_step            = be->roi_qp_step;
+    return dl_compute_roi_qp(bitrate_kbps, &snap);
 }
 
 void dl_backend_enc_close(dl_backend_enc_t *be) {
@@ -202,18 +229,19 @@ void dl_backend_enc_close(dl_backend_enc_t *be) {
 }
 
 static int apply_set(dl_backend_enc_t *be,
-                     uint16_t bitrate_kbps, uint8_t roi_qp, uint8_t fps) {
+                     uint16_t bitrate_kbps, int8_t roi_qp, uint8_t fps) {
     char path[256];
     char *p = path;
     size_t left = sizeof(path);
     int n = snprintf(p, left, "/api/v1/set?video0.bitrate=%u", bitrate_kbps);
     if (n < 0 || (size_t)n >= left) return -1;
     p += n; left -= (size_t)n;
-    if (roi_qp != 0) {
-        n = snprintf(p, left, "&fpv.roiQp=%u", roi_qp);
-        if (n < 0 || (size_t)n >= left) return -1;
-        p += n; left -= (size_t)n;
-    }
+    /* Always emit fpv.roiQp (signed). 0 is a legitimate "disable
+     * ROI" command per waybeam's contract; the previous skip-on-zero
+     * meant we could never turn ROI off once enabled. */
+    n = snprintf(p, left, "&fpv.roiQp=%d", (int)roi_qp);
+    if (n < 0 || (size_t)n >= left) return -1;
+    p += n; left -= (size_t)n;
     if (fps != 0) {
         n = snprintf(p, left, "&video0.fps=%u", fps);
         if (n < 0 || (size_t)n >= left) return -1;
@@ -225,21 +253,25 @@ static int apply_set(dl_backend_enc_t *be,
     return rc;
 }
 
-int dl_backend_enc_apply(dl_backend_enc_t *be,
-                         const dl_decision_t *d,
-                         dl_decision_t *prev) {
+int dl_backend_enc_apply(dl_backend_enc_t *be, const dl_decision_t *d) {
     if (!be) return -1;
-    bool first = (prev == NULL) || prev->magic != DL_WIRE_MAGIC;
-    bool changed = first
-                || prev->bitrate_kbps != d->bitrate_kbps
-                || prev->fps          != d->fps;
-    int rc = 0;
-    if (changed && d->bitrate_kbps > 0) {
-        /* Task 6 wires real drone-computed roi_qp here; for now use 0
-         * to keep the C build green with the v2 wire (no roi_qp byte). */
-        rc = apply_set(be, d->bitrate_kbps, 0, d->fps);
+    if (d->bitrate_kbps == 0) return 0;   /* sentinel: don't push */
+
+    int8_t roi_qp = (int8_t)compute_roi_qp_from_be(be, d->bitrate_kbps);
+
+    if (be->last_valid &&
+        be->last_bitrate_kbps == d->bitrate_kbps &&
+        be->last_roi_qp       == roi_qp &&
+        be->last_fps          == d->fps) {
+        return 0;
     }
-    if (prev) *prev = *d;
+    int rc = apply_set(be, d->bitrate_kbps, roi_qp, d->fps);
+    if (rc == 0) {
+        be->last_bitrate_kbps = d->bitrate_kbps;
+        be->last_roi_qp       = roi_qp;
+        be->last_fps          = d->fps;
+        be->last_valid        = true;
+    }
     return rc;
 }
 
@@ -267,5 +299,13 @@ int dl_backend_enc_request_idr(dl_backend_enc_t *be, uint64_t now_ms) {
 
 int dl_backend_enc_apply_safe(dl_backend_enc_t *be, const dl_config_t *cfg) {
     if (!be) return -1;
-    return apply_set(be, cfg->safe_bitrate_kbps, 0, 0);
+    int8_t roi_qp = (int8_t)dl_compute_roi_qp(cfg->safe_bitrate_kbps, cfg);
+    int rc = apply_set(be, cfg->safe_bitrate_kbps, roi_qp, 0);
+    if (rc == 0) {
+        be->last_bitrate_kbps = cfg->safe_bitrate_kbps;
+        be->last_roi_qp       = roi_qp;
+        be->last_fps          = 0;
+        be->last_valid        = true;
+    }
+    return rc;
 }

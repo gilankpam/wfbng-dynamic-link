@@ -17,12 +17,10 @@ typedef struct dl_backend_enc dl_backend_enc_t;
 dl_backend_enc_t *dl_backend_enc_open(const dl_config_t *cfg);
 void dl_backend_enc_close(dl_backend_enc_t *be);
 
-/* Apply bitrate / roi_qp / fps changes from `d` vs. `prev`. `prev`
- * may be NULL on first call. Updates `prev` on return. Returns 0 on
- * success (or no-op), -1 on HTTP failure. */
-int dl_backend_enc_apply(dl_backend_enc_t *be,
-                         const dl_decision_t *d,
-                         dl_decision_t *prev);
+/* Apply bitrate / roi_qp / fps changes for `d`. roi_qp is computed
+ * drone-side from d->bitrate_kbps via dl_compute_roi_qp; not part of
+ * the wire as of v2. Returns 0 on success or no-op, -1 on HTTP failure. */
+int dl_backend_enc_apply(dl_backend_enc_t *be, const dl_decision_t *d);
 
 /* Send an IDR request, subject to min_idr_interval_ms throttle.
  * `now_ms` is a monotonic clock (CLOCK_MONOTONIC ms). Returns:
