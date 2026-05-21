@@ -528,7 +528,7 @@ class LeadingSelector:
 
 
 # ------------------------------------------------------------------
-# Trailing loop — depth + IDR signalling.
+# Trailing loop — depth.
 # ------------------------------------------------------------------
 #
 # `(k, n)` is computed each tick by `dynamic_fec.compute_k` /
@@ -537,11 +537,8 @@ class LeadingSelector:
 # solo `(k, n)` rewrites onto MCS-change ticks to keep the wire
 # cadence cheap. The trailing loop here does two things only:
 #
-#   1. Request an IDR on any window with residual loss — the GOP is
-#      already corrupted, so a fresh keyframe is needed regardless
-#      of FEC strategy. IDR is encoder-only; no `CMD_SET_FEC`.
-#   2. Manage `depth` (interleaver) bootstrap + step-down. depth is
-#      independent of `(k, n)` and its reconfig cost is small.
+# Manage `depth` (interleaver) bootstrap + step-down. depth is
+# independent of `(k, n)` and its reconfig cost is small.
 #
 # See `docs/knob-cadence-bench.md` for the empirical justification.
 
@@ -567,7 +564,7 @@ class TrailingState:
 
 
 class TrailingLoop:
-    """Depth bootstrap + step-down + IDR signalling (§4.2)."""
+    """Depth bootstrap + step-down (§4.2)."""
 
     def __init__(self, cfg: PolicyConfig):
         self.cfg = cfg
@@ -581,26 +578,17 @@ class TrailingLoop:
         ts_ms: float,
         *,
         interleaving_supported: bool = True,
-    ) -> tuple[int, bool]:
-        """Decide depth + IDR for this tick.
+    ) -> int:
+        """Decide depth for this tick.
 
-        Returns `(depth, idr_request)`. `(k, n)` is supplied
+        Returns the next depth value. `(k, n)` is supplied
         deterministically by the radio profile row that the leading
         loop selected — the trailing loop never moves it.
         """
         self._reasons = []
 
         if not interleaving_supported:
-            # Vanilla wfb-ng: depth is structurally 1 (no interleaver
-            # exists). Skip the entire depth state machine — bootstrap,
-            # refine, and step-down all become no-ops. IDR signalling
-            # still runs because it's independent of the interleaver.
-            idr = signals.residual_loss_w > 0.0
-            if idr:
-                self._reasons.append(
-                    f"residual_loss={signals.residual_loss_w:.3f} +IDR (vanilla)"
-                )
-            return 1, idr
+            return 1
 
         st = self.state
         had_loss = signals.residual_loss_w > 0.0
@@ -619,18 +607,6 @@ class TrailingLoop:
             ]
 
         new_depth = current_depth
-        idr = False
-
-        if had_loss:
-            # IDR is the only same-tick action. The GOP is already
-            # corrupted by the lost primary, so the decoder needs a
-            # fresh keyframe. FEC `(k, n)` does NOT change here —
-            # if loss persists, the leading loop's emergency drop
-            # will move MCS and the new row's FEC follows.
-            idr = True
-            self._reasons.append(
-                f"residual_loss={signals.residual_loss_w:.3f} +IDR"
-            )
 
         # Depth path (independent of FEC `(k, n)`). Two triggers:
         #
@@ -689,7 +665,7 @@ class TrailingLoop:
                 f"-> depth={new_depth} (stepdown)"
             )
 
-        return new_depth, idr
+        return new_depth
 
     @property
     def reasons(self) -> list[str]:
@@ -793,7 +769,6 @@ class Policy:
             n=safe.n,
             depth=safe.depth,
             bitrate_kbps=int(self.cfg.bitrate.min_bitrate_kbps),
-            idr_request=False,
             reason=reason,
         )
 
@@ -893,7 +868,7 @@ class Policy:
             block_duration_ms=self.cfg.predictor.block_duration_ms,
         )
 
-        new_depth, idr = self.trailing.tick(
+        new_depth = self.trailing.tick(
             signals, self.state.depth, ts_ms,
             interleaving_supported=(
                 self.drone_config.interleaving_supported
@@ -946,8 +921,6 @@ class Policy:
             knobs_changed.append("fec")
         if self.state.depth != prev.depth:
             knobs_changed.append("depth")
-        if idr:
-            knobs_changed.append("idr")
 
         reasons = self.leading.reasons + self.trailing.reasons
         if reason_budget:
@@ -962,7 +935,6 @@ class Policy:
             n=self.state.n,
             depth=self.state.depth,
             bitrate_kbps=self.state.bitrate_kbps,
-            idr_request=idr,
             reason="; ".join(reasons),
             knobs_changed=knobs_changed,
             signals_snapshot={

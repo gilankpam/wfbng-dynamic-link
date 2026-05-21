@@ -28,18 +28,18 @@ def _make_bundle_dir(tmp_path: Path) -> Path:
     _write_jsonl(d / "gs.jsonl", [
         {"timestamp": 100.000, "mcs": 5, "bandwidth": 20,
          "tx_power_dBm": 18, "k": 8, "n": 14, "depth": 2,
-         "bitrate_kbps": 12000, "idr_request": False,
+         "bitrate_kbps": 12000,
          "reason": "boot", "knobs_changed": ["mcs", "k", "n"],
          "signals_snapshot": {}},
     ])
     _write_jsonl(d / "gs.verbose.jsonl", [
         {"timestamp": 99.900, "mcs": 5, "bandwidth": 20,
          "tx_power_dBm": 18, "k": 8, "n": 14, "depth": 2,
-         "bitrate_kbps": 12000, "idr_request": False,
+         "bitrate_kbps": 12000,
          "reason": "tick", "knobs_changed": [], "signals_snapshot": {}},
         {"timestamp": 100.000, "mcs": 5, "bandwidth": 20,
          "tx_power_dBm": 18, "k": 8, "n": 14, "depth": 2,
-         "bitrate_kbps": 12000, "idr_request": False,
+         "bitrate_kbps": 12000,
          "reason": "boot", "knobs_changed": ["mcs"], "signals_snapshot": {}},
     ])
     _write_jsonl(d / "latency.jsonl", [

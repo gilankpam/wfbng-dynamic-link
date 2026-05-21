@@ -487,21 +487,6 @@ def test_golden_path_dispatches_all_backends(tmp_path: Path):
                    for p in paths), paths
 
 
-@pytest.mark.skip(reason="removed in Task 6")
-def test_idr_throttle_drops_duplicates(tmp_path: Path):
-    with _sandbox(tmp_path, min_idr_interval_ms=500) as s:
-        target = f"{s['listen_addr']}:{s['listen_port']}"
-        # First decision with IDR.
-        _inject(target, mcs=5, bandwidth=20, tx_power=15,
-                k=8, n=12, depth=1, bitrate=8000, idr=True, sequence=1)
-        # Second IDR inside the throttle window.
-        _inject(target, mcs=5, bandwidth=20, tx_power=15,
-                k=8, n=12, depth=1, bitrate=8000, idr=True, sequence=2)
-        time.sleep(0.25)
-        idrs = [p for p in s["encoder"].recorded if p == "/request/idr"]
-        assert len(idrs) == 1, s["encoder"].recorded
-
-
 def test_pixelpilot_udp_token_triggers_idr(tmp_path: Path):
     """A single UDP datagram on the applier's IDR listener port
     produces exactly one /request/idr HTTP call to the mock encoder."""
@@ -537,58 +522,6 @@ def test_pixelpilot_udp_burst_collapses_to_one_idr(tmp_path: Path):
         time.sleep(0.3)   # allow any delayed extras to land
         idrs = [p for p in s["encoder"].recorded if p == "/request/idr"]
         assert len(idrs) == 1, s["encoder"].recorded
-
-
-@pytest.mark.skip(reason="removed in Task 6")
-@pytest.mark.asyncio
-async def test_idr_burst_delivers_multiple_packets(tmp_path: Path):
-    """End-to-end: when IdrBurster fires count=4 packets at 20ms
-    spacing and the drone-side throttle is shorter than the spacing,
-    multiple IDR HTTP calls land on the camera. Verifies the burst
-    actually reaches the applier (lossy-UDP survival path)."""
-    import asyncio
-    from dynamic_link.decision import Decision
-    from dynamic_link.idr_burst import IdrBurstConfig, IdrBurster
-    from dynamic_link.return_link import ReturnLink
-    from dynamic_link.wire import Encoder as WireEncoder
-
-    # Throttle below burst spacing so each packet fires its own
-    # /request/idr — that lets us count arrivals via encoder.recorded.
-    with _sandbox(tmp_path, min_idr_interval_ms=10) as s:
-        target_addr = s["listen_addr"]
-        target_port = s["listen_port"]
-
-        return_link = ReturnLink(target_addr, target_port)
-        encoder = WireEncoder(seq=1)
-        cfg = IdrBurstConfig(enabled=True, count=4, interval_ms=20)
-        burster = IdrBurster(cfg, return_link, encoder)
-
-        decision = Decision(
-            timestamp=1.0, mcs=5, bandwidth=20, tx_power_dBm=18,
-            k=8, n=12, depth=1, bitrate_kbps=8000,
-            idr_request=True, reason="test",
-        )
-
-        # Mirror service.py: send the regular tick packet, then
-        # trigger the count-1 follow-up burst.
-        return_link.send(encoder.encode(decision))
-        burster.trigger(decision)
-
-        # Burst window is interval_ms * (count - 1) = 60 ms.
-        # Allow generous slack for asyncio + applier scheduling.
-        await asyncio.sleep(0.25)
-
-        idrs = [p for p in s["encoder"].recorded if p == "/request/idr"]
-        # Tolerant: UDP/asyncio timing on CI is nondeterministic.
-        # We sent 4 packets total; at min_idr_interval_ms=10 below
-        # the 20ms burst spacing, all 4 should fire — but assert
-        # >= 2 to stay green under timing pressure.
-        assert len(idrs) >= 2, (
-            f"expected >= 2 IDR calls in burst window, got {len(idrs)} "
-            f"(encoder.recorded={s['encoder'].recorded})"
-        )
-
-        return_link.close()
 
 
 def test_watchdog_pushes_safe_defaults_on_silence(tmp_path: Path):
@@ -928,37 +861,6 @@ def test_osd_debug_latency_error_counter_increments(tmp_path: Path):
             return False
         assert _wait_until(enc_line_has_error, timeout_s=3.0), \
             f"no ENC error in: {_osd_text(s['osd_path'])!r}"
-
-
-@pytest.mark.skip(reason="removed in Task 6")
-def test_osd_debug_latency_idr_throttle_not_counted(tmp_path: Path):
-    with _sandbox(tmp_path,
-                  osd_debug_latency=1,
-                  min_idr_interval_ms=10_000) as s:
-        target = f"{s['listen_addr']}:{s['listen_port']}"
-        _inject(target, mcs=5, bandwidth=20, tx_power=18,
-                k=8, n=14, depth=2, bitrate=12000, fps=60,
-                idr=True, sequence=1)
-        _inject(target, mcs=5, bandwidth=20, tx_power=18,
-                k=8, n=14, depth=2, bitrate=12000, fps=60,
-                idr=True, sequence=2)
-
-        def idr_line():
-            for line in _osd_text(s["osd_path"]).splitlines():
-                if "IDR  " in line:
-                    return line
-            return None
-
-        def idr_n_is_one():
-            line = idr_line()
-            return line is not None and "n=1" in line
-        assert _wait_until(idr_n_is_one, timeout_s=3.0), \
-            f"expected IDR n=1, got: {_osd_text(s['osd_path'])!r}"
-
-        time.sleep(s["cfg"]["osd_update_interval_ms"] / 1000.0 + 0.3)
-        line = idr_line()
-        assert line is not None
-        assert "n=1" in line, f"expected n=1 (throttled), got line: {line!r}"
 
 
 # -----------------------------------------------------------------

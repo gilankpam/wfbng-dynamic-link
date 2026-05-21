@@ -55,7 +55,6 @@ def _decision(**overrides) -> Decision:
         mcs=5, bandwidth=20, tx_power_dBm=18,
         k=8, n=14, depth=2,
         bitrate_kbps=12000,
-        idr_request=False,
     )
     for k, v in overrides.items():
         setattr(base, k, v)

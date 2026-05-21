@@ -4,7 +4,7 @@
 profile's PHY rate. `(k, n)` are computed at runtime by `dynamic_fec`
 from the live bitrate plus drone-reported `(mtu, fps)` — see
 `gs/dynamic_link/dynamic_fec.py`. The trailing loop owns depth
-bootstrap/step-down and an IDR-on-loss signal. See
+bootstrap/step-down. See
 `docs/knob-cadence-bench.md` for the empirical justification.
 """
 from __future__ import annotations
@@ -52,49 +52,12 @@ def _idle_sigs(ts_ms: float) -> Signals:
     return _sigs(residual_loss_w=0.0, fec_work=0.0, ts=ts_ms / 1000.0)
 
 
-# ── TrailingLoop: IDR signalling on loss ────────────────────────────────────
-
-def test_residual_loss_emits_idr_only():
-    """Residual loss → IDR request, no `(k, n)` change. The trailing
-    loop returns only `(depth, idr)`; FEC is the leading loop's job."""
-    cfg = PolicyConfig()
-    tl = TrailingLoop(cfg)
-    depth, idr = tl.tick(
-        _sigs(residual_loss_w=0.05, ts=0.0),
-        current_depth=1, ts_ms=0.0,
-    )
-    assert idr is True
-    assert depth == 1
-
-
-def test_no_idr_on_clean_link():
-    cfg = PolicyConfig()
-    tl = TrailingLoop(cfg)
-    depth, idr = tl.tick(_idle_sigs(0.0), current_depth=1, ts_ms=0.0)
-    assert idr is False
-    assert depth == 1
-
-
-def test_no_idr_on_fec_pressure_alone():
-    """fec_work > threshold but no residual loss → no IDR. The bench
-    showed reactive FEC moves cost more than they save; the trailing
-    loop only requests an IDR when an actual primary was lost."""
-    cfg = PolicyConfig()
-    tl = TrailingLoop(cfg)
-    depth, idr = tl.tick(
-        _sigs(fec_work=0.20, ts=0.0),
-        current_depth=1, ts_ms=0.0,
-    )
-    assert idr is False
-    assert depth == 1
-
-
 # ── TrailingLoop: depth ─────────────────────────────────────────────────────
 
 def test_depth_raised_when_burst_and_holdoff_together():
     cfg = PolicyConfig()
     tl = TrailingLoop(cfg)
-    depth, _ = tl.tick(
+    depth = tl.tick(
         _sigs(residual_loss_w=0.02, burst_rate=5.0,
               holdoff_rate=2.0, ts=0.3),
         current_depth=1, ts_ms=300.0,
@@ -105,7 +68,7 @@ def test_depth_raised_when_burst_and_holdoff_together():
 def test_depth_not_raised_on_burst_alone():
     cfg = PolicyConfig()
     tl = TrailingLoop(cfg)
-    depth, _ = tl.tick(
+    depth = tl.tick(
         _sigs(residual_loss_w=0.02, burst_rate=5.0,
               holdoff_rate=0.0, ts=0.3),
         current_depth=1, ts_ms=300.0,
@@ -118,7 +81,7 @@ def test_depth_bootstrap_fires_on_sustained_loss_plus_busy_fec():
     tl = TrailingLoop(cfg)
     depth = 1
     for i in range(3):
-        depth, _ = tl.tick(
+        depth = tl.tick(
             _sigs(residual_loss_w=0.05, fec_work=0.20,
                   ts=(i + 1) * 0.3),
             current_depth=depth, ts_ms=(i + 1) * 300.0,
@@ -131,7 +94,7 @@ def test_depth_bootstrap_requires_busy_fec_not_just_sustained_loss():
     tl = TrailingLoop(cfg)
     depth = 1
     for i in range(3):
-        depth, _ = tl.tick(
+        depth = tl.tick(
             _sigs(residual_loss_w=0.05, fec_work=0.05,
                   ts=(i + 1) * 0.3),
             current_depth=depth, ts_ms=(i + 1) * 300.0,
@@ -144,7 +107,7 @@ def test_depth_steps_down_after_sustained_clean_link():
     tl = TrailingLoop(cfg)
     depth = 3
     for i in range(5):
-        depth, _ = tl.tick(
+        depth = tl.tick(
             _sigs(residual_loss_w=0.0, ts=(i + 1) * 0.3),
             current_depth=depth, ts_ms=(i + 1) * 300.0,
         )
@@ -156,13 +119,13 @@ def test_depth_walks_down_one_step_at_a_time():
     tl = TrailingLoop(cfg)
     depth = 3
     for i in range(5):
-        depth, _ = tl.tick(
+        depth = tl.tick(
             _sigs(residual_loss_w=0.0, ts=(i + 1) * 0.3),
             current_depth=depth, ts_ms=(i + 1) * 300.0,
         )
     assert depth == 2
     for i in range(5):
-        depth, _ = tl.tick(
+        depth = tl.tick(
             _sigs(residual_loss_w=0.0, ts=(i + 6) * 0.3),
             current_depth=depth, ts_ms=(i + 6) * 300.0,
         )
@@ -174,16 +137,16 @@ def test_depth_does_not_step_down_with_recent_loss():
     tl = TrailingLoop(cfg)
     depth = 3
     for i in range(4):
-        depth, _ = tl.tick(
+        depth = tl.tick(
             _sigs(residual_loss_w=0.0, ts=(i + 1) * 0.3),
             current_depth=depth, ts_ms=(i + 1) * 300.0,
         )
-    depth, _ = tl.tick(
+    depth = tl.tick(
         _sigs(residual_loss_w=0.05, ts=1.5),
         current_depth=depth, ts_ms=1500.0,
     )
     for i in range(3):
-        depth, _ = tl.tick(
+        depth = tl.tick(
             _sigs(residual_loss_w=0.0, ts=1.8 + i * 0.3),
             current_depth=depth, ts_ms=1800.0 + i * 300.0,
         )
@@ -197,7 +160,7 @@ def test_depth_bootstrap_is_one_shot_at_depth_1():
     tl = TrailingLoop(cfg)
     depth = 2
     for i in range(3):
-        depth, _ = tl.tick(
+        depth = tl.tick(
             _sigs(residual_loss_w=0.05, fec_work=0.20,
                   ts=(i + 1) * 0.3),
             current_depth=depth, ts_ms=(i + 1) * 300.0,
@@ -347,8 +310,6 @@ def test_sub_emergency_loss_does_not_change_fec():
         ts += 100.0
         assert d.mcs == 5
         assert (p.state.k, p.state.n) == (k_baseline, n_baseline)
-        # IDR is the only same-tick action on residual_loss > 0.
-        assert d.idr_request is True
         assert "fec" not in d.knobs_changed
 
 
@@ -421,15 +382,13 @@ def test_vanilla_mode_pins_depth_at_one_even_under_sustained_loss():
             current_depth=1, ts_ms=i * 100.0,
             interleaving_supported=False,
         )
-    depth, idr = tl.tick(
+    depth = tl.tick(
         _sigs(residual_loss_w=0.05, fec_work=0.20,
               burst_rate=5.0, holdoff_rate=2.0, ts=1.0),
         current_depth=1, ts_ms=1000.0,
         interleaving_supported=False,
     )
     assert depth == 1, "vanilla mode must pin depth at 1"
-    # IDR signalling still works in vanilla mode.
-    assert idr is True
 
 
 def test_vanilla_mode_does_not_step_down_below_one():
@@ -438,7 +397,7 @@ def test_vanilla_mode_does_not_step_down_below_one():
     cfg = PolicyConfig()
     tl = TrailingLoop(cfg)
     for i in range(cfg.clean_windows_for_depth_stepdown + 5):
-        depth, _ = tl.tick(
+        depth = tl.tick(
             _idle_sigs(i * 100.0),
             current_depth=1, ts_ms=i * 100.0,
             interleaving_supported=False,
@@ -451,7 +410,7 @@ def test_capable_mode_still_raises_depth_after_change():
     keeps the existing burst+holdoff bootstrap firing."""
     cfg = PolicyConfig()
     tl = TrailingLoop(cfg)
-    depth, _ = tl.tick(
+    depth = tl.tick(
         _sigs(residual_loss_w=0.02, burst_rate=5.0,
               holdoff_rate=2.0, ts=0.3),
         current_depth=1, ts_ms=300.0,

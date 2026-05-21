@@ -49,7 +49,7 @@ def _make_bundle(tmp_path: Path) -> Path:
             "timestamp": ts,
             "mcs": mcs, "bandwidth": 20, "tx_power_dBm": 18,
             "k": 8, "n": 12, "depth": 1, "bitrate_kbps": bitrate,
-            "idr_request": False, "reason": reason, "knobs_changed": knobs,
+            "reason": reason, "knobs_changed": knobs,
             "signals_snapshot": {
                 "rssi": rssi, "snr": snr,
                 "residual_loss_w": 0.0, "fec_work": 0.0,
@@ -281,7 +281,7 @@ def test_render_handles_missing_streams(tmp_path: Path):
     _write_jsonl(d / "gs.verbose.jsonl", [{
         "timestamp": 100.0, "mcs": 1, "bandwidth": 20,
         "tx_power_dBm": 18, "k": 8, "n": 12, "depth": 1,
-        "bitrate_kbps": 5200, "idr_request": False,
+        "bitrate_kbps": 5200,
         "reason": "", "knobs_changed": [],
         "signals_snapshot": {
             "rssi": -55, "snr": 30, "residual_loss_w": 0,

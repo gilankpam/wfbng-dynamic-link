@@ -24,7 +24,6 @@ class Decision:
     n: int
     depth: int
     bitrate_kbps: int
-    idr_request: bool
     reason: str = ""
     knobs_changed: list[str] = field(default_factory=list)
     # Informational — the controller's internal state when this

@@ -33,7 +33,6 @@ def _decision(**overrides) -> Decision:
         mcs=5, bandwidth=20, tx_power_dBm=18,
         k=8, n=14, depth=2,
         bitrate_kbps=12000,
-        idr_request=False,
     )
     for k, v in overrides.items():
         setattr(base, k, v)
@@ -61,21 +60,6 @@ def test_gs_wire_drives_drone_applier(tmp_path: Path):
 
         paths = s["encoder"].recorded
         assert any("video0.bitrate=12000" in p for p in paths), paths
-
-        rl.close()
-
-
-def test_gs_wire_idr_flag_triggers_idr_request(tmp_path: Path):
-    with _sandbox(tmp_path) as s:
-        rl = ReturnLink(s["listen_addr"], s["listen_port"])
-        enc = Encoder()
-
-        decision = _decision(idr_request=True)
-        rl.send(enc.encode(decision))
-
-        assert _wait_until(lambda: any(
-            p == "/request/idr" for p in s["encoder"].recorded
-        ), timeout_s=1.0), s["encoder"].recorded
 
         rl.close()
 

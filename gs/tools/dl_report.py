@@ -184,15 +184,6 @@ def compute_summary(streams: Streams, axis: TimeAxis) -> dict:
             mcs_counts[r["mcs"]] = mcs_counts.get(r["mcs"], 0) + 1
         summary["mcs_distribution"] = dict(sorted(mcs_counts.items()))
 
-        # Controller-requested IDRs (encoder-emitted IDRs aren't logged
-        # here — they show up indirectly as oversized video frames).
-        summary["idr_requests"] = [
-            {"ts_wall": r["timestamp"],
-             "ts_rel_s": r["timestamp"] - t0,
-             "reason": r.get("reason", "")}
-            for r in streams.verbose if r.get("idr_request")
-        ]
-
         # RSSI / SNR percentiles (alive windows only)
         rssi = [r["signals_snapshot"]["rssi"] for r in streams.verbose
                 if r["signals_snapshot"].get("rssi") is not None
@@ -550,21 +541,10 @@ def compute_diagnosis(streams: Streams, axis: TimeAxis,
     emerg = [r for r in streams.events
              if "emergency" in (r.get("reason") or "")]
 
-    # Controller-requested IDRs (read off the verbose log directly so we
-    # don't depend on what the events stream filters in).
-    t0 = streams.verbose[0]["timestamp"] if streams.verbose else 0.0
-    idrs = [
-        {"timestamp": r["timestamp"],
-         "ts_rel_s": r["timestamp"] - t0,
-         "reason": r.get("reason", "")}
-        for r in streams.verbose if r.get("idr_request")
-    ]
-
     return {
         "verdict_counts": dict(sorted(counts.items())),
         "classified": classified,
         "emergencies": emerg,
-        "idr_requests": idrs,
     }
 
 
@@ -572,24 +552,19 @@ def compute_diagnosis(streams: Streams, axis: TimeAxis,
 # Plotting
 # ----------------------------------------------------------------------
 
-# Per-color dash patterns for cross-panel marker rules. Different
-# patterns let two markers at the same x stay visually distinguishable
-# (an emergency that also triggered an IDR shows red long-dashes plus
-# green dots overlapping at the same vertical line).
+# Per-color dash patterns for cross-panel marker rules.
 _DASH_FOR_COLOR = {
     "red":    "longdash",  # emergencies — strong, easy to spot
     "orange": "dashdot",   # watchdog
-    "green":  "dot",       # IDR — visible "through" any other marker
     "purple": "dash",      # drone failure
 }
 
 
 def _event_markers(streams: Streams, axis: TimeAxis) -> list[dict]:
     """High-signal events worth a vertical line on every panel:
-    emergencies, watchdogs, controller IDR requests, drone-side
-    failures. MCS up/down events are skipped intentionally — there are
-    dozens per flight and they're already rendered as the MCS step
-    trace in row 1."""
+    emergencies, watchdogs, drone-side failures. MCS up/down events
+    are skipped intentionally — there are dozens per flight and
+    they're already rendered as the MCS step trace in row 1."""
     out = []
     for r in streams.events:
         reason = r.get("reason") or ""
@@ -602,24 +577,6 @@ def _event_markers(streams: Streams, axis: TimeAxis) -> list[dict]:
         x = axis.relative_seconds(mono)
         color = "red" if is_emergency else "orange"
         out.append({"x": x, "label": reason, "color": color})
-    # Controller IDR requests — not necessarily anomalies, but useful
-    # to align against video drift spikes (a tame IDR shouldn't visibly
-    # stress the link; an oversized encoder IDR with no marker here is
-    # a hint the encoder emitted one on its own schedule).
-    #
-    # When an emergency at the same tick also triggered the IDR
-    # (`+IDR` in the reason), both events get a marker. They're drawn
-    # with distinct dash patterns (see `_DASH_FOR_COLOR`) so coincident
-    # markers stay visually distinguishable instead of one clobbering
-    # the other.
-    for r in streams.verbose:
-        if not r.get("idr_request"):
-            continue
-        wall_us = int(r["timestamp"] * 1e6)
-        mono = axis.wall_to_mono(wall_us)
-        x = axis.relative_seconds(mono)
-        out.append({"x": x, "label": f"IDR: {r.get('reason','')}",
-                    "color": "green"})
     # Drone-side events (re-stamped onto GS-mono via offset). Skip if no
     # latency stream — we'd be plotting at raw drone-mono which lies.
     if streams.latency and streams.drone:
@@ -893,7 +850,6 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis,
     LEGEND_NAMES = {
         "red":    "emergency",
         "orange": "watchdog",
-        "green":  "IDR request",
         "purple": "drone failure",
     }
     by_color: dict[str, list[dict]] = {}
@@ -971,7 +927,7 @@ def make_timeline_figure(streams: Streams, axis: TimeAxis,
             ), row=1, col=1, secondary_y=False)
 
             # Thin cross-panel rule per top event. Gray + dotted so
-            # they don't compete with emergency / IDR rules but stay
+            # they don't compete with emergency rules but stay
             # alignable across all panels.
             for x in xs:
                 top_event_shapes.append({"x": x, "color": "#888"})
@@ -1166,9 +1122,6 @@ def _summary_html(summary: dict) -> str:
         rows.append(("Emergency events", str(summary["emergencies"])))
     if summary.get("mcs_changes"):
         rows.append(("MCS changes", str(summary["mcs_changes"])))
-    if summary.get("idr_requests"):
-        rows.append(("IDR requests (controller)",
-                     str(len(summary["idr_requests"]))))
     if "rtt_ms" in summary:
         r = summary["rtt_ms"]
         rows.append((
@@ -1238,7 +1191,7 @@ def _anomalies_html(anomalies: list[dict]) -> str:
 
 
 def _diagnosis_html(diagnosis: dict, top_n: int = 8) -> str:
-    """Plain-language verdict counts + emergency / IDR lists.
+    """Plain-language verdict counts + emergency lists.
     The per-event "why / felt" blocks moved onto the timeline
     (hover the diamond markers) — see `make_timeline_figure`."""
     out = []
@@ -1258,18 +1211,6 @@ def _diagnosis_html(diagnosis: dict, top_n: int = 8) -> str:
         out.append('<ul class="emergencies">')
         for r in diagnosis["emergencies"]:
             out.append(f"<li>t={r['timestamp']:.2f} (wall): "
-                       f"<code>{html.escape(r.get('reason',''))}</code></li>")
-        out.append("</ul>")
-
-    if diagnosis.get("idr_requests"):
-        out.append(f"<p>Controller requested <strong>"
-                   f"{len(diagnosis['idr_requests'])} IDR keyframes</strong> "
-                   f"(FEC ramp-up / emergency recovery). Encoder-emitted "
-                   f"IDRs are not in this list &mdash; they show up "
-                   f"indirectly as oversized video frames.</p>")
-        out.append('<ul class="idr-requests">')
-        for r in diagnosis["idr_requests"]:
-            out.append(f"<li>t={r['ts_rel_s']:.2f}s: "
                        f"<code>{html.escape(r.get('reason',''))}</code></li>")
         out.append("</ul>")
 
@@ -1382,9 +1323,6 @@ def _md_summary(summary: dict) -> str:
         rows.append(("Emergency events", str(summary["emergencies"])))
     if summary.get("mcs_changes"):
         rows.append(("MCS changes", str(summary["mcs_changes"])))
-    if summary.get("idr_requests"):
-        rows.append(("IDR requests (controller)",
-                     str(len(summary["idr_requests"]))))
     if "rtt_ms" in summary:
         r = summary["rtt_ms"]
         rows.append((
@@ -1445,15 +1383,6 @@ def _md_diagnosis(diagnosis: dict) -> str:
         for r in diagnosis["emergencies"]:
             out.append(f"- t={r['timestamp']:.2f} (wall): "
                        f"`{r.get('reason','')}`")
-        out.append("")
-    if diagnosis.get("idr_requests"):
-        out.append(f"Controller requested **{len(diagnosis['idr_requests'])} "
-                   f"IDR keyframes** (FEC ramp-up after loss; emergency "
-                   f"recovery). Encoder-emitted IDRs are not in this list — "
-                   f"they show up indirectly as oversized video frames.")
-        out.append("")
-        for r in diagnosis["idr_requests"]:
-            out.append(f"- t={r['ts_rel_s']:.2f}s: `{r.get('reason','')}`")
         out.append("")
     return "\n".join(out)
 
