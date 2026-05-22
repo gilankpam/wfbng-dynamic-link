@@ -1,6 +1,8 @@
 """Unit tests for the dynamic FEC selection module."""
 from __future__ import annotations
 
+import pytest
+
 from dynamic_link.dynamic_fec import (
     DynamicFecConfig,
     EmitGate,
@@ -16,6 +18,7 @@ def _cfg(**over):
         k_min=4, k_max=16,
         base_redundancy_ratio=0.5,
         max_redundancy_ratio=1.0,
+        blocks_per_frame=2.0,
         n_loss_threshold=0.02,
         n_loss_windows=3,
         n_loss_step=1,
@@ -25,6 +28,15 @@ def _cfg(**over):
     )
     base.update(over)
     return DynamicFecConfig(**base)
+
+
+# --- DynamicFecConfig validation ------------------------------------------
+
+def test_dynamic_fec_config_rejects_nonpositive_blocks_per_frame():
+    with pytest.raises(ValueError, match="blocks_per_frame must be > 0"):
+        _cfg(blocks_per_frame=0)
+    with pytest.raises(ValueError, match="blocks_per_frame must be > 0"):
+        _cfg(blocks_per_frame=-1.5)
 
 
 # --- compute_k --------------------------------------------------------

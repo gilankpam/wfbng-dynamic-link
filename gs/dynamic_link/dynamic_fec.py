@@ -28,6 +28,7 @@ class DynamicFecConfig:
     k_max: int = 16
     base_redundancy_ratio: float = 0.5
     max_redundancy_ratio: float = 1.0
+    blocks_per_frame: float = 2.0
     n_loss_threshold: float = 0.02
     n_loss_windows: int = 3
     n_loss_step: int = 1
@@ -51,6 +52,11 @@ class DynamicFecConfig:
             raise ValueError(
                 f"max_redundancy_ratio ({self.max_redundancy_ratio}) "
                 f"< base ({self.base_redundancy_ratio})"
+            )
+        if self.blocks_per_frame <= 0:
+            raise ValueError(
+                f"blocks_per_frame must be > 0; "
+                f"got {self.blocks_per_frame}"
             )
         if self.max_n_escalation < 0:
             raise ValueError(
