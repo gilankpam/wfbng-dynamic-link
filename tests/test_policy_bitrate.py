@@ -123,6 +123,7 @@ def test_policy_bitrate_shrinks_with_n_escalation(profile):
         )
         d = p.tick(sigs)
         # Wire-safety: every emitted Decision keeps wire ≤ target.
+        from dynamic_link.bitrate import compute_bitrate_kbps as _cbk
         wire_target = compute_wire_target_kbps(
             profile, cfg.leading.bandwidth, d.mcs, 1500,
             cfg.bitrate.utilization_factor,
@@ -132,6 +133,19 @@ def test_policy_bitrate_shrinks_with_n_escalation(profile):
             f"tick={tick_i} mcs={d.mcs}: "
             f"wire_actual={wire_actual:.0f} > target={wire_target:.0f} "
             f"(bitrate={d.bitrate_kbps} k={d.k} n={d.n})"
+        )
+        # Coherence: emitted bitrate is consistent with emitted (k, n).
+        # Guards against regressions of the BudgetExhausted ordering bug.
+        expected_bitrate = _cbk(
+            wire_target_kbps=wire_target,
+            k=d.k, n=d.n,
+            min_bitrate_kbps=cfg.bitrate.min_bitrate_kbps,
+            max_bitrate_kbps=cfg.bitrate.max_bitrate_kbps,
+        )
+        assert d.bitrate_kbps == expected_bitrate, (
+            f"tick={tick_i} mcs={d.mcs}: "
+            f"bitrate {d.bitrate_kbps} != expected {expected_bitrate} "
+            f"for (k={d.k}, n={d.n})"
         )
         if d.mcs == 0:
             bitrates_at_mcs0.append(d.bitrate_kbps)

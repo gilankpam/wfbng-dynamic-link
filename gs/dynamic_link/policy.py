@@ -920,6 +920,19 @@ class Policy:
                 self.state.k, self.state.n, self.state.depth
             )
 
+        # Recompute bitrate from the final (k, n) after the budget gate
+        # may have reverted them. If BudgetExhausted did not fire this is
+        # a no-op; if it did, the Decision carries a bitrate consistent
+        # with the held (k, n) rather than the candidate that was rejected.
+        # ipi_ms above used the candidate bitrate — one-tick stale on
+        # budget-exhausted paths, a pre-existing circular dependency.
+        new_bitrate_kbps = compute_bitrate_kbps(
+            wire_target_kbps=wire_target_kbps,
+            k=new_k, n=new_n,
+            min_bitrate_kbps=self.cfg.bitrate.min_bitrate_kbps,
+            max_bitrate_kbps=self.cfg.bitrate.max_bitrate_kbps,
+        )
+
         # Commit new state.
         self.state.mcs = row.mcs
         self.state.tx_power_dBm = int(round(tx_power))
