@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from dynamic_link.bitrate import BitrateConfig, compute_bitrate_kbps
+from dynamic_link.bitrate import BitrateConfig, compute_bitrate_kbps_legacy
 from dynamic_link.profile import load_profile
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -48,7 +48,7 @@ def test_bitrate_matches_formula_for_every_row(profile):
             cfg.min_bitrate_kbps,
             min(cfg.max_bitrate_kbps, eff * 1000 * cfg.utilization_factor * k_over_n),
         ))
-        got = compute_bitrate_kbps(profile, 20, row.mcs, mtu_bytes, cfg)
+        got = compute_bitrate_kbps_legacy(profile, 20, row.mcs, mtu_bytes, cfg)
         assert got == expected, (
             f"mcs={row.mcs}: expected {expected}, got {got}"
         )
@@ -56,8 +56,8 @@ def test_bitrate_matches_formula_for_every_row(profile):
 
 def test_bitrate_higher_mcs_has_higher_bitrate(profile):
     cfg = _cfg()
-    a = compute_bitrate_kbps(profile, 20, 1, 1400, cfg)
-    b = compute_bitrate_kbps(profile, 20, 5, 1400, cfg)
+    a = compute_bitrate_kbps_legacy(profile, 20, 1, 1400, cfg)
+    b = compute_bitrate_kbps_legacy(profile, 20, 5, 1400, cfg)
     assert b > a
 
 
@@ -65,6 +65,6 @@ def test_bitrate_drops_when_mtu_shrinks(profile):
     """At MCS4, encoder bitrate is strictly lower for mtu=1500 than
     for mtu=3994 (smaller packets eat more airtime on overhead)."""
     cfg = _cfg(base_ratio=0.4)
-    br_small = compute_bitrate_kbps(profile, 20, 4, 1500, cfg)
-    br_large = compute_bitrate_kbps(profile, 20, 4, 3994, cfg)
+    br_small = compute_bitrate_kbps_legacy(profile, 20, 4, 1500, cfg)
+    br_large = compute_bitrate_kbps_legacy(profile, 20, 4, 3994, cfg)
     assert br_small < br_large, (br_small, br_large)

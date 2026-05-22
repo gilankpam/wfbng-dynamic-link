@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from .bitrate import BitrateConfig, compute_bitrate_kbps
+from .bitrate import BitrateConfig, compute_bitrate_kbps_legacy
 from .decision import Decision
 from .drone_config import DroneConfigState
 from .dynamic_fec import (
@@ -741,7 +741,7 @@ class Policy:
             k=cfg.safe.k,
             n=cfg.safe.n,
             depth=cfg.safe.depth,
-            bitrate_kbps=compute_bitrate_kbps(
+            bitrate_kbps=compute_bitrate_kbps_legacy(
                 profile, cfg.leading.bandwidth, row.mcs, mtu_for_init, cfg.bitrate,
             ),
         )
@@ -817,7 +817,7 @@ class Policy:
 
         # Bitrate first (no FEC dependency — bitrate uses the fixed
         # `base_redundancy_ratio` from BitrateConfig, not the live k/n).
-        new_bitrate_kbps = compute_bitrate_kbps(
+        new_bitrate_kbps = compute_bitrate_kbps_legacy(
             self.profile, self.state.bandwidth, row.mcs,
             mtu, self.cfg.bitrate,
         )

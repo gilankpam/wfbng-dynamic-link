@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dynamic_link.bitrate import compute_bitrate_kbps
+from dynamic_link.bitrate import compute_bitrate_kbps_legacy
 from dynamic_link.policy import (
     FECBounds,
     LeadingLoopConfig,
@@ -258,7 +258,7 @@ def test_policy_bitrate_matches_formula_at_each_mcs():
         _settle_at_mcs(p, target)
         if p.state.mcs != target:
             continue
-        expected = compute_bitrate_kbps(p.profile, 20, target, 1400, p.cfg.bitrate)
+        expected = compute_bitrate_kbps_legacy(p.profile, 20, target, 1400, p.cfg.bitrate)
         assert p.state.bitrate_kbps == expected
 
 

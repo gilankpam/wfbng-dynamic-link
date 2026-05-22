@@ -106,6 +106,34 @@ def compute_wire_target_kbps(
 
 
 def compute_bitrate_kbps(
+    wire_target_kbps: float,
+    k: int,
+    n: int,
+    min_bitrate_kbps: int,
+    max_bitrate_kbps: int,
+) -> int:
+    """Encoder bitrate that keeps wire rate at `wire_target_kbps`
+    with the live (k, n). Clamped to [min, max].
+
+    Invariant: `result × n / k ≤ wire_target_kbps` (modulo int
+    truncation, which only ever rounds wire DOWN).
+    """
+    if k <= 0:
+        raise ValueError(f"k must be > 0; got {k}")
+    if n < k:
+        raise ValueError(f"n ({n}) must be >= k ({k})")
+    if min_bitrate_kbps <= 0:
+        raise ValueError(f"min_bitrate_kbps must be > 0; got {min_bitrate_kbps}")
+    if max_bitrate_kbps < min_bitrate_kbps:
+        raise ValueError(
+            f"max_bitrate_kbps ({max_bitrate_kbps}) "
+            f"< min_bitrate_kbps ({min_bitrate_kbps})"
+        )
+    raw_kbps = wire_target_kbps * k / n
+    return int(max(min_bitrate_kbps, min(max_bitrate_kbps, raw_kbps)))
+
+
+def compute_bitrate_kbps_legacy(
     profile: RadioProfile,
     bandwidth: int,
     mcs: int,

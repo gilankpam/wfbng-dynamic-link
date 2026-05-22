@@ -8,7 +8,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from dynamic_link.bitrate import (
-    BitrateConfig, compute_bitrate_kbps, compute_wire_target_kbps, effective_phy_Mbps,
+    BitrateConfig, compute_bitrate_kbps, compute_bitrate_kbps_legacy,
+    compute_wire_target_kbps, effective_phy_Mbps,
 )
 from dynamic_link.profile import load_profile_file
 
@@ -32,7 +33,7 @@ def test_bitrate_uses_base_redundancy_ratio_not_live_kn():
     # MCS=5 → PHY=52 Mb/s; mtu=1400, preamble=170 µs (now calibrated in the packaged profile).
     # eff = 11200/(170e-6 + 11200/52e6) = 11200/385.38e-6 = 29.06 Mb/s
     # bitrate = 29061 * 0.8 / 1.25 = 18599 → no clamp
-    assert compute_bitrate_kbps(p, 20, 5, 1400, cfg) == 18599
+    assert compute_bitrate_kbps_legacy(p, 20, 5, 1400, cfg) == 18599
 
 
 def test_bitrate_clamped_to_min():
@@ -44,21 +45,21 @@ def test_bitrate_clamped_to_min():
         max_bitrate_kbps=24000,
     )
     # MCS 0 PHY=6.5 Mb/s, mtu=1400, preamble=200 → eff ≈ 5.82, raw ≈ 3106 → clamped to 8000
-    assert compute_bitrate_kbps(p, 20, 0, 1400, cfg) == 8000
+    assert compute_bitrate_kbps_legacy(p, 20, 0, 1400, cfg) == 8000
 
 
 def test_bitrate_changes_with_base_ratio():
     p = _profile()
-    a = compute_bitrate_kbps(p, 20, 4, 1400, _cfg(base_ratio=0.25))
-    b = compute_bitrate_kbps(p, 20, 4, 1400, _cfg(base_ratio=0.50))
+    a = compute_bitrate_kbps_legacy(p, 20, 4, 1400, _cfg(base_ratio=0.25))
+    b = compute_bitrate_kbps_legacy(p, 20, 4, 1400, _cfg(base_ratio=0.50))
     assert b < a
 
 
 def test_bitrate_bw40_higher_than_bw20_for_same_mcs():
     p = _profile()
     cfg = _cfg()
-    a = compute_bitrate_kbps(p, 20, 4, 1400, cfg)
-    b = compute_bitrate_kbps(p, 40, 4, 1400, cfg)
+    a = compute_bitrate_kbps_legacy(p, 20, 4, 1400, cfg)
+    b = compute_bitrate_kbps_legacy(p, 40, 4, 1400, cfg)
     assert b >= a
 
 
@@ -107,8 +108,8 @@ def test_compute_bitrate_kbps_warns_once_when_preamble_missing(caplog, monkeypat
 
     cfg = _cfg(base_ratio=0.5)
     caplog.set_level(logging.WARNING, logger="dynamic_link.bitrate")
-    compute_bitrate_kbps(p, 20, 4, 1400, cfg)
-    compute_bitrate_kbps(p, 20, 4, 1400, cfg)   # second call — should NOT re-warn
+    compute_bitrate_kbps_legacy(p, 20, 4, 1400, cfg)
+    compute_bitrate_kbps_legacy(p, 20, 4, 1400, cfg)   # second call — should NOT re-warn
     warnings = [r for r in caplog.records if "preamble_us_per_frame missing" in r.message]
     assert len(warnings) == 1
     assert "m8812eu2-noprmbl-1" in warnings[0].message
@@ -127,7 +128,7 @@ def test_compute_bitrate_kbps_mcs4_mlink_1500_bench_anchor():
     )
     # eff = 12000/(170e-6 + 12000/39e6) ≈ 25.12 Mb/s
     # bitrate = 25120 * 0.8 / 1.4 ≈ 14353 → within ±300 of published 14400
-    got = compute_bitrate_kbps(p, 20, 4, 1500, cfg)
+    got = compute_bitrate_kbps_legacy(p, 20, 4, 1500, cfg)
     assert 14100 <= got <= 14700, f"expected ~14400, got {got}"
 
 
@@ -144,7 +145,7 @@ def test_compute_bitrate_kbps_mcs4_mlink_3994_bench_anchor():
     )
     # eff = 31952/(170e-6 + 31952/39e6) ≈ 32.30 Mb/s
     # bitrate = 32300 * 0.8 / 1.4 ≈ 18457 → within ±300 of published 18600
-    got = compute_bitrate_kbps(p, 20, 4, 3994, cfg)
+    got = compute_bitrate_kbps_legacy(p, 20, 4, 3994, cfg)
     assert 18300 <= got <= 18900, f"expected ~18600, got {got}"
 
 
@@ -153,7 +154,7 @@ def test_compute_bitrate_kbps_monotone_in_mtu():
     p = _profile()
     p = replace(p, preamble_us_per_frame=170.0, name="m8812eu2-mono")
     cfg = _cfg(base_ratio=0.4)
-    vals = [compute_bitrate_kbps(p, 20, 4, m, cfg) for m in (500, 1500, 3994, 8000)]
+    vals = [compute_bitrate_kbps_legacy(p, 20, 4, m, cfg) for m in (500, 1500, 3994, 8000)]
     assert vals[0] < vals[1] < vals[2] < vals[3], vals
 
 
@@ -167,7 +168,7 @@ def test_compute_bitrate_kbps_max_clamp_still_applies():
         min_bitrate_kbps=1000,
         max_bitrate_kbps=12000,    # well below natural MCS5 setpoint
     )
-    assert compute_bitrate_kbps(p, 20, 5, 3994, cfg) == 12000
+    assert compute_bitrate_kbps_legacy(p, 20, 5, 3994, cfg) == 12000
 
 
 def test_compute_wire_target_kbps_eff_phy_times_util():
@@ -210,3 +211,50 @@ def test_compute_wire_target_kbps_rejects_invalid_util():
         compute_wire_target_kbps(p, 20, 5, 1500, 1.5)
     with pytest.raises(ValueError, match="utilization_factor must be in"):
         compute_wire_target_kbps(p, 20, 5, 1500, -0.1)
+
+
+def test_compute_bitrate_kbps_new_signature_basic():
+    """bitrate = int(wire_target × k / n), clamped to [min, max]."""
+    # wire=3568, k=4, n=6 → 3568*4/6 = 2378.67 → 2378
+    got = compute_bitrate_kbps(
+        wire_target_kbps=3568.0, k=4, n=6,
+        min_bitrate_kbps=1000, max_bitrate_kbps=24000,
+    )
+    assert got == 2378
+
+
+def test_compute_bitrate_kbps_new_signature_clamps_to_min():
+    """When formula yields below floor, clamp to floor."""
+    # wire=1000, k=2, n=10 → 200 < 1000 floor
+    got = compute_bitrate_kbps(
+        wire_target_kbps=1000.0, k=2, n=10,
+        min_bitrate_kbps=1000, max_bitrate_kbps=24000,
+    )
+    assert got == 1000
+
+
+def test_compute_bitrate_kbps_new_signature_clamps_to_max():
+    """When formula yields above max, clamp to max."""
+    # wire=30000, k=10, n=10 → 30000 → clamp to 24000
+    got = compute_bitrate_kbps(
+        wire_target_kbps=30000.0, k=10, n=10,
+        min_bitrate_kbps=1000, max_bitrate_kbps=24000,
+    )
+    assert got == 24000
+
+
+def test_compute_bitrate_kbps_shrinks_with_growing_n():
+    """bitrate × n / k stays constant ≈ wire_target as n grows."""
+    wire = 3568.0
+    k = 4
+    bitrates = [
+        compute_bitrate_kbps(wire, k, n,
+                             min_bitrate_kbps=1, max_bitrate_kbps=24000)
+        for n in (4, 5, 6, 7, 8, 9, 10, 11, 12)
+    ]
+    # Strictly decreasing as n grows (k fixed)
+    assert all(a > b for a, b in zip(bitrates, bitrates[1:])), bitrates
+    # Wire rate (bitrate × n/k) stays ≤ wire_target for every n
+    for n, br in zip(range(4, 13), bitrates):
+        wire_actual = br * n / k
+        assert wire_actual <= wire, f"n={n}: wire={wire_actual} > target={wire}"
