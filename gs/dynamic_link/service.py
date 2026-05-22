@@ -237,13 +237,16 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     )
     policy_raw = raw.get("policy", {})
     bitrate_raw = policy_raw.get("bitrate", {})
+    if "base_redundancy_ratio" in bitrate_raw:
+        log.warning(
+            "policy.bitrate.base_redundancy_ratio is deprecated and "
+            "ignored; fec.base_redundancy_ratio is now authoritative "
+            "(bitrate is derived from live (k, n) per the bitrate-aware "
+            "FEC design)."
+        )
     try:
         bitrate = BitrateConfig(
             utilization_factor=float(bitrate_raw.get("utilization_factor", 0.8)),
-            base_redundancy_ratio=float(bitrate_raw.get(
-                "base_redundancy_ratio",
-                float(fec_raw.get("base_redundancy_ratio", 0.5)),
-            )),
             min_bitrate_kbps=int(bitrate_raw.get("min_bitrate_kbps", 1000)),
             max_bitrate_kbps=int(bitrate_raw.get("max_bitrate_kbps", 24000)),
         )

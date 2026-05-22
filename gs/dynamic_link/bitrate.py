@@ -1,4 +1,4 @@
-"""Encoder bitrate from effective PHY rate × utilization × k_over_n.
+"""Encoder bitrate from effective PHY rate × utilization × k/n.
 
 The model accounts for per-802.11-frame fixed overhead so that
 encoder bitrate scales correctly with `mtu_bytes`. See:
@@ -36,7 +36,6 @@ def _resolve_preamble_us(profile: RadioProfile) -> float:
 @dataclass(frozen=True)
 class BitrateConfig:
     utilization_factor: float = 0.8
-    base_redundancy_ratio: float = 0.5   # k/n = 1/(1+ratio) = 0.667
     min_bitrate_kbps: int = 1000
     max_bitrate_kbps: int = 24000
 
@@ -45,11 +44,6 @@ class BitrateConfig:
             raise ValueError(
                 f"utilization_factor must be in (0, 1]; "
                 f"got {self.utilization_factor}"
-            )
-        if self.base_redundancy_ratio < 0.0:
-            raise ValueError(
-                f"base_redundancy_ratio must be >= 0; "
-                f"got {self.base_redundancy_ratio}"
             )
         if self.min_bitrate_kbps <= 0:
             raise ValueError(
@@ -136,18 +130,3 @@ def compute_bitrate_kbps(
     return int(max(min_bitrate_kbps, min(max_bitrate_kbps, raw_kbps)))
 
 
-def compute_bitrate_kbps_legacy(
-    profile: RadioProfile,
-    bandwidth: int,
-    mcs: int,
-    mtu_bytes: int,
-    cfg: BitrateConfig,
-) -> int:
-    """Compute encoder bitrate target in kb/s for `(bandwidth, mcs, mtu_bytes)`."""
-    phy_Mbps = profile.data_rate_Mbps_LGI[bandwidth][mcs]
-    preamble_us = _resolve_preamble_us(profile)
-    eff_phy_Mbps = effective_phy_Mbps(phy_Mbps, mtu_bytes, preamble_us)
-    k_over_n = 1.0 / (1.0 + cfg.base_redundancy_ratio)
-    raw_kbps = eff_phy_Mbps * 1000.0 * cfg.utilization_factor * k_over_n
-    return int(max(cfg.min_bitrate_kbps,
-                   min(cfg.max_bitrate_kbps, raw_kbps)))
