@@ -5,6 +5,7 @@ from dynamic_link.dynamic_fec import (
     DynamicFecConfig,
     EmitGate,
     NEscalator,
+    clamp_n_for_bitrate_floor,
     compute_k,
     compute_n,
 )
@@ -139,7 +140,6 @@ def test_emit_gate_holds_solo_kn_change_for_two_ticks():
 
 def test_clamp_n_headroom_case_returns_unchanged():
     """n_candidate well below n_max_phy → returned unchanged."""
-    from dynamic_link.dynamic_fec import clamp_n_for_bitrate_floor
     # wire=3568, k=4 → n_max_phy = floor(3568*4/1000) = 14
     # n_candidate=6 < 14 → returned unchanged
     assert clamp_n_for_bitrate_floor(
@@ -151,7 +151,6 @@ def test_clamp_n_headroom_case_returns_unchanged():
 
 def test_clamp_n_capped_to_n_max_phy():
     """n_candidate > n_max_phy → returns n_max_phy; bitrate stays ≥ floor."""
-    from dynamic_link.dynamic_fec import clamp_n_for_bitrate_floor
     # wire=3568, k=4, floor=1000 → n_max_phy = floor(14272/1000) = 14
     # n_candidate=20 → cap at 14
     n = clamp_n_for_bitrate_floor(
@@ -169,7 +168,6 @@ def test_clamp_n_degenerate_link_falls_back_to_k():
     """When wire_target < min_bitrate (link can't carry minimum video),
     n_max_phy < k. Helper returns k (no parity, wire-safety lightly
     bent — see spec)."""
-    from dynamic_link.dynamic_fec import clamp_n_for_bitrate_floor
     # wire=500, k=4, floor=1000 → n_max_phy = floor(2000/1000) = 2 < k
     assert clamp_n_for_bitrate_floor(
         n_candidate=6, k=4,
@@ -178,20 +176,20 @@ def test_clamp_n_degenerate_link_falls_back_to_k():
     ) == 4
 
 
-def test_clamp_n_returns_at_least_k_even_if_n_candidate_below_k():
-    """Pathological caller passes n_candidate=2 with k=4. Result is k."""
-    from dynamic_link.dynamic_fec import clamp_n_for_bitrate_floor
+def test_clamp_n_at_exact_n_max_phy_boundary_returns_n_max_phy():
+    """Inclusive boundary: when n_candidate == n_max_phy, clamp returns it."""
+    # wire=3568, k=4, floor=1000 → n_max_phy = floor(14272/1000) = 14
+    # n_candidate=14 exactly → returns 14 (not 13)
     assert clamp_n_for_bitrate_floor(
-        n_candidate=2, k=4,
+        n_candidate=14, k=4,
         wire_target_kbps=3568.0,
         min_bitrate_kbps=1000,
-    ) == 4
+    ) == 14
 
 
 def test_clamp_n_rejects_invalid_args():
     """Defensive guards: k, min_bitrate_kbps, wire_target_kbps must be > 0."""
     import pytest
-    from dynamic_link.dynamic_fec import clamp_n_for_bitrate_floor
     with pytest.raises(ValueError, match="k must be > 0"):
         clamp_n_for_bitrate_floor(n_candidate=6, k=0, wire_target_kbps=3568.0, min_bitrate_kbps=1000)
     with pytest.raises(ValueError, match="min_bitrate_kbps must be > 0"):
