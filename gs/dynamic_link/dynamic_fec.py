@@ -106,6 +106,34 @@ def compute_n(
     return min(n, n_max)
 
 
+def clamp_n_for_bitrate_floor(
+    n_candidate: int,
+    k: int,
+    wire_target_kbps: float,
+    min_bitrate_kbps: int,
+) -> int:
+    """Cap n so that bitrate = wire_target_kbps × k / n stays ≥ min_bitrate_kbps.
+
+    Preserves the wire-safety invariant at the bitrate floor: when
+    n_escalation would push encoder bitrate below the floor, we stop
+    growing FEC instead of letting wire rate inflate past PHY.
+
+    Pathological edge: when `min_bitrate_kbps > wire_target_kbps`
+    (link can't carry minimum video at all), `n_max_phy < k` and we
+    cap at k (degenerate: no parity). The wire-safety invariant
+    lightly bends here, but only when the link is failing beyond
+    what this layer can fix.
+    """
+    if k <= 0:
+        raise ValueError(f"k must be > 0; got {k}")
+    if min_bitrate_kbps <= 0:
+        raise ValueError(f"min_bitrate_kbps must be > 0; got {min_bitrate_kbps}")
+    if wire_target_kbps <= 0:
+        raise ValueError(f"wire_target_kbps must be > 0; got {wire_target_kbps}")
+    n_max_phy = int(wire_target_kbps * k / min_bitrate_kbps)
+    return max(k, min(n_candidate, n_max_phy))
+
+
 @dataclass
 class NEscalator:
     cfg: DynamicFecConfig
