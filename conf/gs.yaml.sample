@@ -40,6 +40,13 @@ fec:
     max: 16
   base_redundancy_ratio: 0.5
   max_redundancy_ratio: 1.0
+  # blocks_per_frame: number of FEC blocks per video frame at n_base.
+  # Sets block_fill latency budget: each block fills in
+  # frame_period / blocks_per_frame ms. Default = 1 + max_redundancy_ratio
+  # (2.0 with max_red=1.0), which guarantees block_fill ≤ one frame even
+  # at maximum n escalation. Setting lower trades latency for FEC
+  # granularity; service warns if below 1 + max_redundancy_ratio.
+  # blocks_per_frame: 2.0
   n_loss_threshold: 0.02
   n_loss_windows: 3
   n_loss_step: 1
