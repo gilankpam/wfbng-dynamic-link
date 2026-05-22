@@ -115,8 +115,11 @@ def compute_bitrate_kbps(
     """Encoder bitrate that keeps wire rate at `wire_target_kbps`
     with the live (k, n). Clamped to [min, max].
 
-    Invariant: `result × n / k ≤ wire_target_kbps` (modulo int
-    truncation, which only ever rounds wire DOWN).
+    Invariant when no clamp fires: `result × n / k ≤ wire_target_kbps`
+    (int truncation rounds wire DOWN). When `min_bitrate_kbps` clamp
+    fires — only possible when the link is too degraded to sustain
+    minimum video — the invariant does not hold; callers should run
+    `clamp_n_for_bitrate_floor` first to prevent this.
     """
     if k <= 0:
         raise ValueError(f"k must be > 0; got {k}")

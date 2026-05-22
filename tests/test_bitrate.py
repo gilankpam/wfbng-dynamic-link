@@ -258,3 +258,16 @@ def test_compute_bitrate_kbps_shrinks_with_growing_n():
     for n, br in zip(range(4, 13), bitrates):
         wire_actual = br * n / k
         assert wire_actual <= wire, f"n={n}: wire={wire_actual} > target={wire}"
+
+
+def test_compute_bitrate_kbps_new_signature_rejects_invalid_inputs():
+    """Defensive guards: k>0, n>=k, min_bitrate>0, max>=min."""
+    import pytest
+    with pytest.raises(ValueError, match="k must be > 0"):
+        compute_bitrate_kbps(3568.0, k=0, n=6, min_bitrate_kbps=1000, max_bitrate_kbps=24000)
+    with pytest.raises(ValueError, match=r"n \(3\) must be >= k \(4\)"):
+        compute_bitrate_kbps(3568.0, k=4, n=3, min_bitrate_kbps=1000, max_bitrate_kbps=24000)
+    with pytest.raises(ValueError, match="min_bitrate_kbps must be > 0"):
+        compute_bitrate_kbps(3568.0, k=4, n=6, min_bitrate_kbps=0, max_bitrate_kbps=24000)
+    with pytest.raises(ValueError, match="max_bitrate_kbps"):
+        compute_bitrate_kbps(3568.0, k=4, n=6, min_bitrate_kbps=5000, max_bitrate_kbps=4000)
