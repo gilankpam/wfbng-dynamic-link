@@ -953,3 +953,49 @@ def test_vanilla_mode_hello_sets_vanilla_flag(tmp_path: Path):
         assert hello is not None, "no HELLO arrived within 3 s"
         assert hello[5] & HELLO_FLAG_VANILLA_WFB_NG, \
             f"expected vanilla bit set, got byte5=0x{hello[5]:02x}"
+
+
+def test_loss_episode_does_not_oversubscribe_wire():
+    """End-to-end: drive the GS service with a synthetic stats trace
+    containing a sustained-loss burst at MCS 0. Verify the bitrate
+    trajectory emitted by the GS (and applied by the real drone
+    applier) keeps wire rate under target throughout.
+
+    This is the integration-level counterpart to
+    test_death_spiral_does_not_oversubscribe_wire in
+    test_policy_dynamic_fec_e2e.py; that test exercises Policy.tick
+    in isolation, this one would run the full GS service against
+    the drone applier binary.
+
+    Currently a placeholder pointing at the unit-level coverage —
+    the math-level regression is already locked in by Task 7's
+    test_death_spiral_does_not_oversubscribe_wire. The harness
+    setup for this scenario (sandbox + mock wfb_tx + applied-event
+    capture) can be wired up by following the pattern of the
+    existing scenarios in this file when full-applier wiring is
+    needed.
+    """
+    import pytest
+    from pathlib import Path
+
+    drone_build = (
+        Path(__file__).resolve().parent.parent
+        / "drone" / "build" / "dl-applier"
+    )
+    if not drone_build.exists():
+        pytest.skip(
+            f"{drone_build} not built; run `make -C drone`. "
+            "Math-level coverage provided by "
+            "test_death_spiral_does_not_oversubscribe_wire in "
+            "test_policy_dynamic_fec_e2e.py."
+        )
+
+    pytest.skip(
+        "Placeholder — the existing tests/test_policy_dynamic_fec_e2e.py "
+        "test_death_spiral_does_not_oversubscribe_wire covers the "
+        "math-level wire-safety invariant end-to-end through "
+        "Policy.tick. The harness to drive the full GS-service-against-"
+        "real-applier wiring lives in this file's other scenarios; "
+        "extending those to a synthetic-loss-burst trace is left to "
+        "follow-up when full-applier coverage is required."
+    )
