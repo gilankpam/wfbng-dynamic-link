@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dynamic_link.bitrate import compute_bitrate_kbps_legacy
+from dynamic_link.bitrate import compute_bitrate_kbps, compute_wire_target_kbps
 from dynamic_link.policy import (
     FECBounds,
     LeadingLoopConfig,
@@ -258,7 +258,15 @@ def test_policy_bitrate_matches_formula_at_each_mcs():
         _settle_at_mcs(p, target)
         if p.state.mcs != target:
             continue
-        expected = compute_bitrate_kbps_legacy(p.profile, 20, target, 1400, p.cfg.bitrate)
+        # New pipeline: bitrate = wire_target × emitted_k / emitted_n
+        wire = compute_wire_target_kbps(
+            p.profile, 20, target, 1400, p.cfg.bitrate.utilization_factor,
+        )
+        expected = compute_bitrate_kbps(
+            wire_target_kbps=wire, k=p.state.k, n=p.state.n,
+            min_bitrate_kbps=p.cfg.bitrate.min_bitrate_kbps,
+            max_bitrate_kbps=p.cfg.bitrate.max_bitrate_kbps,
+        )
         assert p.state.bitrate_kbps == expected
 
 

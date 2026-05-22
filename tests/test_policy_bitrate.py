@@ -120,6 +120,7 @@ def test_policy_wire_rate_under_target_across_escalation(profile):
 def test_policy_bitrate_shrinks_with_n_escalation(profile):
     """Under sustained loss at MCS 0, policy.tick emits a bitrate that
     decreases as NEscalator ramps escalation up."""
+    from dynamic_link.bitrate import compute_wire_target_kbps
     from dynamic_link.drone_config import DroneConfigState
     from dynamic_link.policy import (
         LeadingLoopConfig, Policy, PolicyConfig, SafeDefaults,
@@ -152,6 +153,17 @@ def test_policy_bitrate_shrinks_with_n_escalation(profile):
             link_starved_w=False,
         )
         d = p.tick(sigs)
+        # Wire-safety: every emitted Decision keeps wire ≤ target.
+        wire_target = compute_wire_target_kbps(
+            profile, cfg.leading.bandwidth, d.mcs, 1500,
+            cfg.bitrate.utilization_factor,
+        )
+        wire_actual = d.bitrate_kbps * d.n / d.k
+        assert wire_actual <= wire_target + 1, (
+            f"tick={tick_i} mcs={d.mcs}: "
+            f"wire_actual={wire_actual:.0f} > target={wire_target:.0f} "
+            f"(bitrate={d.bitrate_kbps} k={d.k} n={d.n})"
+        )
         if d.mcs == 0:
             bitrates_at_mcs0.append(d.bitrate_kbps)
 
