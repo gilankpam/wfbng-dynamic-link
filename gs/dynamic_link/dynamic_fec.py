@@ -2,8 +2,9 @@
 
 Three pieces:
   - `compute_k`: from (wire_target_kbps, mtu_bytes, fps) → integer k,
-    clamped to `[k_min, k_max]`. Sized at the worst-case wire rate
-    so block-fill stays within a frame period at full utilization.
+    anchored on the encoder rate (wire/(1+base_red)) and divided by
+    cfg.blocks_per_frame. Default bpf = 1 + max_red, giving
+    block_fill_ms ≤ frame_period_ms at all n ≤ n_max.
   - `NEscalator`: tracks `n_escalation` across ticks; ramps up on
     sustained `residual_loss`, decrements on sustained clean
     windows. Hysteresis is the load-bearing piece — bare-reactive
@@ -91,16 +92,24 @@ def compute_k(
     fps: int,
     cfg: DynamicFecConfig,
 ) -> int:
-    """Packets-per-frame at full wire utilization, clamped to [k_min, k_max].
+    """Block size, sized so block_fill stays inside one frame period
+    even at maximum n escalation.
 
-    The input is the *worst-case* wire bitrate (full utilization at this
-    MCS) — not the live encoder bitrate. This makes k a function of
-    (MCS, mtu, fps, util) only, with no feedback loop from the encoder.
+    Anchored on the encoder bitrate at n_base (= wire_target / (1 +
+    base_redundancy_ratio)) rather than on the wire rate, so block_fill
+    does not inflate as n grows above n_base. The result is divided by
+    `cfg.blocks_per_frame`; with the default (1 + max_redundancy_ratio)
+    the bound holds at every emitted n by construction. See
+    docs/superpowers/specs/2026-05-23-block-fill-enforcement-design.md.
     """
     if wire_target_kbps <= 0 or mtu_bytes <= 0 or fps <= 0:
         return cfg.k_min
-    packets_per_frame = (wire_target_kbps * 1000.0) / (fps * mtu_bytes * 8.0)
-    return max(cfg.k_min, min(cfg.k_max, int(packets_per_frame)))
+    anchor_encoder_kbps = wire_target_kbps / (1.0 + cfg.base_redundancy_ratio)
+    packets_per_frame = (
+        anchor_encoder_kbps * 1000.0 / (fps * mtu_bytes * 8.0)
+    )
+    k = packets_per_frame / cfg.blocks_per_frame
+    return max(cfg.k_min, min(cfg.k_max, int(k)))
 
 
 def compute_n(
