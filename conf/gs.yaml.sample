@@ -116,16 +116,13 @@ policy:
   # power to max. At 10 Hz, 5 windows = 0.5 s.
   starvation_windows: 5
 
-  # Encoder bitrate is computed each tick as
-  #   data_rate_Mbps_LGI[bw][mcs] * 1000 * utilization_factor
-  #     * 1/(1 + base_redundancy_ratio)
-  # clamped to [min_bitrate_kbps, max_bitrate_kbps]. The k/n factor is
-  # FIXED (not the live dynamic-FEC (k, n)) so the encoder allocation
-  # stays steady while n_escalation moves — escalation eats the
-  # utilization-factor headroom instead of the encoder budget.
+  # Encoder bitrate is derived from the live emitted (k, n):
+  #   wire_target = eff_phy_Mbps * utilization_factor * 1000
+  #   bitrate = wire_target * emitted_k / emitted_n
+  # clamped to [min_bitrate_kbps, max_bitrate_kbps]. Bitrate shrinks as
+  # FEC escalation grows, keeping total wire under PHY.
   bitrate:
     utilization_factor: 0.6
-    base_redundancy_ratio: 0.5   # should match fec.base_redundancy_ratio
     min_bitrate_kbps: 1000
     max_bitrate_kbps: 24000
 
