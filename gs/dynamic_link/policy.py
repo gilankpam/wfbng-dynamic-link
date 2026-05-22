@@ -825,7 +825,7 @@ class Policy:
         # Dynamic FEC: k from packets-per-frame at the live bitrate,
         # n from base + escalation.
         candidate_k = compute_k(
-            bitrate_kbps=new_bitrate_kbps,
+            wire_target_kbps=new_bitrate_kbps,   # placeholder; reordered in Task 5
             mtu_bytes=mtu,
             fps=fps,
             cfg=self.cfg.dynamic_fec,

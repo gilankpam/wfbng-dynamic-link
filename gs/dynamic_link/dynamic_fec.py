@@ -1,10 +1,9 @@
 """Dynamic FEC selection — see spec §"Dynamic FEC algorithm".
 
 Three pieces:
-  - `compute_k`: from (bitrate_kbps, mtu_bytes, fps) → integer k,
-    clamped to `[k_min, k_max]`. The intuition is "one FEC block
-    per frame" (k = packets per frame), so block-fill stays within
-    a frame period.
+  - `compute_k`: from (wire_target_kbps, mtu_bytes, fps) → integer k,
+    clamped to `[k_min, k_max]`. Sized at the worst-case wire rate
+    so block-fill stays within a frame period at full utilization.
   - `NEscalator`: tracks `n_escalation` across ticks; ramps up on
     sustained `residual_loss`, decrements on sustained clean
     windows. Hysteresis is the load-bearing piece — bare-reactive
@@ -81,15 +80,20 @@ class DynamicFecConfig:
 
 def compute_k(
     *,
-    bitrate_kbps: int,
+    wire_target_kbps: float,
     mtu_bytes: int,
     fps: int,
     cfg: DynamicFecConfig,
 ) -> int:
-    """Packets-per-frame, clamped to [k_min, k_max]."""
-    if bitrate_kbps <= 0 or mtu_bytes <= 0 or fps <= 0:
+    """Packets-per-frame at full wire utilization, clamped to [k_min, k_max].
+
+    The input is the *worst-case* wire bitrate (full utilization at this
+    MCS) — not the live encoder bitrate. This makes k a function of
+    (MCS, mtu, fps, util) only, with no feedback loop from the encoder.
+    """
+    if wire_target_kbps <= 0 or mtu_bytes <= 0 or fps <= 0:
         return cfg.k_min
-    packets_per_frame = (bitrate_kbps * 1000.0) / (fps * mtu_bytes * 8.0)
+    packets_per_frame = (wire_target_kbps * 1000.0) / (fps * mtu_bytes * 8.0)
     return max(cfg.k_min, min(cfg.k_max, int(packets_per_frame)))
 
 

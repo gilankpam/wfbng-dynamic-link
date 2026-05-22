@@ -30,27 +30,27 @@ def _cfg(**over):
 # --- compute_k --------------------------------------------------------
 
 def test_compute_k_packets_per_frame_for_8mbps_60fps_mtu1400():
-    # 8000 kbps / (60 * 1400 * 8 / 1000) = 8000 / 672 = 11.9 → 11
+    # 8000 kbps wire / (60 * 1400 * 8 / 1000) = 11.9 → 11
     cfg = _cfg(k_min=4, k_max=16)
-    assert compute_k(bitrate_kbps=8000, mtu_bytes=1400, fps=60, cfg=cfg) == 11
+    assert compute_k(wire_target_kbps=8000, mtu_bytes=1400, fps=60, cfg=cfg) == 11
 
 
 def test_compute_k_clamps_to_k_max():
     cfg = _cfg(k_min=4, k_max=8)
-    # High bitrate, low fps → many packets/frame, clamp to k_max.
-    assert compute_k(bitrate_kbps=24000, mtu_bytes=1400, fps=30, cfg=cfg) == 8
+    # High wire, low fps → many packets/frame, clamp to k_max.
+    assert compute_k(wire_target_kbps=24000, mtu_bytes=1400, fps=30, cfg=cfg) == 8
 
 
 def test_compute_k_clamps_to_k_min():
     cfg = _cfg(k_min=4, k_max=16)
-    # Very low bitrate at high fps → fewer than 4 packets/frame.
-    assert compute_k(bitrate_kbps=1000, mtu_bytes=1400, fps=120, cfg=cfg) == 4
+    # Very low wire at high fps → fewer than 4 packets/frame.
+    assert compute_k(wire_target_kbps=1000, mtu_bytes=1400, fps=120, cfg=cfg) == 4
 
 
 def test_compute_k_handles_mtu_3994_60fps_8mbps():
-    # MTU 3994 → 8000 / (60 * 3994 * 8 / 1000) = 8000 / 1917 = 4.17 → 4
+    # MTU 3994 → 8000 / (60 * 3994 * 8 / 1000) = 4.17 → 4
     cfg = _cfg(k_min=4, k_max=16)
-    assert compute_k(bitrate_kbps=8000, mtu_bytes=3994, fps=60, cfg=cfg) == 4
+    assert compute_k(wire_target_kbps=8000, mtu_bytes=3994, fps=60, cfg=cfg) == 4
 
 
 # --- compute_n + NEscalator ------------------------------------------
