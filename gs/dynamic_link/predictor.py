@@ -103,10 +103,11 @@ def fit_or_degrade(
       1. drop depth by 1 (reclaims one block_duration).
       2. if depth already 1 and still over cap → refuse.
 
-    The trailing controller is responsible for choosing (k, n) under
-    the latency cap (it queries `max_n_for_latency` when computing the
-    n upper bound), so this is a defensive last-resort gate that only
-    has to handle depth.
+    This is a defensive last-resort gate that only adjusts depth.
+    (k, n) come from `dynamic_link.dynamic_fec`, sized to keep
+    block_fill ≤ frame_period at all loss levels; nothing in the live
+    pipeline calls `max_n_for_latency`. The function remains as
+    reference code for the inverse formula.
     """
     current = proposal
     while True:
