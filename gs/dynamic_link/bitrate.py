@@ -78,6 +78,29 @@ def effective_phy_Mbps(
     return mtu_bits / (preamble_s + payload_s) / 1_000_000.0
 
 
+def compute_wire_target_kbps(
+    profile: RadioProfile,
+    bandwidth: int,
+    mcs: int,
+    mtu_bytes: int,
+    utilization_factor: float,
+) -> float:
+    """Maximum sustainable wire bitrate (kbps) at this (MCS, bandwidth, mtu).
+
+    `wire_target = eff_phy × utilization_factor`. This is the anchor
+    for the dynamic-FEC dataflow: `k` is sized for it, `n` adds
+    redundancy on top of it, and `bitrate = wire_target × k / n`.
+
+    The result depends only on the radio profile, MCS row, MTU, and
+    utilization — no FEC inputs. Returned as a float; the caller is
+    responsible for any int truncation.
+    """
+    phy_Mbps = profile.data_rate_Mbps_LGI[bandwidth][mcs]
+    preamble_us = _resolve_preamble_us(profile)
+    eff_phy_Mbps = effective_phy_Mbps(phy_Mbps, mtu_bytes, preamble_us)
+    return eff_phy_Mbps * 1000.0 * utilization_factor
+
+
 def compute_bitrate_kbps(
     profile: RadioProfile,
     bandwidth: int,

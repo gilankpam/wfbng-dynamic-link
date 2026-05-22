@@ -168,3 +168,37 @@ def test_compute_bitrate_kbps_max_clamp_still_applies():
         max_bitrate_kbps=12000,    # well below natural MCS5 setpoint
     )
     assert compute_bitrate_kbps(p, 20, 5, 3994, cfg) == 12000
+
+
+def test_compute_wire_target_kbps_eff_phy_times_util():
+    """wire_target = eff_phy × util × 1000 (scale to kbps)."""
+    from dynamic_link.bitrate import compute_wire_target_kbps, effective_phy_Mbps
+    p = _profile()  # m8812eu2; preamble_us = 170 per packaged profile
+    # MCS 0 HT20: phy=6.5 Mbps, mtu=1500
+    # eff = 12000 / (170e-6 + 12000/6.5e6) = 12000 / (170+1846) µs ≈ 5.948 Mbps
+    # wire_target = 5948 × 0.6 ≈ 3568.8 → 3568 kbps (int cast in caller)
+    got = compute_wire_target_kbps(
+        profile=p, bandwidth=20, mcs=0,
+        mtu_bytes=1500, utilization_factor=0.6,
+    )
+    eff = effective_phy_Mbps(6.5, 1500, 170.0)
+    expected = eff * 0.6 * 1000.0
+    assert abs(got - expected) < 0.01, f"got={got} expected={expected}"
+
+
+def test_compute_wire_target_kbps_independent_of_fec():
+    """wire_target is a function of (MCS, bandwidth, mtu, util) ONLY —
+    no FEC inputs."""
+    from dynamic_link.bitrate import compute_wire_target_kbps
+    p = _profile()
+    a = compute_wire_target_kbps(p, 20, 5, 1500, 0.6)
+    b = compute_wire_target_kbps(p, 20, 5, 1500, 0.6)
+    assert a == b
+
+
+def test_compute_wire_target_kbps_scales_with_util():
+    from dynamic_link.bitrate import compute_wire_target_kbps
+    p = _profile()
+    a = compute_wire_target_kbps(p, 20, 5, 1500, 0.4)
+    b = compute_wire_target_kbps(p, 20, 5, 1500, 0.8)
+    assert abs(b - 2 * a) < 0.5  # exactly 2× modulo float precision
