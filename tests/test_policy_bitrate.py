@@ -146,3 +146,62 @@ def test_policy_bitrate_shrinks_with_n_escalation(profile):
         f"bitrate did not shrink: first={bitrates_at_mcs0[0]} "
         f"min={min(bitrates_at_mcs0)}"
     )
+
+
+def test_emit_gate_alignment_bitrate_uses_emitted_kn(profile):
+    """When EmitGate holds (k, n) at the previous values, the emitted
+    bitrate is derived from those held (k, n) — not the candidate."""
+    from dynamic_link.bitrate import compute_bitrate_kbps, compute_wire_target_kbps
+    from dynamic_link.drone_config import DroneConfigState
+    from dynamic_link.policy import (
+        GateConfig, LeadingLoopConfig, Policy, PolicyConfig, SafeDefaults,
+    )
+    from dynamic_link.signals import Signals
+    from dynamic_link.wire import Hello
+
+    cfg = PolicyConfig(
+        leading=LeadingLoopConfig(
+            tx_power_min_dBm=5.0, tx_power_max_dBm=30.0,
+        ),
+        gate=GateConfig(max_mcs=5),
+        safe=SafeDefaults(k=2, n=3, depth=1, mcs=0),
+    )
+    drone_cfg = DroneConfigState()
+    drone_cfg.on_hello(Hello(
+        generation_id=1, mtu_bytes=1500, fps=60, applier_build_sha=0,
+    ))
+    p = Policy(cfg, profile, drone_config=drone_cfg)
+
+    def _clean_sigs(ts: float) -> Signals:
+        return Signals(
+            timestamp=ts,
+            rssi=-50.0, rssi_min_w=-52.0, rssi_max_w=-48.0,
+            snr=25.0, snr_slope=0.0,
+            residual_loss_w=0.0, fec_work=0.0,
+            link_starved_w=False,
+        )
+
+    # First tick — EmitGate always emits the first time.
+    d0 = p.tick(_clean_sigs(0.0))
+
+    # Second tick — same signals, MCS unchanged, (k, n) unchanged.
+    # EmitGate holds the previous values; bitrate must match the
+    # previous bitrate (computed from the same (k, n)).
+    d1 = p.tick(_clean_sigs(0.1))
+
+    assert (d1.k, d1.n) == (d0.k, d0.n)
+    assert d1.bitrate_kbps == d0.bitrate_kbps, (
+        f"bitrate disagreed across gate-held ticks: "
+        f"d0={d0.bitrate_kbps} d1={d1.bitrate_kbps}"
+    )
+
+    # Sanity: the emitted bitrate matches the formula on the emitted (k, n).
+    wire = compute_wire_target_kbps(
+        profile, 20, d1.mcs, 1500, cfg.bitrate.utilization_factor,
+    )
+    expected = compute_bitrate_kbps(
+        wire_target_kbps=wire, k=d1.k, n=d1.n,
+        min_bitrate_kbps=cfg.bitrate.min_bitrate_kbps,
+        max_bitrate_kbps=cfg.bitrate.max_bitrate_kbps,
+    )
+    assert d1.bitrate_kbps == expected
