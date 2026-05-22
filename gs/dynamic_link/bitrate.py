@@ -95,6 +95,10 @@ def compute_wire_target_kbps(
     utilization — no FEC inputs. Returned as a float; the caller is
     responsible for any int truncation.
     """
+    if not (0.0 < utilization_factor <= 1.0):
+        raise ValueError(
+            f"utilization_factor must be in (0, 1]; got {utilization_factor}"
+        )
     phy_Mbps = profile.data_rate_Mbps_LGI[bandwidth][mcs]
     preamble_us = _resolve_preamble_us(profile)
     eff_phy_Mbps = effective_phy_Mbps(phy_Mbps, mtu_bytes, preamble_us)
