@@ -289,18 +289,21 @@ def test_policy_emits_computed_k_n_from_drone_config():
         generation_id=1, mtu_bytes=1400, fps=60, applier_build_sha=0,
     ))
     p = Policy(cfg, prof, drone_config=drone_cfg)
+    from dynamic_link.dynamic_fec import compute_k
+
     # Drive a clean-link tick so the leading selector commits and the
     # emit-gate fires (first-call always emits).
     d = p.tick(_clean_sigs(0.0))
-    # compute_k formula: wire_target_kbps * 1000 / (fps * mtu * 8), clamped.
-    # k is anchored to wire_target (not the encoder bitrate).
+    # k is anchored to encoder bitrate (wire_target / (1 + base_redundancy_ratio))
+    # and divided by blocks_per_frame — see compute_k in dynamic_fec.py.
     wire_target = compute_wire_target_kbps(
         prof, 20, d.mcs, 1400, cfg.bitrate.utilization_factor,
     )
-    expected_k = max(
-        cfg.dynamic_fec.k_min,
-        min(cfg.dynamic_fec.k_max,
-            int(wire_target * 1000 / (60 * 1400 * 8))),
+    expected_k = compute_k(
+        wire_target_kbps=wire_target,
+        mtu_bytes=1400,
+        fps=60,
+        cfg=cfg.dynamic_fec,
     )
     assert d.k == expected_k
 
