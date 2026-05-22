@@ -185,11 +185,23 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     )
 
     fec_kbounds_raw = fec_raw.get("k_bounds", {})
+    max_red = float(fec_raw.get("max_redundancy_ratio", 1.0))
+    hard_bpf = 1.0 + max_red
+    bpf = float(fec_raw.get("blocks_per_frame", hard_bpf))
+    if bpf < hard_bpf:
+        log.warning(
+            "config: fec.blocks_per_frame=%.2f is below "
+            "1 + max_redundancy_ratio (%.2f) — block_fill will exceed "
+            "one frame period under sustained loss. Set blocks_per_frame "
+            ">= %.2f for the hard latency bound.",
+            bpf, hard_bpf, hard_bpf,
+        )
     dynamic_fec = DynamicFecConfig(
         k_min=int(fec_kbounds_raw.get("min", 4)),
         k_max=int(fec_kbounds_raw.get("max", 16)),
         base_redundancy_ratio=float(fec_raw.get("base_redundancy_ratio", 0.5)),
-        max_redundancy_ratio=float(fec_raw.get("max_redundancy_ratio", 1.0)),
+        max_redundancy_ratio=max_red,
+        blocks_per_frame=bpf,
         n_loss_threshold=float(fec_raw.get("n_loss_threshold", 0.02)),
         n_loss_windows=int(fec_raw.get("n_loss_windows", 3)),
         n_loss_step=int(fec_raw.get("n_loss_step", 1)),
