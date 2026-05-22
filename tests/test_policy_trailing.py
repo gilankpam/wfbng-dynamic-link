@@ -264,7 +264,8 @@ def test_policy_bitrate_matches_formula_at_each_mcs():
 
 def test_policy_emits_computed_k_n_from_drone_config():
     """With a drone reporting (mtu=1400, fps=60), policy.tick emits a
-    `k` consistent with packets-per-frame at the live bitrate."""
+    `k` consistent with packets-per-frame at the wire target bitrate."""
+    from dynamic_link.bitrate import compute_wire_target_kbps
     from dynamic_link.drone_config import DroneConfigState
     from dynamic_link.wire import Hello
 
@@ -283,11 +284,15 @@ def test_policy_emits_computed_k_n_from_drone_config():
     # Drive a clean-link tick so the leading selector commits and the
     # emit-gate fires (first-call always emits).
     d = p.tick(_clean_sigs(0.0))
-    # compute_k formula: bitrate_kbps * 1000 / (fps * mtu * 8), clamped.
+    # compute_k formula: wire_target_kbps * 1000 / (fps * mtu * 8), clamped.
+    # k is anchored to wire_target (not the encoder bitrate).
+    wire_target = compute_wire_target_kbps(
+        prof, 20, d.mcs, 1400, cfg.bitrate.utilization_factor,
+    )
     expected_k = max(
         cfg.dynamic_fec.k_min,
         min(cfg.dynamic_fec.k_max,
-            int(d.bitrate_kbps * 1000 / (60 * 1400 * 8))),
+            int(wire_target * 1000 / (60 * 1400 * 8))),
     )
     assert d.k == expected_k
 

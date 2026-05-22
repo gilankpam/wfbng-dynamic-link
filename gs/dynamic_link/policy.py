@@ -9,13 +9,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from .bitrate import BitrateConfig, compute_bitrate_kbps_legacy
+from .bitrate import BitrateConfig, compute_bitrate_kbps, compute_wire_target_kbps
 from .decision import Decision
 from .drone_config import DroneConfigState
 from .dynamic_fec import (
     DynamicFecConfig,
     EmitGate,
     NEscalator,
+    clamp_n_for_bitrate_floor,
     compute_k,
     compute_n,
 )
@@ -734,6 +735,10 @@ class Policy:
             if self.drone_config is not None and self.drone_config.is_synced()
             else 1400
         )
+        _init_wire_target = compute_wire_target_kbps(
+            profile, cfg.leading.bandwidth, row.mcs, mtu_for_init,
+            cfg.bitrate.utilization_factor,
+        )
         self.state = PolicyState(
             mcs=row.mcs,
             bandwidth=cfg.leading.bandwidth,
@@ -741,8 +746,11 @@ class Policy:
             k=cfg.safe.k,
             n=cfg.safe.n,
             depth=cfg.safe.depth,
-            bitrate_kbps=compute_bitrate_kbps_legacy(
-                profile, cfg.leading.bandwidth, row.mcs, mtu_for_init, cfg.bitrate,
+            bitrate_kbps=compute_bitrate_kbps(
+                wire_target_kbps=_init_wire_target,
+                k=cfg.safe.k, n=cfg.safe.n,
+                min_bitrate_kbps=cfg.bitrate.min_bitrate_kbps,
+                max_bitrate_kbps=cfg.bitrate.max_bitrate_kbps,
             ),
         )
         # Dynamic-FEC state. `_n_escalator` tracks residual-loss
@@ -815,33 +823,36 @@ class Policy:
         mtu = self.drone_config.mtu_bytes if self.drone_config else 1400
         fps = self.drone_config.fps if self.drone_config else 60
 
-        # Bitrate first (no FEC dependency — bitrate uses the fixed
-        # `base_redundancy_ratio` from BitrateConfig, not the live k/n).
-        new_bitrate_kbps = compute_bitrate_kbps_legacy(
+        # wire_target_kbps is the anchor: function of (MCS, bw, mtu, util)
+        # only — no FEC feedback. Encoder bitrate later shrinks against
+        # this as (k, n) grow under loss.
+        wire_target_kbps = compute_wire_target_kbps(
             self.profile, self.state.bandwidth, row.mcs,
-            mtu, self.cfg.bitrate,
+            mtu, self.cfg.bitrate.utilization_factor,
         )
 
-        # Dynamic FEC: k from packets-per-frame at the live bitrate,
-        # n from base + escalation.
+        # k sized for the worst-case wire rate (full utilization).
         candidate_k = compute_k(
-            wire_target_kbps=new_bitrate_kbps,   # placeholder; reordered in Task 5
-            mtu_bytes=mtu,
-            fps=fps,
+            wire_target_kbps=wire_target_kbps,
+            mtu_bytes=mtu, fps=fps,
             cfg=self.cfg.dynamic_fec,
         )
+
+        # n: base + escalation, then clamp to keep bitrate >= floor.
         escalation = self._n_escalator.update(
             loss=float(signals.residual_loss_w)
         )
-        candidate_n = compute_n(
+        n_unclamped = compute_n(
+            k=candidate_k, n_escalation=escalation, cfg=self.cfg.dynamic_fec,
+        )
+        candidate_n = clamp_n_for_bitrate_floor(
+            n_candidate=n_unclamped,
             k=candidate_k,
-            n_escalation=escalation,
-            cfg=self.cfg.dynamic_fec,
+            wire_target_kbps=wire_target_kbps,
+            min_bitrate_kbps=self.cfg.bitrate.min_bitrate_kbps,
         )
 
-        # Emit-gating: solo (k, n) changes wait out the debounce
-        # window; MCS-change ticks emit immediately so (k, n) ride
-        # with their cause-and-effect partner.
+        # EmitGate decides what actually rides this tick.
         if self._emit_gate.should_emit(
             candidate_k, candidate_n, mcs_changed,
             current_tick=self._tick_counter,
@@ -851,6 +862,14 @@ class Policy:
         else:
             new_k = self._emit_gate.last_k or self.cfg.safe.k
             new_n = self._emit_gate.last_n or self.cfg.safe.n
+
+        # Bitrate derived from the EMITTED (k, n) — they ride together.
+        new_bitrate_kbps = compute_bitrate_kbps(
+            wire_target_kbps=wire_target_kbps,
+            k=new_k, n=new_n,
+            min_bitrate_kbps=self.cfg.bitrate.min_bitrate_kbps,
+            max_bitrate_kbps=self.cfg.bitrate.max_bitrate_kbps,
+        )
 
         self._tick_counter += 1
 
