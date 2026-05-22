@@ -487,6 +487,39 @@ def test_golden_path_dispatches_all_backends(tmp_path: Path):
                    for p in paths), paths
 
 
+def test_decision_computes_roi_qp_below_threshold(tmp_path: Path):
+    """At bitrate=4000 (below 6000 threshold), the applier should send
+    fpv.roiQp=-12 (defaults: floor=-24, anchor=2000, step=3 → linear
+    midpoint quantizes to -12)."""
+    with _sandbox(tmp_path) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2,
+                bitrate=4000, fps=60)
+        assert _wait_until(lambda: len(s["encoder"].recorded) >= 1), \
+            f"encoder got {s['encoder'].recorded}"
+        paths = s["encoder"].recorded
+        assert any("video0.bitrate=4000" in p and "fpv.roiQp=-12" in p
+                   for p in paths), paths
+
+
+def test_decision_computes_roi_qp_zero_above_threshold(tmp_path: Path):
+    """At bitrate=12000 (above threshold), the applier should still
+    emit fpv.roiQp=0 — the bug-fix path. Previously roi_qp=0 was
+    silently skipped."""
+    with _sandbox(tmp_path) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2,
+                bitrate=12000, fps=60)
+        assert _wait_until(lambda: len(s["encoder"].recorded) >= 1), \
+            f"encoder got {s['encoder'].recorded}"
+        paths = s["encoder"].recorded
+        assert any("fpv.roiQp=0" in p for p in paths), paths
+
+
 def test_pixelpilot_udp_token_triggers_idr(tmp_path: Path):
     """A single UDP datagram on the applier's IDR listener port
     produces exactly one /request/idr HTTP call to the mock encoder."""

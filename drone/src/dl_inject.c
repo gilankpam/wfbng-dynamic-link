@@ -20,7 +20,7 @@ static void usage(const char *prog) {
         "Usage: %s --target HOST:PORT \\\n"
         "         --mcs N --bandwidth {20|40} --tx-power DBM \\\n"
         "         --k N --n N --depth N \\\n"
-        "         --bitrate KBPS [--roi-qp QP] [--fps FPS] \\\n"
+        "         --bitrate KBPS [--fps FPS] \\\n"
         "         [--sequence N]\n"
         "       %s --ping --gs-seq N --gs-mono US [--target HOST:PORT]\n"
         "       %s --hello --gen-id N --mtu N --fps N [--build-sha N] [--hello-flags N] --dry-run\n"
@@ -53,7 +53,6 @@ int main(int argc, char **argv) {
         { "n",         required_argument, 0, 'n' },
         { "depth",     required_argument, 0, 'd' },
         { "bitrate",   required_argument, 0, 'b' },
-        { "roi-qp",    required_argument, 0, 'r' },
         { "fps",       required_argument, 0, 'f' },
         { "sequence",  required_argument, 0, 's' },
         { "dry-run",   no_argument,       0, 'D' },
@@ -85,7 +84,6 @@ int main(int argc, char **argv) {
         .n = 12,
         .depth = 1,
         .bitrate_kbps = 8000,
-        .roi_qp = 0,
         .fps = 0,
         .flags = 0,
     };
@@ -97,7 +95,7 @@ int main(int argc, char **argv) {
     dl_hello_ack_t hello_ack = { .version = DL_WIRE_VERSION };
 
     int c;
-    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:r:f:s:Dpq:m:HAg:u:S:F:h",
+    while ((c = getopt_long(argc, argv, "t:M:B:P:k:n:d:b:f:s:Dpq:m:HAg:u:S:F:h",
                             opts, NULL)) != -1) {
         switch (c) {
             case 't': target = optarg; break;
@@ -108,7 +106,6 @@ int main(int argc, char **argv) {
             case 'n': d.n = (uint8_t)atoi(optarg); break;
             case 'd': d.depth = (uint8_t)atoi(optarg); break;
             case 'b': d.bitrate_kbps = (uint16_t)atoi(optarg); break;
-            case 'r': d.roi_qp = (uint8_t)atoi(optarg); break;
             case 'f': d.fps = (uint8_t)atoi(optarg);
                       hello.fps = (uint16_t)atoi(optarg); break;
             case 's': explicit_seq = (uint32_t)strtoul(optarg, NULL, 10);
@@ -264,9 +261,9 @@ int main(int argc, char **argv) {
     close(fd);
     fprintf(stderr,
             "sent seq=%u mcs=%u bw=%u tx=%d k=%u n=%u depth=%u "
-            "bitrate=%u roi_qp=%u fps=%u -> %s:%u\n",
+            "bitrate=%u fps=%u -> %s:%u\n",
             d.sequence, d.mcs, d.bandwidth, d.tx_power_dBm,
-            d.k, d.n, d.depth, d.bitrate_kbps, d.roi_qp, d.fps,
+            d.k, d.n, d.depth, d.bitrate_kbps, d.fps,
             host, port);
     return 0;
 }

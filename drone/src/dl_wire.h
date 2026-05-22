@@ -10,9 +10,9 @@
 #include <stdbool.h>
 
 #define DL_WIRE_MAGIC           0x444C4B31u   /* "DLK1" */
-#define DL_WIRE_VERSION         1
-#define DL_WIRE_PAYLOAD_SIZE    28            /* payload bytes */
-#define DL_WIRE_ON_WIRE_SIZE    32            /* payload + 4-byte CRC */
+#define DL_WIRE_VERSION         2
+#define DL_WIRE_PAYLOAD_SIZE    27            /* payload bytes */
+#define DL_WIRE_ON_WIRE_SIZE    31            /* payload + 4-byte CRC */
 
 /* Phase 3: timesync ping/pong over the same tunnel UDP socket. */
 #define DL_PING_MAGIC           0x444C5047u   /* "DLPG" */
@@ -53,7 +53,6 @@ typedef struct {
     uint8_t  n;                /* 4..16 typical */
     uint8_t  depth;            /* 1..3 typical */
     uint16_t bitrate_kbps;     /* 0..65535 */
-    uint8_t  roi_qp;           /* 0 = unset */
     uint8_t  fps;              /* 0 = unset */
 } dl_decision_t;
 

@@ -44,6 +44,11 @@ void dl_config_defaults(dl_config_t *cfg) {
     strncpy(cfg->encoder_host, "127.0.0.1", DL_CONF_MAX_STR - 1);
     cfg->encoder_port = 80;
 
+    cfg->roi_qp_threshold_kbps  = 6000;
+    cfg->roi_qp_low_anchor_kbps = 2000;
+    cfg->roi_qp_floor           = -24;
+    cfg->roi_qp_step            = 3;
+
     cfg->mavlink_enable = true;
     strncpy(cfg->mavlink_addr, "127.0.0.1", DL_CONF_MAX_STR - 1);
     cfg->mavlink_port = 14560;
@@ -194,6 +199,14 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else if (strcmp(key, "encoder_kind") == 0)       SET_STR(encoder_kind);
         else if (strcmp(key, "encoder_host") == 0)       SET_STR(encoder_host);
         else if (strcmp(key, "encoder_port") == 0)       SET_INT_RANGED(encoder_port, uint16_t, 1, 65535);
+        else if (strcmp(key, "roi_qp_threshold_kbps") == 0)
+            SET_INT_RANGED(roi_qp_threshold_kbps, uint16_t, 100, 65535);
+        else if (strcmp(key, "roi_qp_low_anchor_kbps") == 0)
+            SET_INT_RANGED(roi_qp_low_anchor_kbps, uint16_t, 100, 65535);
+        else if (strcmp(key, "roi_qp_floor") == 0)
+            SET_INT_RANGED(roi_qp_floor, int8_t, -30, 0);
+        else if (strcmp(key, "roi_qp_step") == 0)
+            SET_INT_RANGED(roi_qp_step, uint8_t, 1, 10);
         else if (strcmp(key, "mavlink_enable") == 0)     SET_BOOL(mavlink_enable);
         else if (strcmp(key, "mavlink_addr") == 0)       SET_STR(mavlink_addr);
         else if (strcmp(key, "mavlink_port") == 0)       SET_INT_RANGED(mavlink_port, uint16_t, 1, 65535);
@@ -223,6 +236,14 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         else {
             dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
         }
+    }
+    if (cfg->roi_qp_threshold_kbps <= cfg->roi_qp_low_anchor_kbps) {
+        dl_log_err("%s: roi_qp_threshold_kbps (%u) must be > "
+                   "roi_qp_low_anchor_kbps (%u)",
+                   path,
+                   (unsigned)cfg->roi_qp_threshold_kbps,
+                   (unsigned)cfg->roi_qp_low_anchor_kbps);
+        rc = -1;
     }
     fclose(fd);
     return rc;

@@ -72,6 +72,13 @@ typedef struct {
     char     encoder_host[DL_CONF_MAX_STR];
     uint16_t encoder_port;
 
+    /* ROI QP policy (drone-side computation from bitrate). See
+     * docs/superpowers/specs/2026-05-22-drone-side-roi-qp-design.md. */
+    uint16_t roi_qp_threshold_kbps;   /* >= this bitrate => roi_qp = 0  */
+    uint16_t roi_qp_low_anchor_kbps;  /* <= this bitrate => roi_qp = floor */
+    int8_t   roi_qp_floor;            /* most-negative QP delta, -30..0  */
+    uint8_t  roi_qp_step;             /* quantization, 1..10             */
+
     /* MAVLink status channel (Phase 2). Drone → GS via wfb-ng's
      * mavlink stream (plain UDP loopback; wfb-ng's wfb_tx picks up
      * from 127.0.0.1:14560 on the drone). */
