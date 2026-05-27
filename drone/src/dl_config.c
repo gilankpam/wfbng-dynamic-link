@@ -99,7 +99,7 @@ static int dl_parse_long_ranged(const char *s, long lo, long hi, long *out) {
     return 0;
 }
 
-static int dl_parse_bool(const char *val, bool *out) {
+int dl_parse_bool(const char *val, bool *out) {
     if (strcasecmp(val, "1") == 0 || strcasecmp(val, "true") == 0 ||
         strcasecmp(val, "yes") == 0 || strcasecmp(val, "on") == 0) {
         *out = true;

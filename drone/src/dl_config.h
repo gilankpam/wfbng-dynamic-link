@@ -153,6 +153,11 @@ const dl_int_field_t  *dl_config_int_fields (size_t *n_out);
 const dl_bool_field_t *dl_config_bool_fields(size_t *n_out);
 const dl_str_field_t  *dl_config_str_fields (size_t *n_out);
 
+/* Parse a value string into a bool. Accepts true/false/1/0/yes/no/on/off
+ * case-insensitively. Returns 0 on success, -1 on any other input.
+ * Used by both the conf-file parser and the CLI override path. */
+int dl_parse_bool(const char *val, bool *out);
+
 /* Set a single int/bool/str field by its conf-key name (or its
  * kebab equivalent). Returns 0 on success, -1 on unknown name,
  * range violation, parse failure, or string overflow. Callers
