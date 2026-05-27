@@ -54,6 +54,28 @@ Wrap commands with `nix-shell --run '…'` or drop into `nix-shell` first.
 The shellHook prepends `gs/` to `PYTHONPATH` so `dynamic_link` and `tools`
 import without installing the package.
 
+**On macOS (or any non-Linux host)**, use the Debian dev image in `./docker`
+instead — `shell.nix`'s `musl` cross-toolchain is `i686-linux`-only and
+`dl-applier` itself uses Linux-only headers (`sys/timerfd.h`, `SOCK_NONBLOCK`).
+The image is pre-built (`docker image inspect wfb-ng-dev:latest`) with the
+full C + Python + cross-compile toolchain; the repo bind-mounts at `/workspace`.
+
+`docker/run-dev.sh <cmd>` is the interactive entry point but its `-it` flag
+fails when invoked from a non-TTY (e.g. Claude tool calls). For agent use
+run docker directly without `-it`:
+
+```sh
+docker run --rm --network host \
+    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e HOST_USER="$(id -un)" \
+    -v "$PWD":/workspace -w /workspace \
+    wfb-ng-dev:latest <command>
+```
+
+e.g. `… wfb-ng-dev:latest make -C drone test` or `… wfb-ng-dev:latest python3 -m pytest --ignore=tests/test_mavlink_status.py`.
+Files created in /workspace come out owned by the host user via the
+`HOST_UID`/`HOST_GID` env vars. **Never report "build" or "tests pass"
+without actually running them through the container on macOS.**
+
 | Need | Command |
 |---|---|
 | Run pytest (GS unit + Python e2e) | `python3 -m pytest --ignore=tests/test_mavlink_status.py` (from repo root) |
