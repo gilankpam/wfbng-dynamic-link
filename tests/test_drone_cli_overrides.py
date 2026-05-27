@@ -16,6 +16,8 @@ import pytest
 
 from tests.test_drone_e2e import (
     APPLIER,
+    CMD_SET_FEC,
+    CMD_SET_INTERLEAVE_DEPTH,
     CMD_SET_RADIO,
     _sandbox,
     _inject,
@@ -196,3 +198,38 @@ def test_dl_applier_boots_without_config():
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+
+
+# --------------------------------------------------------------------
+# Boolean CLI overrides: --flag=true|false|1|0 (P-bool-cli-args).
+# --------------------------------------------------------------------
+
+def test_interleaving_supported_false_via_cli(tmp_path):
+    """--interleaving-supported=false from the CLI must put the
+    applier into vanilla mode: no CMD_SET_INTERLEAVE_DEPTH (opcode 5)
+    ever emitted, even when the depth in a decision changes."""
+    with _sandbox(
+        tmp_path,
+        cli_args=["--interleaving-supported=false"],
+    ) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2,
+                bitrate=12000, fps=60, sequence=1)
+        assert _wait_until(lambda: len(s["wfb"].received) >= 2), \
+            f"wfb_tx got {s['wfb'].received}"
+
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=3,
+                bitrate=12000, fps=60, sequence=2)
+        time.sleep(0.25)
+
+        cmd_ids = {r["cmd_id"] for r in s["wfb"].received}
+        assert CMD_SET_FEC in cmd_ids
+        assert CMD_SET_RADIO in cmd_ids
+        assert CMD_SET_INTERLEAVE_DEPTH not in cmd_ids, \
+            f"--interleaving-supported=false should suppress opcode 5; " \
+            f"got {s['wfb'].received}"

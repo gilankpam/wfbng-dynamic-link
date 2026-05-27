@@ -243,7 +243,7 @@ static void usage(const char *prog) {
     }
 
     const dl_bool_field_t *tb = dl_config_bool_fields(&n);
-    fprintf(stderr, "\n  Boolean switches (set to true when passed):\n");
+    fprintf(stderr, "\n  Boolean fields (--name or --name=true|false; default = true when no value):\n");
     for (size_t i = 0; i < n; i++) {
         fprintf(stderr, "    --");
         print_kebab(tb[i].name);
@@ -288,7 +288,7 @@ static int parse_args(int argc, char **argv, cli_args_t *out) {
     for (size_t i = 0; i < n_int; i++)
         opts[k++] = (struct option){ xstrdup_kebab(ti[i].name), required_argument, 0, (int)(OPT_INT_BASE  + i) };
     for (size_t i = 0; i < n_bool; i++)
-        opts[k++] = (struct option){ xstrdup_kebab(tb[i].name), no_argument,       0, (int)(OPT_BOOL_BASE + i) };
+        opts[k++] = (struct option){ xstrdup_kebab(tb[i].name), optional_argument, 0, (int)(OPT_BOOL_BASE + i) };
     for (size_t i = 0; i < n_str; i++)
         opts[k++] = (struct option){ xstrdup_kebab(ts[i].name), required_argument, 0, (int)(OPT_STR_BASE  + i) };
     opts[k] = (struct option){ 0 };
@@ -316,7 +316,14 @@ static int parse_args(int argc, char **argv, cli_args_t *out) {
         }
         else if (c >= OPT_BOOL_BASE && c < OPT_BOOL_BASE + (int)n_bool) {
             size_t i = (size_t)(c - OPT_BOOL_BASE);
-            if (dl_config_set_bool_by_name(&out->overrides, tb[i].name, true) != 0) {
+            bool v = true;
+            if (optarg != NULL && dl_parse_bool(optarg, &v) != 0) {
+                fprintf(stderr, "--");
+                print_kebab(tb[i].name);
+                fprintf(stderr, ": bad value '%s' (expected true|false|1|0)\n", optarg);
+                free(opts); return -1;
+            }
+            if (dl_config_set_bool_by_name(&out->overrides, tb[i].name, v) != 0) {
                 fprintf(stderr, "--");
                 print_kebab(tb[i].name);
                 fprintf(stderr, ": internal error setting bool\n");
