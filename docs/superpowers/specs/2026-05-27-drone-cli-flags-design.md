@@ -254,9 +254,9 @@ Run via `make -C drone test`. New `DL_TEST(...)` cases:
   `mavlink_port` for u16, `min_idr_interval_ms` for u32), assert
   rejection at `lo - 1` and `hi + 1`, acceptance at `lo` and `hi`.
 - **Bool parser:** `dl_config_set_bool_by_name(cfg, "mavlink_enable",
-  true)` flips the field; the on-only CLI surface relies on this
-  helper being called only with `true`, but the function itself is
-  symmetric.
+  true)` flips the field. The CLI surface now passes either `true`
+  or `false` (see `docs/superpowers/specs/2026-05-27-bool-cli-args-design.md`);
+  the helper itself was always symmetric.
 - **String overflow:** value longer than `DL_CONF_MAX_STR - 1` is
   rejected.
 - **`dl_config_validate`** catches `roi_qp_threshold_kbps ≤
