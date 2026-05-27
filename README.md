@@ -185,12 +185,14 @@ dl-applier --config /etc/dynamic-link/drone.conf \
 ```
 
 Boolean fields take an optional value: `--mavlink-enable` (bare) sets
-the field to `true`; `--mavlink-enable=false` (or `=0`, `=no`, `=off`,
-case-insensitive) sets it to `false`. The `=` form is required — a
-space-separated value (`--mavlink-enable false`) does not work, because
-`getopt_long` treats it as a positional argument. The most common
-use is `--interleaving-supported=false` to flip a drone running
-vanilla wfb-ng without editing `drone.conf`.
+the field to `true`; `--mavlink-enable=true` (or `=1`, `=yes`, `=on`)
+is the explicit-true equivalent; `--mavlink-enable=false` (or `=0`,
+`=no`, `=off`) sets it to `false`. All value spellings are
+case-insensitive. The `=` form is required for an explicit value —
+a space-separated value (`--mavlink-enable false`) does not work,
+because `getopt_long` treats it as a positional argument. The most
+common use is `--interleaving-supported=false` to flip a drone
+running vanilla wfb-ng without editing `drone.conf`.
 
 The Phase-3 debug-suite fields (`debug_enable`, `dbg_log_enable`,
 `dbg_log_dir`, `dbg_max_bytes`, `dbg_fsync_each`) intentionally have
