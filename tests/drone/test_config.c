@@ -79,6 +79,23 @@ DL_TEST(test_config_bad_value_is_error) {
     unlink(path);
 }
 
+DL_TEST(test_config_str_overflow_is_error) {
+    /* A str value >= DL_CONF_MAX_STR (128) is rejected at load time.
+     * Pre-T4 the parser silently truncated via strncpy; the
+     * table-driven dispatcher now returns rc = -1. */
+    char body[300];
+    int n = snprintf(body, sizeof(body), "encoder_host = ");
+    for (int i = 0; i < 200; i++) body[n + i] = 'x';
+    body[n + 200] = '\n';
+    body[n + 201] = '\0';
+    char path[64];
+    DL_ASSERT_EQ(write_tmp(body, path, sizeof(path)), 0);
+    dl_config_t c;
+    dl_config_defaults(&c);
+    DL_ASSERT_EQ(dl_config_load(path, &c), -1);
+    unlink(path);
+}
+
 DL_TEST(test_config_debug_defaults_off) {
     dl_config_t c;
     dl_config_defaults(&c);

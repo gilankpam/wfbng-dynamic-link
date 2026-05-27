@@ -302,79 +302,88 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         trim(key);
         trim(val);
 
-        if      (strcmp(key, "listen_addr") == 0)        SET_STR(listen_addr);
-        else if (strcmp(key, "listen_port") == 0)        SET_INT_RANGED(listen_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "wfb_tx_ctrl_addr") == 0)   SET_STR(wfb_tx_ctrl_addr);
-        else if (strcmp(key, "wfb_tx_ctrl_port") == 0)   SET_INT_RANGED(wfb_tx_ctrl_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "video_k_min") == 0 ||
-                 strcmp(key, "video_k_max") == 0 ||
-                 strcmp(key, "video_n_max") == 0 ||
-                 strcmp(key, "depth_max") == 0 ||
-                 strcmp(key, "mcs_max") == 0 ||
-                 strcmp(key, "tx_power_min_dBm") == 0 ||
-                 strcmp(key, "tx_power_max_dBm") == 0) {
+        /* Removed-key error: keys explicitly retired 2026-05-11 still
+         * exist in old configs; surface them loudly. */
+        if (strcmp(key, "video_k_min")       == 0 ||
+            strcmp(key, "video_k_max")       == 0 ||
+            strcmp(key, "video_n_max")       == 0 ||
+            strcmp(key, "depth_max")         == 0 ||
+            strcmp(key, "mcs_max")           == 0 ||
+            strcmp(key, "tx_power_min_dBm")  == 0 ||
+            strcmp(key, "tx_power_max_dBm")  == 0) {
             dl_log_err("%s:%d: %s is no longer supported "
                        "(removed 2026-05-11); the drone applies whatever "
                        "the GS sends", path, lineno, key);
             rc = -1;
             continue;
         }
-        else if (strcmp(key, "min_idr_interval_ms") == 0) SET_INT_RANGED(min_idr_interval_ms, uint32_t, 0, 60000);
-        else if (strcmp(key, "idr_listen_port") == 0) SET_INT_RANGED(idr_listen_port, uint16_t, 0, 65535);
-        else if (strcmp(key, "idr_listen_addr") == 0) SET_STR(idr_listen_addr);
-        else if (strcmp(key, "apply_stagger_ms") == 0)   SET_INT_RANGED(apply_stagger_ms, uint32_t, 0, 500);
-        else if (strcmp(key, "apply_sub_pace_ms") == 0)  SET_INT_RANGED(apply_sub_pace_ms, uint32_t, 0, 50);
-        else if (strcmp(key, "osd_enable") == 0)         SET_BOOL(osd_enable);
-        else if (strcmp(key, "osd_msg_path") == 0)       SET_STR(osd_msg_path);
-        else if (strcmp(key, "osd_update_interval_ms") == 0) SET_INT_RANGED(osd_update_interval_ms, uint32_t, 100, 60000);
-        else if (strcmp(key, "osd_debug_latency") == 0)      SET_BOOL(osd_debug_latency);
-        else if (strcmp(key, "health_timeout_ms") == 0)  SET_INT_RANGED(health_timeout_ms, uint32_t, 500, 120000);
-        else if (strcmp(key, "safe_k") == 0)             SET_INT_RANGED(safe_k, uint8_t, 1, 32);
-        else if (strcmp(key, "safe_n") == 0)             SET_INT_RANGED(safe_n, uint8_t, 2, 255);
-        else if (strcmp(key, "safe_depth") == 0)         SET_INT_RANGED(safe_depth, uint8_t, 1, 8);
-        else if (strcmp(key, "safe_mcs") == 0)           SET_INT_RANGED(safe_mcs, uint8_t, 0, 7);
-        else if (strcmp(key, "safe_bandwidth") == 0)     SET_INT_RANGED(safe_bandwidth, uint8_t, 20, 40);
-        else if (strcmp(key, "safe_tx_power_dBm") == 0)  SET_INT_RANGED(safe_tx_power_dBm, int8_t, -10, 30);
-        else if (strcmp(key, "safe_bitrate_kbps") == 0)  SET_INT_RANGED(safe_bitrate_kbps, uint16_t, 100, 65535);
-        else if (strcmp(key, "interleaving_supported") == 0) SET_BOOL(interleaving_supported);
-        else if (strcmp(key, "wlan_dev") == 0)           SET_STR(wlan_dev);
-        else if (strcmp(key, "encoder_kind") == 0)       SET_STR(encoder_kind);
-        else if (strcmp(key, "encoder_host") == 0)       SET_STR(encoder_host);
-        else if (strcmp(key, "encoder_port") == 0)       SET_INT_RANGED(encoder_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "roi_qp_threshold_kbps") == 0)
-            SET_INT_RANGED(roi_qp_threshold_kbps, uint16_t, 100, 65535);
-        else if (strcmp(key, "roi_qp_low_anchor_kbps") == 0)
-            SET_INT_RANGED(roi_qp_low_anchor_kbps, uint16_t, 100, 65535);
-        else if (strcmp(key, "roi_qp_floor") == 0)
-            SET_INT_RANGED(roi_qp_floor, int8_t, -30, 0);
-        else if (strcmp(key, "roi_qp_step") == 0)
-            SET_INT_RANGED(roi_qp_step, uint8_t, 1, 10);
-        else if (strcmp(key, "mavlink_enable") == 0)     SET_BOOL(mavlink_enable);
-        else if (strcmp(key, "mavlink_addr") == 0)       SET_STR(mavlink_addr);
-        else if (strcmp(key, "mavlink_port") == 0)       SET_INT_RANGED(mavlink_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "mavlink_sysid") == 0)      SET_INT_RANGED(mavlink_sysid, uint8_t, 0, 255);
-        else if (strcmp(key, "mavlink_compid") == 0)     SET_INT_RANGED(mavlink_compid, uint8_t, 0, 255);
-        else if (strcmp(key, "debug_enable") == 0)       SET_BOOL(debug_enable);
-        else if (strcmp(key, "dbg_log_enable") == 0)     SET_INT_RANGED(dbg_log_enable, int8_t, -1, 1);
-        else if (strcmp(key, "gs_tunnel_addr") == 0)     SET_STR(gs_tunnel_addr);
-        else if (strcmp(key, "gs_tunnel_port") == 0)     SET_INT_RANGED(gs_tunnel_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "dbg_log_dir") == 0)        SET_STR(dbg_log_dir);
-        else if (strcmp(key, "dbg_max_bytes") == 0)      SET_INT_RANGED(dbg_max_bytes, uint32_t, 4096, 1 << 30);
-        else if (strcmp(key, "dbg_fsync_each") == 0)     SET_BOOL(dbg_fsync_each);
-        else if (strcmp(key, "hello_announce_initial_ms") == 0)
-            SET_INT_RANGED(hello_announce_initial_ms, uint32_t, 1, 60000);
-        else if (strcmp(key, "hello_announce_steady_ms") == 0)
-            SET_INT_RANGED(hello_announce_steady_ms, uint32_t, 1, 300000);
-        else if (strcmp(key, "hello_keepalive_ms") == 0)
-            SET_INT_RANGED(hello_keepalive_ms, uint32_t, 1, 300000);
-        else if (strcmp(key, "hello_announce_initial_count") == 0)
-            SET_INT_RANGED(hello_announce_initial_count, uint32_t, 0, 100000);
-        else if (strcmp(key, "hello_wfb_yaml_path") == 0)
-            SET_STR(hello_wfb_yaml_path);
-        else if (strcmp(key, "hello_majestic_yaml_path") == 0)
-            SET_STR(hello_majestic_yaml_path);
-        else if (strcmp(key, "hello_waybeam_json_path") == 0)
-            SET_STR(hello_waybeam_json_path);
+
+        /* Table-driven int dispatch. */
+        {
+            size_t n = 0;
+            const dl_int_field_t *t = dl_config_int_fields(&n);
+            int matched = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (strcmp(t[i].name, key) != 0) continue;
+                long v;
+                if (dl_parse_long_ranged(val, t[i].lo, t[i].hi, &v) != 0) {
+                    dl_log_err("%s:%d: bad value for %s: %s",
+                               path, lineno, key, val);
+                    rc = -1;
+                } else {
+                    write_int_field(cfg, &t[i], v);
+                }
+                matched = 1; break;
+            }
+            if (matched) continue;
+        }
+
+        /* Table-driven bool dispatch. */
+        {
+            size_t n = 0;
+            const dl_bool_field_t *t = dl_config_bool_fields(&n);
+            int matched = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (strcmp(t[i].name, key) != 0) continue;
+                bool v;
+                if (dl_parse_bool(val, &v) != 0) {
+                    dl_log_err("%s:%d: bad bool for %s: %s",
+                               path, lineno, key, val);
+                    rc = -1;
+                } else {
+                    *(bool *)((char *)cfg + t[i].offset) = v;
+                }
+                matched = 1; break;
+            }
+            if (matched) continue;
+        }
+
+        /* Table-driven str dispatch. */
+        {
+            size_t n = 0;
+            const dl_str_field_t *t = dl_config_str_fields(&n);
+            int matched = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (strcmp(t[i].name, key) != 0) continue;
+                if (strlen(val) >= DL_CONF_MAX_STR) {
+                    dl_log_err("%s:%d: value too long for %s",
+                               path, lineno, key);
+                    rc = -1;
+                } else {
+                    char *dst = (char *)cfg + t[i].offset;
+                    snprintf(dst, DL_CONF_MAX_STR, "%s", val);
+                }
+                matched = 1; break;
+            }
+            if (matched) continue;
+        }
+
+        /* Phase-3 debug-suite keys (not in CLI scope; hand-written). */
+        if      (strcmp(key, "debug_enable")   == 0) SET_BOOL(debug_enable);
+        else if (strcmp(key, "dbg_log_enable") == 0) SET_INT_RANGED(dbg_log_enable, int8_t, -1, 1);
+        else if (strcmp(key, "dbg_log_dir")    == 0) SET_STR(dbg_log_dir);
+        else if (strcmp(key, "dbg_max_bytes")  == 0) SET_INT_RANGED(dbg_max_bytes, uint32_t, 4096, 1 << 30);
+        else if (strcmp(key, "dbg_fsync_each") == 0) SET_BOOL(dbg_fsync_each);
         else {
             dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
         }

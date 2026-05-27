@@ -117,10 +117,12 @@ typedef struct {
 } dl_config_t;
 
 /* ---- Field table API ----------------------------------------------
- * The CLI parser in dl_applier walks these tables to build its
- * getopt_long option list. The conf parser will dispatch via the
- * same tables once T4 lands; until then conf-file parsing still
- * uses a hand-written if/else chain and the tables are unused. */
+ * Single source of truth for in-scope field names, offsets, types,
+ * and ranges. `dl_config_load` dispatches conf-file keys through
+ * these tables; the CLI parser in dl_applier iterates them to build
+ * its getopt_long option list. Phase-3 debug-suite fields are
+ * deliberately absent and are handled by a hand-written fallback in
+ * dl_config_load. */
 
 typedef enum {
     DL_F_U8, DL_F_I8, DL_F_U16, DL_F_U32,
