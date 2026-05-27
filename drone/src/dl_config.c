@@ -83,16 +83,19 @@ static void trim(char *s) {
     }
 }
 
-static int parse_int(const char *val, long *out) {
+/* Parse a base-10 long out of `s`; reject empty, trailing garbage, or
+ * out-of-range [lo..hi]. Returns 0 on success, -1 on failure. */
+static int dl_parse_long_ranged(const char *s, long lo, long hi, long *out) {
     char *end;
     errno = 0;
-    long v = strtol(val, &end, 10);
-    if (errno != 0 || end == val || *end != '\0') return -1;
+    long v = strtol(s, &end, 10);
+    if (errno != 0 || end == s || *end != '\0') return -1;
+    if (v < lo || v > hi) return -1;
     *out = v;
     return 0;
 }
 
-static int parse_bool(const char *val, bool *out) {
+static int dl_parse_bool(const char *val, bool *out) {
     if (strcasecmp(val, "1") == 0 || strcasecmp(val, "true") == 0 ||
         strcasecmp(val, "yes") == 0 || strcasecmp(val, "on") == 0) {
         *out = true;
@@ -109,22 +112,24 @@ static int parse_bool(const char *val, bool *out) {
 #define SET_STR(field) do { strncpy(cfg->field, val, DL_CONF_MAX_STR - 1); \
                             cfg->field[DL_CONF_MAX_STR - 1] = '\0'; } while(0)
 
-#define SET_INT_RANGED(field, type, lo, hi) do {                      \
-    long _v;                                                          \
-    if (parse_int(val, &_v) != 0 || _v < (lo) || _v > (hi)) {         \
-        dl_log_err("%s:%d: bad value for %s: %s", path, lineno, key, val); \
-        rc = -1; continue;                                            \
-    }                                                                 \
-    cfg->field = (type)_v;                                            \
+#define SET_INT_RANGED(field, type, lo, hi) do {                       \
+    long _v;                                                           \
+    if (dl_parse_long_ranged(val, (long)(lo), (long)(hi), &_v) != 0) { \
+        dl_log_err("%s:%d: bad value for %s: %s",                      \
+                   path, lineno, key, val);                            \
+        rc = -1; continue;                                             \
+    }                                                                  \
+    cfg->field = (type)_v;                                             \
 } while(0)
 
-#define SET_BOOL(field) do {                                          \
-    bool _v;                                                          \
-    if (parse_bool(val, &_v) != 0) {                                  \
-        dl_log_err("%s:%d: bad bool for %s: %s", path, lineno, key, val); \
-        rc = -1; continue;                                            \
-    }                                                                 \
-    cfg->field = _v;                                                  \
+#define SET_BOOL(field) do {                                           \
+    bool _v;                                                           \
+    if (dl_parse_bool(val, &_v) != 0) {                                \
+        dl_log_err("%s:%d: bad bool for %s: %s",                       \
+                   path, lineno, key, val);                            \
+        rc = -1; continue;                                             \
+    }                                                                  \
+    cfg->field = _v;                                                   \
 } while(0)
 
 int dl_config_load(const char *path, dl_config_t *cfg) {
