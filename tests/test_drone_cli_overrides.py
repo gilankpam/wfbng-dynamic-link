@@ -257,6 +257,8 @@ def test_interleaving_supported_zero_via_cli(tmp_path):
         time.sleep(0.25)
 
         cmd_ids = {r["cmd_id"] for r in s["wfb"].received}
+        assert CMD_SET_FEC in cmd_ids
+        assert CMD_SET_RADIO in cmd_ids
         assert CMD_SET_INTERLEAVE_DEPTH not in cmd_ids, \
             f"--interleaving-supported=0 should suppress opcode 5; " \
             f"got {s['wfb'].received}"
