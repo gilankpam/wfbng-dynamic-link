@@ -233,3 +233,69 @@ def test_interleaving_supported_false_via_cli(tmp_path):
         assert CMD_SET_INTERLEAVE_DEPTH not in cmd_ids, \
             f"--interleaving-supported=false should suppress opcode 5; " \
             f"got {s['wfb'].received}"
+
+
+def test_interleaving_supported_zero_via_cli(tmp_path):
+    """--interleaving-supported=0 must be equivalent to =false."""
+    with _sandbox(
+        tmp_path,
+        cli_args=["--interleaving-supported=0"],
+    ) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2,
+                bitrate=12000, fps=60, sequence=1)
+        assert _wait_until(lambda: len(s["wfb"].received) >= 2), \
+            f"wfb_tx got {s['wfb'].received}"
+
+        _inject(target,
+                mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=3,
+                bitrate=12000, fps=60, sequence=2)
+        time.sleep(0.25)
+
+        cmd_ids = {r["cmd_id"] for r in s["wfb"].received}
+        assert CMD_SET_INTERLEAVE_DEPTH not in cmd_ids, \
+            f"--interleaving-supported=0 should suppress opcode 5; " \
+            f"got {s['wfb'].received}"
+
+
+def test_bare_flag_still_means_true(tmp_path):
+    """Bare --osd-enable (no value) must set the field to true,
+    matching the pre-change behavior. We assert by running the
+    full _sandbox lifecycle and confirming the applier boots and
+    a CMD_SET_RADIO (safe_defaults push) arrives — proxy for
+    'parse_args returned 0 and the watchdog is running'."""
+    with _sandbox(
+        tmp_path,
+        health_timeout_ms=500,
+        cli_args=["--osd-enable"],
+    ) as s:
+        target = f"{s['listen_addr']}:{s['listen_port']}"
+        _inject(target, mcs=5, bandwidth=20, tx_power=18,
+                k=8, n=14, depth=2, bitrate=12000, fps=60, sequence=1)
+        assert _wait_until(lambda: len(s["wfb"].received) >= 3)
+        s["wfb"].received.clear()
+        _wait_for_safe_radio(s["wfb"])
+
+
+def test_bool_bad_value_exits_nonzero(tmp_path):
+    """--osd-enable=garbage must exit non-zero with a clear error
+    on stderr. We invoke dl-applier directly (no _sandbox) since
+    the process must crash before binding anything."""
+    cfg = tmp_path / "drone.conf"
+    cfg.write_text("listen_addr = 127.0.0.1\nlisten_port = 0\n")
+
+    out = subprocess.run(
+        [str(APPLIER), "--config", str(cfg), "--osd-enable=garbage"],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert out.returncode != 0, (
+        f"expected non-zero exit, got rc={out.returncode}, "
+        f"stderr={out.stderr!r}"
+    )
+    assert "--osd-enable" in out.stderr
+    assert "bad value" in out.stderr
+    assert "garbage" in out.stderr
