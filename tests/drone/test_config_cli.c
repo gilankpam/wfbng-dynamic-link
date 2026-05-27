@@ -133,3 +133,22 @@ DL_TEST(test_no_name_in_multiple_tables) {
         for (size_t j = 0; j < ns; j++)
             DL_ASSERT(strcmp(tb[i].name, ts[j].name) != 0);
 }
+
+DL_TEST(test_validate_accepts_defaults) {
+    dl_config_t c; dl_config_defaults(&c);
+    DL_ASSERT_EQ(dl_config_validate(&c), 0);
+}
+
+DL_TEST(test_validate_rejects_inverted_roi_qp) {
+    dl_config_t c; dl_config_defaults(&c);
+    c.roi_qp_threshold_kbps  = 1000;
+    c.roi_qp_low_anchor_kbps = 2000;
+    DL_ASSERT_EQ(dl_config_validate(&c), -1);
+}
+
+DL_TEST(test_validate_rejects_equal_roi_qp) {
+    dl_config_t c; dl_config_defaults(&c);
+    c.roi_qp_threshold_kbps  = 2000;
+    c.roi_qp_low_anchor_kbps = 2000;
+    DL_ASSERT_EQ(dl_config_validate(&c), -1);
+}

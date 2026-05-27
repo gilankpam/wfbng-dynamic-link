@@ -159,6 +159,12 @@ void dl_config_defaults(dl_config_t *cfg);
  * via dl_log). */
 int dl_config_load(const char *path, dl_config_t *cfg);
 
+/* Check cross-field invariants. Returns 0 if all invariants hold,
+ * -1 otherwise (each violation is logged via dl_log_err). Callers
+ * should run this after any path that mutates `cfg` (conf-file
+ * load, CLI override). */
+int dl_config_validate(const dl_config_t *cfg);
+
 /* Resolve the dbg_log feature flag against the master switch.
  * `dbg_log_enable` is a tristate: -1 follows debug_enable, 0 forces
  * off, 1 forces on. */

@@ -388,15 +388,20 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
             dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
         }
     }
+    if (dl_config_validate(cfg) != 0) rc = -1;
+    fclose(fd);
+    return rc;
+}
+
+int dl_config_validate(const dl_config_t *cfg) {
+    int rc = 0;
     if (cfg->roi_qp_threshold_kbps <= cfg->roi_qp_low_anchor_kbps) {
-        dl_log_err("%s: roi_qp_threshold_kbps (%u) must be > "
+        dl_log_err("config: roi_qp_threshold_kbps (%u) must be > "
                    "roi_qp_low_anchor_kbps (%u)",
-                   path,
                    (unsigned)cfg->roi_qp_threshold_kbps,
                    (unsigned)cfg->roi_qp_low_anchor_kbps);
         rc = -1;
     }
-    fclose(fd);
     return rc;
 }
 
