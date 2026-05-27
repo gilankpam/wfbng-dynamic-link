@@ -7,8 +7,7 @@
 
 static void setup_cfg(dl_config_t *cfg) {
     dl_config_defaults(cfg);
-    strncpy(cfg->hello_wfb_yaml_path,
-            "../tests/drone/fixtures/wfb_basic.yaml", DL_CONF_MAX_STR - 1);
+    cfg->hello_mtu_bytes = 3994;
     strncpy(cfg->hello_majestic_yaml_path,
             "../tests/drone/fixtures/majestic_basic.yaml", DL_CONF_MAX_STR - 1);
     cfg->hello_announce_initial_ms = 500;
@@ -17,7 +16,7 @@ static void setup_cfg(dl_config_t *cfg) {
     cfg->hello_announce_initial_count = 3;
 }
 
-DL_TEST(hello_init_reads_mtu_and_fps_from_fixtures) {
+DL_TEST(hello_init_uses_cfg_mtu_and_reads_fps_from_majestic_fixture) {
     dl_config_t cfg; setup_cfg(&cfg);
     dl_hello_sm_t h;
     int rc = dl_hello_init(&h, &cfg);
@@ -28,15 +27,53 @@ DL_TEST(hello_init_reads_mtu_and_fps_from_fixtures) {
     DL_ASSERT(h.generation_id != 0);
 }
 
-DL_TEST(hello_init_fails_when_wfb_yaml_unreadable) {
+DL_TEST(hello_init_fails_when_mtu_bytes_unset) {
     dl_config_t cfg; setup_cfg(&cfg);
-    strncpy(cfg.hello_wfb_yaml_path,
-            "../tests/drone/fixtures/does_not_exist.yaml",
-            DL_CONF_MAX_STR - 1);
+    cfg.hello_mtu_bytes = 0;
     dl_hello_sm_t h;
     int rc = dl_hello_init(&h, &cfg);
     DL_ASSERT_EQ(rc, -1);
     DL_ASSERT_EQ(h.state, DL_HELLO_STATE_DISABLED);
+}
+
+DL_TEST(hello_init_cfg_fps_overrides_majestic_file) {
+    /* If hello_fps is set, the encoder file must not even be opened —
+     * point at a missing path to prove no read happens. */
+    dl_config_t cfg; setup_cfg(&cfg);
+    cfg.hello_fps = 120;
+    strncpy(cfg.hello_majestic_yaml_path,
+            "../tests/drone/fixtures/does_not_exist.yaml",
+            DL_CONF_MAX_STR - 1);
+    dl_hello_sm_t h;
+    int rc = dl_hello_init(&h, &cfg);
+    DL_ASSERT_EQ(rc, 0);
+    DL_ASSERT_EQ(h.fps, 120);
+    DL_ASSERT_EQ(h.mtu_bytes, 3994);
+}
+
+DL_TEST(hello_init_cfg_fps_overrides_waybeam_file) {
+    dl_config_t cfg; setup_cfg(&cfg);
+    strncpy(cfg.encoder_kind, "waybeam", DL_CONF_MAX_STR - 1);
+    strncpy(cfg.hello_waybeam_json_path,
+            "../tests/drone/fixtures/does_not_exist.json",
+            DL_CONF_MAX_STR - 1);
+    cfg.hello_fps = 90;
+    dl_hello_sm_t h;
+    int rc = dl_hello_init(&h, &cfg);
+    DL_ASSERT_EQ(rc, 0);
+    DL_ASSERT_EQ(h.fps, 90);
+}
+
+DL_TEST(hello_init_cfg_fps_overrides_even_for_unknown_encoder_kind) {
+    /* hello_fps short-circuits the encoder_kind dispatch entirely —
+     * an unknown encoder_kind no longer blocks HELLO when fps is set. */
+    dl_config_t cfg; setup_cfg(&cfg);
+    strncpy(cfg.encoder_kind, "bogus", DL_CONF_MAX_STR - 1);
+    cfg.hello_fps = 60;
+    dl_hello_sm_t h;
+    int rc = dl_hello_init(&h, &cfg);
+    DL_ASSERT_EQ(rc, 0);
+    DL_ASSERT_EQ(h.fps, 60);
 }
 
 DL_TEST(hello_announcing_first_delay_is_immediate) {

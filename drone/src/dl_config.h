@@ -106,12 +106,23 @@ typedef struct {
     bool     dbg_fsync_each;
 
     /* P4a hello state machine: announce/keepalive cadence and
-     * authoritative-config file paths (overridable for tests). */
+     * authoritative-config sources (overridable for tests).
+     *
+     * `hello_mtu_bytes` carries the radio MTU directly (replaces the
+     * old /etc/wfb.yaml read). 0 means unset → dl_hello_init refuses
+     * to send HELLO and the GS stays in safe_defaults.
+     *
+     * `hello_fps` short-circuits the per-encoder fps lookup: if > 0,
+     * dl_hello_init uses it as-is and does not open the encoder's
+     * config file. 0 means fall back to reading from
+     * hello_majestic_yaml_path (encoder_kind=majestic) or
+     * hello_waybeam_json_path (encoder_kind=waybeam). */
     uint32_t hello_announce_initial_ms;
     uint32_t hello_announce_steady_ms;
     uint32_t hello_keepalive_ms;
     uint32_t hello_announce_initial_count;
-    char     hello_wfb_yaml_path[DL_CONF_MAX_STR];
+    uint16_t hello_mtu_bytes;
+    uint16_t hello_fps;
     char     hello_majestic_yaml_path[DL_CONF_MAX_STR];
     char     hello_waybeam_json_path[DL_CONF_MAX_STR];
 } dl_config_t;

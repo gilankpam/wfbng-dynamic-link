@@ -34,38 +34,35 @@ int dl_hello_init(dl_hello_sm_t *h, const dl_config_t *cfg) {
     h->cfg = cfg;
     h->state = DL_HELLO_STATE_DISABLED;
 
-    int mtu = 0;
-    int rc = dl_yaml_get_int(cfg->hello_wfb_yaml_path,
-                             "wireless", "mlink", &mtu);
-    if (rc != 0) {
-        dl_log_err("dl_hello: failed to read mtu (%s wireless.mlink): %d",
-                   cfg->hello_wfb_yaml_path, rc);
+    if (cfg->hello_mtu_bytes == 0) {
+        dl_log_err("dl_hello: hello_mtu_bytes is unset; "
+                   "configure it (or pass --hello-mtu-bytes) to enable HELLO");
         return -1;
     }
-    if (mtu <= 0 || mtu > 0xFFFF) {
-        dl_log_err("dl_hello: mtu out of range: %d", mtu);
-        return -1;
-    }
+    int mtu = (int)cfg->hello_mtu_bytes;
 
     int fps = 0;
-    if (strcmp(cfg->encoder_kind, "majestic") == 0) {
-        rc = dl_yaml_get_int(cfg->hello_majestic_yaml_path,
-                             "video0", "fps", &fps);
+    if (cfg->hello_fps > 0) {
+        fps = (int)cfg->hello_fps;
+    } else if (strcmp(cfg->encoder_kind, "majestic") == 0) {
+        int rc = dl_yaml_get_int(cfg->hello_majestic_yaml_path,
+                                 "video0", "fps", &fps);
         if (rc != 0) {
             dl_log_err("dl_hello: failed to read fps (%s video0.fps): %d",
                        cfg->hello_majestic_yaml_path, rc);
             return -1;
         }
     } else if (strcmp(cfg->encoder_kind, "waybeam") == 0) {
-        rc = dl_json_get_int(cfg->hello_waybeam_json_path,
-                             "video0", "fps", &fps);
+        int rc = dl_json_get_int(cfg->hello_waybeam_json_path,
+                                 "video0", "fps", &fps);
         if (rc != 0) {
             dl_log_err("dl_hello: failed to read fps (%s video0.fps): %d",
                        cfg->hello_waybeam_json_path, rc);
             return -1;
         }
     } else {
-        dl_log_err("dl_hello: unknown encoder_kind for fps source: %s",
+        dl_log_err("dl_hello: unknown encoder_kind for fps source: %s "
+                   "(set hello_fps to bypass file lookup)",
                    cfg->encoder_kind);
         return -1;
     }

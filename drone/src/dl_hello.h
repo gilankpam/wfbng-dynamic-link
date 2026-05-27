@@ -1,9 +1,12 @@
 /* dl_hello.h — drone-side config-announce state machine.
  *
  * Responsibilities:
- *   - At boot: read MTU from /etc/wfb.yaml (wireless.mlink) and FPS
- *     from /etc/majestic.yaml (video0.fps). If either fails, refuse
- *     to enter ANNOUNCING — GS will stay in safe_defaults forever.
+ *   - At boot: pick up MTU from cfg.hello_mtu_bytes (operator-set via
+ *     drone.conf or --hello-mtu-bytes) and FPS from cfg.hello_fps, or
+ *     fall back to reading /etc/majestic.yaml `video0.fps` (or
+ *     /etc/waybeam.json for encoder_kind=waybeam) when hello_fps is
+ *     zero. If MTU is unset or the fps source fails, refuse to enter
+ *     ANNOUNCING — GS will stay in safe_defaults forever.
  *   - Generate a random generation_id (per-boot identifier).
  *   - ANNOUNCING: send DLHE on a 500 ms cadence (configurable) for
  *     the first 60 retries, then 5 s indefinitely. Transition to

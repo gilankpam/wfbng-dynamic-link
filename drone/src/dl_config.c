@@ -68,7 +68,10 @@ void dl_config_defaults(dl_config_t *cfg) {
     cfg->hello_announce_steady_ms = 5000;
     cfg->hello_keepalive_ms = 10000;
     cfg->hello_announce_initial_count = 60;
-    strncpy(cfg->hello_wfb_yaml_path, "/etc/wfb.yaml", DL_CONF_MAX_STR - 1);
+    /* hello_mtu_bytes / hello_fps are required-by-default values
+     * left at 0 by the memset above — operator must set
+     * hello_mtu_bytes (and optionally hello_fps to bypass the encoder
+     * file lookup). */
     strncpy(cfg->hello_majestic_yaml_path, "/etc/majestic.yaml", DL_CONF_MAX_STR - 1);
     strncpy(cfg->hello_waybeam_json_path, "/etc/waybeam.json", DL_CONF_MAX_STR - 1);
 }
@@ -167,6 +170,8 @@ static const dl_int_field_t DL_INT_FIELDS[] = {
     F_INT(hello_announce_steady_ms,      DL_F_U32, 1,      300000),
     F_INT(hello_keepalive_ms,            DL_F_U32, 1,      300000),
     F_INT(hello_announce_initial_count,  DL_F_U32, 0,      100000),
+    F_INT(hello_mtu_bytes,               DL_F_U16, 0,      65535),
+    F_INT(hello_fps,                     DL_F_U16, 0,      65535),
 };
 
 static const dl_bool_field_t DL_BOOL_FIELDS[] = {
@@ -186,7 +191,6 @@ static const dl_str_field_t DL_STR_FIELDS[] = {
     F_STR(encoder_host),
     F_STR(mavlink_addr),
     F_STR(gs_tunnel_addr),
-    F_STR(hello_wfb_yaml_path),
     F_STR(hello_majestic_yaml_path),
     F_STR(hello_waybeam_json_path),
 };
