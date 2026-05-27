@@ -6,6 +6,7 @@
  */
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -105,15 +106,65 @@ typedef struct {
     bool     dbg_fsync_each;
 
     /* P4a hello state machine: announce/keepalive cadence and
-     * authoritative-config file paths (overridable for tests). */
+     * authoritative-config sources (overridable for tests).
+     *
+     * `hello_mtu_bytes` carries the radio MTU directly (replaces the
+     * old /etc/wfb.yaml read). 0 means unset → dl_hello_init refuses
+     * to send HELLO and the GS stays in safe_defaults.
+     *
+     * `hello_fps` short-circuits the per-encoder fps lookup: if > 0,
+     * dl_hello_init uses it as-is and does not open the encoder's
+     * config file. 0 means fall back to reading from
+     * hello_majestic_yaml_path (encoder_kind=majestic) or
+     * hello_waybeam_json_path (encoder_kind=waybeam). */
     uint32_t hello_announce_initial_ms;
     uint32_t hello_announce_steady_ms;
     uint32_t hello_keepalive_ms;
     uint32_t hello_announce_initial_count;
-    char     hello_wfb_yaml_path[DL_CONF_MAX_STR];
+    uint16_t hello_mtu_bytes;
+    uint16_t hello_fps;
     char     hello_majestic_yaml_path[DL_CONF_MAX_STR];
     char     hello_waybeam_json_path[DL_CONF_MAX_STR];
 } dl_config_t;
+
+/* ---- Field table API ----------------------------------------------
+ * Single source of truth for in-scope field names, offsets, types,
+ * and ranges. `dl_config_load` dispatches conf-file keys through
+ * these tables; the CLI parser in dl_applier iterates them to build
+ * its getopt_long option list. Phase-3 debug-suite fields are
+ * deliberately absent and are handled by a hand-written fallback in
+ * dl_config_load. */
+
+typedef enum {
+    DL_F_U8, DL_F_I8, DL_F_U16, DL_F_U32,
+} dl_field_type_t;
+
+typedef struct {
+    const char     *name;       /* exact conf key; CLI flag is name with _ → - */
+    size_t          offset;     /* offsetof(dl_config_t, …) */
+    dl_field_type_t type;
+    long            lo, hi;     /* inclusive */
+} dl_int_field_t;
+
+typedef struct { const char *name; size_t offset; } dl_bool_field_t;
+typedef struct { const char *name; size_t offset; } dl_str_field_t;
+
+const dl_int_field_t  *dl_config_int_fields (size_t *n_out);
+const dl_bool_field_t *dl_config_bool_fields(size_t *n_out);
+const dl_str_field_t  *dl_config_str_fields (size_t *n_out);
+
+/* Parse a value string into a bool. Accepts true/false/1/0/yes/no/on/off
+ * case-insensitively. Returns 0 on success, -1 on any other input.
+ * Used by both the conf-file parser and the CLI override path. */
+int dl_parse_bool(const char *val, bool *out);
+
+/* Set a single int/bool/str field by its conf-key name (or its
+ * kebab equivalent). Returns 0 on success, -1 on unknown name,
+ * range violation, parse failure, or string overflow. Callers
+ * provide their own logging context. */
+int dl_config_set_int_by_name (dl_config_t *cfg, const char *name, const char *val);
+int dl_config_set_bool_by_name(dl_config_t *cfg, const char *name, bool        val);
+int dl_config_set_str_by_name (dl_config_t *cfg, const char *name, const char *val);
 
 /* Populate `cfg` with built-in defaults. */
 void dl_config_defaults(dl_config_t *cfg);
@@ -123,6 +174,12 @@ void dl_config_defaults(dl_config_t *cfg);
  * Returns 0 on success, -1 on any I/O or parse error (details logged
  * via dl_log). */
 int dl_config_load(const char *path, dl_config_t *cfg);
+
+/* Check cross-field invariants. Returns 0 if all invariants hold,
+ * -1 otherwise (each violation is logged via dl_log_err). Callers
+ * should run this after any path that mutates `cfg` (conf-file
+ * load, CLI override). */
+int dl_config_validate(const dl_config_t *cfg);
 
 /* Resolve the dbg_log feature flag against the master switch.
  * `dbg_log_enable` is a tristate: -1 follows debug_enable, 0 forces

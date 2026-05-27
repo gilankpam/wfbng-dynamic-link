@@ -166,6 +166,38 @@ sudo rc-update add dynamic-link-applier default
 sudo /etc/init.d/dynamic-link-applier start
 ```
 
+### CLI overrides
+
+Every in-scope `drone.conf` field is also a `--<kebab-case>` flag on
+`dl-applier`. Precedence is **built-in defaults → conf file → CLI
+overrides**, so a CLI flag wins over the file. List them all with:
+
+```sh
+dl-applier --help
+```
+
+`--config` is optional. `dl-applier --safe-mcs 3` boots from
+built-in defaults with `safe_mcs=3`. With both layers:
+
+```sh
+dl-applier --config /etc/dynamic-link/drone.conf \
+           --safe-mcs 3 --mavlink-port 14570
+```
+
+Boolean fields take an optional value: `--mavlink-enable` (bare) sets
+the field to `true`; `--mavlink-enable=true` (or `=1`, `=yes`, `=on`)
+is the explicit-true equivalent; `--mavlink-enable=false` (or `=0`,
+`=no`, `=off`) sets it to `false`. All value spellings are
+case-insensitive. The `=` form is required for an explicit value —
+a space-separated value (`--mavlink-enable false`) does not work,
+because `getopt_long` treats it as a positional argument. The most
+common use is `--interleaving-supported=false` to flip a drone
+running vanilla wfb-ng without editing `drone.conf`.
+
+The Phase-3 debug-suite fields (`debug_enable`, `dbg_log_enable`,
+`dbg_log_dir`, `dbg_max_bytes`, `dbg_fsync_each`) intentionally have
+no CLI flag — they live in the conf file only.
+
 Drive the applier by hand (Phase 1 bringup, or to test individual
 backends without the GS):
 

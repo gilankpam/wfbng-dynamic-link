@@ -4,6 +4,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,7 +68,10 @@ void dl_config_defaults(dl_config_t *cfg) {
     cfg->hello_announce_steady_ms = 5000;
     cfg->hello_keepalive_ms = 10000;
     cfg->hello_announce_initial_count = 60;
-    strncpy(cfg->hello_wfb_yaml_path, "/etc/wfb.yaml", DL_CONF_MAX_STR - 1);
+    /* hello_mtu_bytes / hello_fps are required-by-default values
+     * left at 0 by the memset above — operator must set
+     * hello_mtu_bytes (and optionally hello_fps to bypass the encoder
+     * file lookup). */
     strncpy(cfg->hello_majestic_yaml_path, "/etc/majestic.yaml", DL_CONF_MAX_STR - 1);
     strncpy(cfg->hello_waybeam_json_path, "/etc/waybeam.json", DL_CONF_MAX_STR - 1);
 }
@@ -83,16 +87,19 @@ static void trim(char *s) {
     }
 }
 
-static int parse_int(const char *val, long *out) {
+/* Parse a base-10 long out of `s`; reject empty, trailing garbage, or
+ * out-of-range [lo..hi]. Returns 0 on success, -1 on failure. */
+static int dl_parse_long_ranged(const char *s, long lo, long hi, long *out) {
     char *end;
     errno = 0;
-    long v = strtol(val, &end, 10);
-    if (errno != 0 || end == val || *end != '\0') return -1;
+    long v = strtol(s, &end, 10);
+    if (errno != 0 || end == s || *end != '\0') return -1;
+    if (v < lo || v > hi) return -1;
     *out = v;
     return 0;
 }
 
-static int parse_bool(const char *val, bool *out) {
+int dl_parse_bool(const char *val, bool *out) {
     if (strcasecmp(val, "1") == 0 || strcasecmp(val, "true") == 0 ||
         strcasecmp(val, "yes") == 0 || strcasecmp(val, "on") == 0) {
         *out = true;
@@ -109,23 +116,162 @@ static int parse_bool(const char *val, bool *out) {
 #define SET_STR(field) do { strncpy(cfg->field, val, DL_CONF_MAX_STR - 1); \
                             cfg->field[DL_CONF_MAX_STR - 1] = '\0'; } while(0)
 
-#define SET_INT_RANGED(field, type, lo, hi) do {                      \
-    long _v;                                                          \
-    if (parse_int(val, &_v) != 0 || _v < (lo) || _v > (hi)) {         \
-        dl_log_err("%s:%d: bad value for %s: %s", path, lineno, key, val); \
-        rc = -1; continue;                                            \
-    }                                                                 \
-    cfg->field = (type)_v;                                            \
+#define SET_INT_RANGED(field, type, lo, hi) do {                       \
+    long _v;                                                           \
+    if (dl_parse_long_ranged(val, (long)(lo), (long)(hi), &_v) != 0) { \
+        dl_log_err("%s:%d: bad value for %s: %s",                      \
+                   path, lineno, key, val);                            \
+        rc = -1; continue;                                             \
+    }                                                                  \
+    cfg->field = (type)_v;                                             \
 } while(0)
 
-#define SET_BOOL(field) do {                                          \
-    bool _v;                                                          \
-    if (parse_bool(val, &_v) != 0) {                                  \
-        dl_log_err("%s:%d: bad bool for %s: %s", path, lineno, key, val); \
-        rc = -1; continue;                                            \
-    }                                                                 \
-    cfg->field = _v;                                                  \
+#define SET_BOOL(field) do {                                           \
+    bool _v;                                                           \
+    if (dl_parse_bool(val, &_v) != 0) {                                \
+        dl_log_err("%s:%d: bad bool for %s: %s",                       \
+                   path, lineno, key, val);                            \
+        rc = -1; continue;                                             \
+    }                                                                  \
+    cfg->field = _v;                                                   \
 } while(0)
+
+#define F_INT(name_, type_, lo_, hi_) \
+    { #name_, offsetof(dl_config_t, name_), type_, (long)(lo_), (long)(hi_) }
+#define F_BOOL(name_) { #name_, offsetof(dl_config_t, name_) }
+#define F_STR(name_)  { #name_, offsetof(dl_config_t, name_) }
+
+static const dl_int_field_t DL_INT_FIELDS[] = {
+    F_INT(listen_port,                   DL_F_U16, 1,      65535),
+    F_INT(wfb_tx_ctrl_port,              DL_F_U16, 1,      65535),
+    F_INT(min_idr_interval_ms,           DL_F_U32, 0,      60000),
+    F_INT(idr_listen_port,               DL_F_U16, 0,      65535),
+    F_INT(apply_stagger_ms,              DL_F_U32, 0,      500),
+    F_INT(apply_sub_pace_ms,             DL_F_U32, 0,      50),
+    F_INT(osd_update_interval_ms,        DL_F_U32, 100,    60000),
+    F_INT(health_timeout_ms,             DL_F_U32, 500,    120000),
+    F_INT(safe_k,                        DL_F_U8,  1,      32),
+    F_INT(safe_n,                        DL_F_U8,  2,      255),
+    F_INT(safe_depth,                    DL_F_U8,  1,      8),
+    F_INT(safe_mcs,                      DL_F_U8,  0,      7),
+    F_INT(safe_bandwidth,                DL_F_U8,  20,     40),
+    F_INT(safe_tx_power_dBm,             DL_F_I8,  -10,    30),
+    F_INT(safe_bitrate_kbps,             DL_F_U16, 100,    65535),
+    F_INT(encoder_port,                  DL_F_U16, 1,      65535),
+    F_INT(roi_qp_threshold_kbps,         DL_F_U16, 100,    65535),
+    F_INT(roi_qp_low_anchor_kbps,        DL_F_U16, 100,    65535),
+    F_INT(roi_qp_floor,                  DL_F_I8,  -30,    0),
+    F_INT(roi_qp_step,                   DL_F_U8,  1,      10),
+    F_INT(mavlink_port,                  DL_F_U16, 1,      65535),
+    F_INT(mavlink_sysid,                 DL_F_U8,  0,      255),
+    F_INT(mavlink_compid,                DL_F_U8,  0,      255),
+    F_INT(gs_tunnel_port,                DL_F_U16, 1,      65535),
+    F_INT(hello_announce_initial_ms,     DL_F_U32, 1,      60000),
+    F_INT(hello_announce_steady_ms,      DL_F_U32, 1,      300000),
+    F_INT(hello_keepalive_ms,            DL_F_U32, 1,      300000),
+    F_INT(hello_announce_initial_count,  DL_F_U32, 0,      100000),
+    F_INT(hello_mtu_bytes,               DL_F_U16, 0,      65535),
+    F_INT(hello_fps,                     DL_F_U16, 0,      65535),
+};
+
+static const dl_bool_field_t DL_BOOL_FIELDS[] = {
+    F_BOOL(osd_enable),
+    F_BOOL(osd_debug_latency),
+    F_BOOL(interleaving_supported),
+    F_BOOL(mavlink_enable),
+};
+
+static const dl_str_field_t DL_STR_FIELDS[] = {
+    F_STR(listen_addr),
+    F_STR(wfb_tx_ctrl_addr),
+    F_STR(idr_listen_addr),
+    F_STR(osd_msg_path),
+    F_STR(wlan_dev),
+    F_STR(encoder_kind),
+    F_STR(encoder_host),
+    F_STR(mavlink_addr),
+    F_STR(gs_tunnel_addr),
+    F_STR(hello_majestic_yaml_path),
+    F_STR(hello_waybeam_json_path),
+};
+
+/* Copy `src` into `dst` (size `dstlen`) replacing '-' with '_'.
+ * Truncates safely. Used to convert CLI flag names back to conf
+ * keys for table lookup. */
+static void dl_kebab_to_snake(char *dst, size_t dstlen, const char *src) {
+    size_t i = 0;
+    for (; src[i] && i + 1 < dstlen; i++)
+        dst[i] = (src[i] == '-') ? '_' : src[i];
+    dst[i] = '\0';
+}
+
+const dl_int_field_t *dl_config_int_fields(size_t *n_out) {
+    if (n_out) *n_out = sizeof(DL_INT_FIELDS) / sizeof(DL_INT_FIELDS[0]);
+    return DL_INT_FIELDS;
+}
+
+const dl_bool_field_t *dl_config_bool_fields(size_t *n_out) {
+    if (n_out) *n_out = sizeof(DL_BOOL_FIELDS) / sizeof(DL_BOOL_FIELDS[0]);
+    return DL_BOOL_FIELDS;
+}
+
+const dl_str_field_t *dl_config_str_fields(size_t *n_out) {
+    if (n_out) *n_out = sizeof(DL_STR_FIELDS) / sizeof(DL_STR_FIELDS[0]);
+    return DL_STR_FIELDS;
+}
+
+static void write_int_field(dl_config_t *cfg, const dl_int_field_t *f, long v) {
+    void *p = (char *)cfg + f->offset;
+    switch (f->type) {
+    case DL_F_U8:  *(uint8_t  *)p = (uint8_t )v; break;
+    case DL_F_I8:  *(int8_t   *)p = (int8_t  )v; break;
+    case DL_F_U16: *(uint16_t *)p = (uint16_t)v; break;
+    case DL_F_U32: *(uint32_t *)p = (uint32_t)v; break;
+    }
+}
+
+int dl_config_set_int_by_name(dl_config_t *cfg, const char *name, const char *val) {
+    char norm[64];
+    dl_kebab_to_snake(norm, sizeof(norm), name);
+    size_t n = 0;
+    const dl_int_field_t *t = dl_config_int_fields(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(t[i].name, norm) != 0) continue;
+        long v;
+        if (dl_parse_long_ranged(val, t[i].lo, t[i].hi, &v) != 0) return -1;
+        write_int_field(cfg, &t[i], v);
+        return 0;
+    }
+    return -1;
+}
+
+int dl_config_set_bool_by_name(dl_config_t *cfg, const char *name, bool val) {
+    char norm[64];
+    dl_kebab_to_snake(norm, sizeof(norm), name);
+    size_t n = 0;
+    const dl_bool_field_t *t = dl_config_bool_fields(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(t[i].name, norm) != 0) continue;
+        *(bool *)((char *)cfg + t[i].offset) = val;
+        return 0;
+    }
+    return -1;
+}
+
+int dl_config_set_str_by_name(dl_config_t *cfg, const char *name, const char *val) {
+    char norm[64];
+    dl_kebab_to_snake(norm, sizeof(norm), name);
+    size_t n = 0;
+    const dl_str_field_t *t = dl_config_str_fields(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(t[i].name, norm) != 0) continue;
+        if (strlen(val) >= DL_CONF_MAX_STR) return -1;
+        char *dst = (char *)cfg + t[i].offset;
+        snprintf(dst, DL_CONF_MAX_STR, "%s", val);
+        return 0;
+    }
+    return -1;
+}
 
 int dl_config_load(const char *path, dl_config_t *cfg) {
     FILE *fd = fopen(path, "r");
@@ -160,92 +306,106 @@ int dl_config_load(const char *path, dl_config_t *cfg) {
         trim(key);
         trim(val);
 
-        if      (strcmp(key, "listen_addr") == 0)        SET_STR(listen_addr);
-        else if (strcmp(key, "listen_port") == 0)        SET_INT_RANGED(listen_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "wfb_tx_ctrl_addr") == 0)   SET_STR(wfb_tx_ctrl_addr);
-        else if (strcmp(key, "wfb_tx_ctrl_port") == 0)   SET_INT_RANGED(wfb_tx_ctrl_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "video_k_min") == 0 ||
-                 strcmp(key, "video_k_max") == 0 ||
-                 strcmp(key, "video_n_max") == 0 ||
-                 strcmp(key, "depth_max") == 0 ||
-                 strcmp(key, "mcs_max") == 0 ||
-                 strcmp(key, "tx_power_min_dBm") == 0 ||
-                 strcmp(key, "tx_power_max_dBm") == 0) {
+        /* Removed-key error: keys explicitly retired 2026-05-11 still
+         * exist in old configs; surface them loudly. */
+        if (strcmp(key, "video_k_min")       == 0 ||
+            strcmp(key, "video_k_max")       == 0 ||
+            strcmp(key, "video_n_max")       == 0 ||
+            strcmp(key, "depth_max")         == 0 ||
+            strcmp(key, "mcs_max")           == 0 ||
+            strcmp(key, "tx_power_min_dBm")  == 0 ||
+            strcmp(key, "tx_power_max_dBm")  == 0) {
             dl_log_err("%s:%d: %s is no longer supported "
                        "(removed 2026-05-11); the drone applies whatever "
                        "the GS sends", path, lineno, key);
             rc = -1;
             continue;
         }
-        else if (strcmp(key, "min_idr_interval_ms") == 0) SET_INT_RANGED(min_idr_interval_ms, uint32_t, 0, 60000);
-        else if (strcmp(key, "idr_listen_port") == 0) SET_INT_RANGED(idr_listen_port, uint16_t, 0, 65535);
-        else if (strcmp(key, "idr_listen_addr") == 0) SET_STR(idr_listen_addr);
-        else if (strcmp(key, "apply_stagger_ms") == 0)   SET_INT_RANGED(apply_stagger_ms, uint32_t, 0, 500);
-        else if (strcmp(key, "apply_sub_pace_ms") == 0)  SET_INT_RANGED(apply_sub_pace_ms, uint32_t, 0, 50);
-        else if (strcmp(key, "osd_enable") == 0)         SET_BOOL(osd_enable);
-        else if (strcmp(key, "osd_msg_path") == 0)       SET_STR(osd_msg_path);
-        else if (strcmp(key, "osd_update_interval_ms") == 0) SET_INT_RANGED(osd_update_interval_ms, uint32_t, 100, 60000);
-        else if (strcmp(key, "osd_debug_latency") == 0)      SET_BOOL(osd_debug_latency);
-        else if (strcmp(key, "health_timeout_ms") == 0)  SET_INT_RANGED(health_timeout_ms, uint32_t, 500, 120000);
-        else if (strcmp(key, "safe_k") == 0)             SET_INT_RANGED(safe_k, uint8_t, 1, 32);
-        else if (strcmp(key, "safe_n") == 0)             SET_INT_RANGED(safe_n, uint8_t, 2, 255);
-        else if (strcmp(key, "safe_depth") == 0)         SET_INT_RANGED(safe_depth, uint8_t, 1, 8);
-        else if (strcmp(key, "safe_mcs") == 0)           SET_INT_RANGED(safe_mcs, uint8_t, 0, 7);
-        else if (strcmp(key, "safe_bandwidth") == 0)     SET_INT_RANGED(safe_bandwidth, uint8_t, 20, 40);
-        else if (strcmp(key, "safe_tx_power_dBm") == 0)  SET_INT_RANGED(safe_tx_power_dBm, int8_t, -10, 30);
-        else if (strcmp(key, "safe_bitrate_kbps") == 0)  SET_INT_RANGED(safe_bitrate_kbps, uint16_t, 100, 65535);
-        else if (strcmp(key, "interleaving_supported") == 0) SET_BOOL(interleaving_supported);
-        else if (strcmp(key, "wlan_dev") == 0)           SET_STR(wlan_dev);
-        else if (strcmp(key, "encoder_kind") == 0)       SET_STR(encoder_kind);
-        else if (strcmp(key, "encoder_host") == 0)       SET_STR(encoder_host);
-        else if (strcmp(key, "encoder_port") == 0)       SET_INT_RANGED(encoder_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "roi_qp_threshold_kbps") == 0)
-            SET_INT_RANGED(roi_qp_threshold_kbps, uint16_t, 100, 65535);
-        else if (strcmp(key, "roi_qp_low_anchor_kbps") == 0)
-            SET_INT_RANGED(roi_qp_low_anchor_kbps, uint16_t, 100, 65535);
-        else if (strcmp(key, "roi_qp_floor") == 0)
-            SET_INT_RANGED(roi_qp_floor, int8_t, -30, 0);
-        else if (strcmp(key, "roi_qp_step") == 0)
-            SET_INT_RANGED(roi_qp_step, uint8_t, 1, 10);
-        else if (strcmp(key, "mavlink_enable") == 0)     SET_BOOL(mavlink_enable);
-        else if (strcmp(key, "mavlink_addr") == 0)       SET_STR(mavlink_addr);
-        else if (strcmp(key, "mavlink_port") == 0)       SET_INT_RANGED(mavlink_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "mavlink_sysid") == 0)      SET_INT_RANGED(mavlink_sysid, uint8_t, 0, 255);
-        else if (strcmp(key, "mavlink_compid") == 0)     SET_INT_RANGED(mavlink_compid, uint8_t, 0, 255);
-        else if (strcmp(key, "debug_enable") == 0)       SET_BOOL(debug_enable);
-        else if (strcmp(key, "dbg_log_enable") == 0)     SET_INT_RANGED(dbg_log_enable, int8_t, -1, 1);
-        else if (strcmp(key, "gs_tunnel_addr") == 0)     SET_STR(gs_tunnel_addr);
-        else if (strcmp(key, "gs_tunnel_port") == 0)     SET_INT_RANGED(gs_tunnel_port, uint16_t, 1, 65535);
-        else if (strcmp(key, "dbg_log_dir") == 0)        SET_STR(dbg_log_dir);
-        else if (strcmp(key, "dbg_max_bytes") == 0)      SET_INT_RANGED(dbg_max_bytes, uint32_t, 4096, 1 << 30);
-        else if (strcmp(key, "dbg_fsync_each") == 0)     SET_BOOL(dbg_fsync_each);
-        else if (strcmp(key, "hello_announce_initial_ms") == 0)
-            SET_INT_RANGED(hello_announce_initial_ms, uint32_t, 1, 60000);
-        else if (strcmp(key, "hello_announce_steady_ms") == 0)
-            SET_INT_RANGED(hello_announce_steady_ms, uint32_t, 1, 300000);
-        else if (strcmp(key, "hello_keepalive_ms") == 0)
-            SET_INT_RANGED(hello_keepalive_ms, uint32_t, 1, 300000);
-        else if (strcmp(key, "hello_announce_initial_count") == 0)
-            SET_INT_RANGED(hello_announce_initial_count, uint32_t, 0, 100000);
-        else if (strcmp(key, "hello_wfb_yaml_path") == 0)
-            SET_STR(hello_wfb_yaml_path);
-        else if (strcmp(key, "hello_majestic_yaml_path") == 0)
-            SET_STR(hello_majestic_yaml_path);
-        else if (strcmp(key, "hello_waybeam_json_path") == 0)
-            SET_STR(hello_waybeam_json_path);
+
+        /* Table-driven int dispatch. */
+        {
+            size_t n = 0;
+            const dl_int_field_t *t = dl_config_int_fields(&n);
+            int matched = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (strcmp(t[i].name, key) != 0) continue;
+                long v;
+                if (dl_parse_long_ranged(val, t[i].lo, t[i].hi, &v) != 0) {
+                    dl_log_err("%s:%d: bad value for %s: %s",
+                               path, lineno, key, val);
+                    rc = -1;
+                } else {
+                    write_int_field(cfg, &t[i], v);
+                }
+                matched = 1; break;
+            }
+            if (matched) continue;
+        }
+
+        /* Table-driven bool dispatch. */
+        {
+            size_t n = 0;
+            const dl_bool_field_t *t = dl_config_bool_fields(&n);
+            int matched = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (strcmp(t[i].name, key) != 0) continue;
+                bool v;
+                if (dl_parse_bool(val, &v) != 0) {
+                    dl_log_err("%s:%d: bad bool for %s: %s",
+                               path, lineno, key, val);
+                    rc = -1;
+                } else {
+                    *(bool *)((char *)cfg + t[i].offset) = v;
+                }
+                matched = 1; break;
+            }
+            if (matched) continue;
+        }
+
+        /* Table-driven str dispatch. */
+        {
+            size_t n = 0;
+            const dl_str_field_t *t = dl_config_str_fields(&n);
+            int matched = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (strcmp(t[i].name, key) != 0) continue;
+                if (strlen(val) >= DL_CONF_MAX_STR) {
+                    dl_log_err("%s:%d: value too long for %s",
+                               path, lineno, key);
+                    rc = -1;
+                } else {
+                    char *dst = (char *)cfg + t[i].offset;
+                    snprintf(dst, DL_CONF_MAX_STR, "%s", val);
+                }
+                matched = 1; break;
+            }
+            if (matched) continue;
+        }
+
+        /* Phase-3 debug-suite keys (not in CLI scope; hand-written). */
+        if      (strcmp(key, "debug_enable")   == 0) SET_BOOL(debug_enable);
+        else if (strcmp(key, "dbg_log_enable") == 0) SET_INT_RANGED(dbg_log_enable, int8_t, -1, 1);
+        else if (strcmp(key, "dbg_log_dir")    == 0) SET_STR(dbg_log_dir);
+        else if (strcmp(key, "dbg_max_bytes")  == 0) SET_INT_RANGED(dbg_max_bytes, uint32_t, 4096, 1 << 30);
+        else if (strcmp(key, "dbg_fsync_each") == 0) SET_BOOL(dbg_fsync_each);
         else {
             dl_log_warn("%s:%d: unknown key: %s", path, lineno, key);
         }
     }
+    if (dl_config_validate(cfg) != 0) rc = -1;
+    fclose(fd);
+    return rc;
+}
+
+int dl_config_validate(const dl_config_t *cfg) {
+    int rc = 0;
     if (cfg->roi_qp_threshold_kbps <= cfg->roi_qp_low_anchor_kbps) {
-        dl_log_err("%s: roi_qp_threshold_kbps (%u) must be > "
+        dl_log_err("config: roi_qp_threshold_kbps (%u) must be > "
                    "roi_qp_low_anchor_kbps (%u)",
-                   path,
                    (unsigned)cfg->roi_qp_threshold_kbps,
                    (unsigned)cfg->roi_qp_low_anchor_kbps);
         rc = -1;
     }
-    fclose(fd);
     return rc;
 }
 

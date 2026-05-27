@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DL_TEST_MAX 128
+#define DL_TEST_MAX 256
 
 typedef void (*dl_test_fn)(void);
 

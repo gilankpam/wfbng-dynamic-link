@@ -2,6 +2,9 @@
 #
 # Parsed by dl-applier at startup. key=value plaintext, one per line.
 # '#' or ';' start a comment.
+#
+# Every key below can also be set on the CLI as --<kebab-case>;
+# run `dl-applier --help` for the full list. CLI overrides win.
 
 # ---- Listen endpoint for GS decision packets (over wfb-ng tunnel) ----
 listen_addr = 0.0.0.0
@@ -163,16 +166,22 @@ dbg_max_bytes    = 33554432
 dbg_fsync_each   = 0
 
 # --- P4a: drone→GS config handshake ----------------------------------
-# Authoritative sources for MTU and FPS, read once at startup.
-# MTU comes from /etc/wfb.yaml `wireless.mlink` (typically 1400 or
-# 3994 depending on wfb-ng's radio_mtu setting).
+# Authoritative MTU and FPS the drone announces to the GS at startup.
 #
-# FPS source depends on `encoder_kind` above:
-#   - majestic → hello_majestic_yaml_path (YAML, key `video0.fps`)
-#   - waybeam  → hello_waybeam_json_path  (JSON, key `video0.fps`)
-# Anything else (e.g. `none`) refuses to send HELLO; GS stays in
-# safe_defaults until the operator picks a real encoder.
-hello_wfb_yaml_path      = /etc/wfb.yaml
+# hello_mtu_bytes: radio MTU (typically 1400 or 3994, matching wfb-ng's
+# `wireless.mlink` / radio_mtu). REQUIRED — 0 means "not set" and the
+# applier refuses to send HELLO, leaving the GS in safe_defaults
+# until the operator configures this (or passes --hello-mtu-bytes).
+hello_mtu_bytes = 0
+
+# hello_fps: video frame rate. If non-zero, used directly and the
+# encoder config file below is not opened. If 0 (default), the
+# applier falls back to reading `video0.fps` from one of:
+#   - encoder_kind=majestic → hello_majestic_yaml_path (YAML)
+#   - encoder_kind=waybeam  → hello_waybeam_json_path  (JSON)
+# Anything else (e.g. `none`) with hello_fps=0 refuses to send HELLO.
+hello_fps = 0
+
 hello_majestic_yaml_path = /etc/majestic.yaml
 hello_waybeam_json_path  = /etc/waybeam.json
 

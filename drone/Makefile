@@ -45,6 +45,7 @@ TEST_SRCS := \
     $(TESTDIR)/test_apply_stagger.c \
     $(TESTDIR)/test_wire.c \
     $(TESTDIR)/test_config.c \
+    $(TESTDIR)/test_config_cli.c \
     $(TESTDIR)/test_dbg.c \
     $(TESTDIR)/test_dedup.c \
     $(TESTDIR)/test_dl_latency.c \

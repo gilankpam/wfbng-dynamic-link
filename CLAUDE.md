@@ -54,6 +54,28 @@ Wrap commands with `nix-shell --run '…'` or drop into `nix-shell` first.
 The shellHook prepends `gs/` to `PYTHONPATH` so `dynamic_link` and `tools`
 import without installing the package.
 
+**On macOS (or any non-Linux host)**, use the Debian dev image in `./docker`
+instead — `shell.nix`'s `musl` cross-toolchain is `i686-linux`-only and
+`dl-applier` itself uses Linux-only headers (`sys/timerfd.h`, `SOCK_NONBLOCK`).
+The image is pre-built (`docker image inspect wfb-ng-dev:latest`) with the
+full C + Python + cross-compile toolchain; the repo bind-mounts at `/workspace`.
+
+`docker/run-dev.sh <cmd>` is the interactive entry point but its `-it` flag
+fails when invoked from a non-TTY (e.g. Claude tool calls). For agent use
+run docker directly without `-it`:
+
+```sh
+docker run --rm --network host \
+    -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" -e HOST_USER="$(id -un)" \
+    -v "$PWD":/workspace -w /workspace \
+    wfb-ng-dev:latest <command>
+```
+
+e.g. `… wfb-ng-dev:latest make -C drone test` or `… wfb-ng-dev:latest python3 -m pytest --ignore=tests/test_mavlink_status.py`.
+Files created in /workspace come out owned by the host user via the
+`HOST_UID`/`HOST_GID` env vars. **Never report "build" or "tests pass"
+without actually running them through the container on macOS.**
+
 | Need | Command |
 |---|---|
 | Run pytest (GS unit + Python e2e) | `python3 -m pytest --ignore=tests/test_mavlink_status.py` (from repo root) |
@@ -113,16 +135,21 @@ Edits the operator must make before we run end-to-end:
 1. `[common] log_interval = 100` (design doc says 10 Hz cadence).
 2. `[<tx-section>] control_port = 8000` (default 0 picks a random
    port our applier can't target).
-3. `/etc/wfb.yaml` must contain `wireless.mlink: <integer>` — the
-   radio MTU. dl-applier reads this at boot and reports it to the
-   GS via the DLHE handshake; missing key means the applier refuses
-   to send HELLO and the GS stays in safe_defaults.
-4. The fps source must be readable and contain an integer
-   `video0.fps`. Source depends on `encoder_kind` in drone.conf:
-   `majestic` → `/etc/majestic.yaml` (`video0.fps:` YAML key);
-   `waybeam` → `/etc/waybeam.json` (top-level `video0.fps` JSON
-   key). Missing or unparseable means the applier refuses to send
-   HELLO and the GS stays in safe_defaults.
+3. `drone.conf` must set `hello_mtu_bytes = <integer>` (or pass
+   `--hello-mtu-bytes`) — the radio MTU the drone announces to the
+   GS via the DLHE handshake. Typical values mirror wfb-ng's
+   `wireless.mlink`/`radio_mtu` (1400 or 3994). Unset (= 0) means
+   the applier refuses to send HELLO and the GS stays in
+   safe_defaults. (Previously read from `/etc/wfb.yaml`; that file
+   is no longer touched.)
+4. The fps source: either set `hello_fps = <integer>` in drone.conf
+   (or `--hello-fps`), or leave it at 0 and ensure the encoder's
+   config file contains an integer `video0.fps`. Source depends on
+   `encoder_kind`: `majestic` → `/etc/majestic.yaml` (YAML key);
+   `waybeam` → `/etc/waybeam.json` (top-level JSON key). When
+   `hello_fps` > 0 the file is not opened. Otherwise, missing or
+   unparseable means the applier refuses to send HELLO and the GS
+   stays in safe_defaults.
 5. `drone.conf` must set `interleaving_supported = 0` if the drone is
    running upstream/vanilla wfb-ng. Default is 1 (custom
    `feat/interleaving_uep` branch). Mismatch produces per-tick
@@ -191,8 +218,10 @@ loop.
   k = clamp(bitrate_kbps * 1000 / (fps * mtu_bytes * 8), k_min, k_max)
   n = ceil(k * (1 + base_redundancy_ratio)) + n_escalation
 
-`mtu_bytes` and `fps` come from the P4a handshake (drone reads them
-from /etc/wfb.yaml and /etc/majestic.yaml). `n_escalation` ramps on
+`mtu_bytes` and `fps` come from the P4a handshake (drone gets them
+from `hello_mtu_bytes`/`hello_fps` in drone.conf, or — when
+`hello_fps`=0 — falls back to reading `video0.fps` from
+/etc/majestic.yaml or /etc/waybeam.json). `n_escalation` ramps on
 sustained residual_loss and decays on sustained clean windows; the
 EmitGate bundles (k, n) rewrites onto MCS-change ticks per
 `docs/knob-cadence-bench.md`.

@@ -221,11 +221,13 @@ class _Sandbox:
     tests.
     """
     def __init__(self, state: dict, gs_tunnel_sock: socket.socket,
-                 cfg_path: Path, cfg_dict: dict):
+                 cfg_path: Path, cfg_dict: dict,
+                 cli_args: list[str] | None = None):
         self._state = state
         self._gs_tunnel_sock = gs_tunnel_sock
         self._cfg_path = cfg_path
         self._cfg_dict = cfg_dict
+        self._cli_args = list(cli_args or [])
 
     def __getitem__(self, key):
         return self._state[key]
@@ -275,8 +277,10 @@ class _Sandbox:
         listen_addr = self._state["listen_addr"]
         listen_port = self._state["listen_port"]
         # Same wait-for-bind dance as the initial spawn.
+        spawn_argv = [str(APPLIER), "--config", str(self._cfg_path), "--debug"]
+        spawn_argv.extend(self._cli_args)
         new_proc = subprocess.Popen(
-            [str(APPLIER), "--config", str(self._cfg_path), "--debug"],
+            spawn_argv,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         deadline = time.monotonic() + 2.0
@@ -299,6 +303,7 @@ class _Sandbox:
 
 @contextlib.contextmanager
 def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
+             cli_args: list[str] | None = None,
              **overrides):
     wfb = FakeWfbTx()
     wfb.start()
@@ -371,8 +376,11 @@ def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
         for k, v in defaults.items():
             f.write(f"{k} = {v}\n")
 
+    spawn_argv = [str(APPLIER), "--config", str(cfg), "--debug"]
+    if cli_args:
+        spawn_argv.extend(cli_args)
     proc = subprocess.Popen(
-        [str(APPLIER), "--config", str(cfg), "--debug"],
+        spawn_argv,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     # Wait for applier to bind the socket. Probe by trying to bind
@@ -406,7 +414,7 @@ def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
         "proc": proc,
     }
     try:
-        yield _Sandbox(state, gs_tunnel_sock, cfg, defaults)
+        yield _Sandbox(state, gs_tunnel_sock, cfg, defaults, cli_args=cli_args)
     finally:
         proc = state["proc"]
         proc.terminate()
@@ -745,15 +753,13 @@ def test_apply_stagger_cancel_replaces_pending(tmp_path: Path):
 def test_drone_e2e_handshake_then_decide(tmp_path: Path):
     """Drone sends HELLO -> GS ACKs -> drone enters KEEPALIVE and the
     same generation_id reappears (no fresh announce rotation)."""
-    wfb_yaml = tmp_path / "wfb.yaml"
-    wfb_yaml.write_text("wireless:\n  mlink: 3994\n")
     majestic_yaml = tmp_path / "majestic.yaml"
     majestic_yaml.write_text("video0:\n  fps: 60\n")
 
     with _sandbox(
         tmp_path,
         extra_drone_conf={
-            "hello_wfb_yaml_path": str(wfb_yaml),
+            "hello_mtu_bytes": 3994,
             "hello_majestic_yaml_path": str(majestic_yaml),
             "hello_announce_initial_ms": 100,
             "hello_keepalive_ms": 200,
@@ -786,15 +792,13 @@ def test_drone_e2e_handshake_then_decide(tmp_path: Path):
 
 def test_drone_e2e_restart_triggers_new_generation_id(tmp_path: Path):
     """Restarting dl-applier mid-run produces a fresh generation_id."""
-    wfb_yaml = tmp_path / "wfb.yaml"
-    wfb_yaml.write_text("wireless:\n  mlink: 1400\n")
     majestic_yaml = tmp_path / "majestic.yaml"
     majestic_yaml.write_text("video0:\n  fps: 30\n")
 
     with _sandbox(
         tmp_path,
         extra_drone_conf={
-            "hello_wfb_yaml_path": str(wfb_yaml),
+            "hello_mtu_bytes": 1400,
             "hello_majestic_yaml_path": str(majestic_yaml),
             "hello_announce_initial_ms": 100,
         },
@@ -820,23 +824,42 @@ def test_drone_e2e_restart_triggers_new_generation_id(tmp_path: Path):
         )
 
 
-def test_drone_e2e_bad_yaml_means_no_hello(tmp_path: Path):
-    """If /etc/wfb.yaml has no mlink key, dl_hello_init fails and the
+def test_drone_e2e_missing_mtu_means_no_hello(tmp_path: Path):
+    """If hello_mtu_bytes is unset, dl_hello_init fails and the
     state machine stays DISABLED — no DLHE is ever sent."""
-    wfb_yaml = tmp_path / "wfb.yaml"
-    wfb_yaml.write_text("wireless:\n  txpower: 50\n")  # no mlink
     majestic_yaml = tmp_path / "majestic.yaml"
     majestic_yaml.write_text("video0:\n  fps: 30\n")
 
     with _sandbox(
         tmp_path,
         extra_drone_conf={
-            "hello_wfb_yaml_path": str(wfb_yaml),
+            # hello_mtu_bytes intentionally omitted (defaults to 0).
             "hello_majestic_yaml_path": str(majestic_yaml),
             "hello_announce_initial_ms": 100,
         },
     ) as ctx:
         assert ctx.recv_one_hello(timeout=1.5) is None
+
+
+def test_drone_e2e_hello_fps_overrides_majestic_file(tmp_path: Path):
+    """hello_fps short-circuits the encoder-file lookup: an unreadable
+    majestic.yaml must not prevent HELLO when hello_fps is set."""
+    with _sandbox(
+        tmp_path,
+        extra_drone_conf={
+            "hello_mtu_bytes": 1400,
+            "hello_fps": 90,
+            "hello_majestic_yaml_path": str(tmp_path / "does-not-exist.yaml"),
+            "hello_announce_initial_ms": 100,
+        },
+    ) as ctx:
+        from dynamic_link.wire import decode_hello
+
+        hello_bytes = ctx.recv_one_hello(timeout=2.0)
+        assert hello_bytes is not None, "drone did not announce DLHE"
+        h = decode_hello(hello_bytes)
+        assert h.mtu_bytes == 1400
+        assert h.fps == 90
 
 
 # -----------------------------------------------------------------
@@ -935,8 +958,6 @@ def test_vanilla_mode_hello_sets_vanilla_flag(tmp_path: Path):
     """The HELLO emitted by a vanilla-config applier must have the
     vanilla bit set in byte 5."""
     from dynamic_link.wire import HELLO_FLAG_VANILLA_WFB_NG
-    wfb_yaml = tmp_path / "wfb.yaml"
-    wfb_yaml.write_text("wireless:\n  mlink: 3994\n")
     majestic_yaml = tmp_path / "majestic.yaml"
     majestic_yaml.write_text("video0:\n  fps: 60\n")
 
@@ -944,7 +965,7 @@ def test_vanilla_mode_hello_sets_vanilla_flag(tmp_path: Path):
         tmp_path,
         interleaving_supported=0,
         extra_drone_conf={
-            "hello_wfb_yaml_path": str(wfb_yaml),
+            "hello_mtu_bytes": 3994,
             "hello_majestic_yaml_path": str(majestic_yaml),
             "hello_announce_initial_ms": 100,
         },

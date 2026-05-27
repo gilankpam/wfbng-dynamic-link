@@ -165,44 +165,223 @@ static int open_tick_timer(uint32_t interval_ms) {
     return fd;
 }
 
+/* ---- CLI parsing -------------------------------------------------
+ * Layered config: defaults → conf file (if --config) → CLI overrides.
+ * Per-field flags are generated from the dl_config field tables; bit
+ * arrays remember which fields the user passed so unset CLI flags
+ * never clobber conf-file values.
+ */
 typedef struct {
-    const char         *config_path;
-    bool                log_debug;
+    const char  *config_path;     /* may be NULL */
+    bool         log_debug;
+    dl_config_t  overrides;       /* only fields with set_*[i]=true are valid */
+    /* one bit per index into DL_*_FIELDS tables */
+    uint8_t      set_int [(64 + 7) / 8];   /* sized generously; assert below */
+    uint8_t      set_bool[(16 + 7) / 8];
+    uint8_t      set_str [(16 + 7) / 8];
 } cli_args_t;
+
+static inline void bit_set (uint8_t *a, size_t i) { a[i >> 3] |= (uint8_t)(1u << (i & 7)); }
+static inline bool bit_test(const uint8_t *a, size_t i) { return (a[i >> 3] >> (i & 7)) & 1u; }
+
+/* Long-option `val` encoding: high byte = category, low byte = index.
+ * 0x10xx = int field, 0x20xx = bool field, 0x30xx = str field. */
+enum {
+    OPT_INT_BASE  = 0x1000,
+    OPT_BOOL_BASE = 0x2000,
+    OPT_STR_BASE  = 0x3000,
+};
+
+/* Convert a field name (snake_case) to a heap-allocated kebab-case
+ * copy for use as a long-option name. Caller owns the storage; never
+ * freed (lives until process exit). */
+static char *xstrdup_kebab(const char *snake) {
+    size_t n = strlen(snake);
+    char *out = (char *)malloc(n + 1);
+    if (!out) { perror("malloc"); exit(2); }
+    for (size_t i = 0; i < n; i++) out[i] = (snake[i] == '_') ? '-' : snake[i];
+    out[n] = '\0';
+    return out;
+}
+
+static const char *type_label(dl_field_type_t t) {
+    switch (t) {
+    case DL_F_U8:  return "u8";
+    case DL_F_I8:  return "i8";
+    case DL_F_U16: return "u16";
+    case DL_F_U32: return "u32";
+    }
+    return "?";
+}
+
+/* Print "foo-bar" form of `snake` to stderr (used by usage()). */
+static void print_kebab(const char *snake) {
+    for (const char *p = snake; *p; p++) {
+        fputc(*p == '_' ? '-' : *p, stderr);
+    }
+}
 
 static void usage(const char *prog) {
     fprintf(stderr,
-        "Usage: %s --config <drone.conf> [--debug]\n"
+        "Usage: %s [--config <drone.conf>] [--debug] [field-overrides...]\n"
         "\n"
-        "  --config PATH   path to drone.conf\n"
-        "  --debug         enable DEBUG-level logging\n",
+        "  --config PATH      path to drone.conf (optional; defaults used if omitted)\n"
+        "  --debug            enable DEBUG-level logging\n"
+        "  --help             print this help and exit\n"
+        "\n"
+        "Field overrides (CLI > conf file > defaults):\n",
         prog);
+
+    size_t n;
+    const dl_int_field_t *ti = dl_config_int_fields(&n);
+    fprintf(stderr, "\n  Integer fields (--name VALUE):\n");
+    for (size_t i = 0; i < n; i++) {
+        fprintf(stderr, "    --");
+        print_kebab(ti[i].name);
+        fprintf(stderr, "  (%s, range [%ld..%ld])\n",
+                type_label(ti[i].type), ti[i].lo, ti[i].hi);
+    }
+
+    const dl_bool_field_t *tb = dl_config_bool_fields(&n);
+    fprintf(stderr, "\n  Boolean fields (--name or --name=true|false|1|0; default = true when no value):\n");
+    for (size_t i = 0; i < n; i++) {
+        fprintf(stderr, "    --");
+        print_kebab(tb[i].name);
+        fputc('\n', stderr);
+    }
+
+    const dl_str_field_t *ts = dl_config_str_fields(&n);
+    fprintf(stderr, "\n  String fields (--name VALUE):\n");
+    for (size_t i = 0; i < n; i++) {
+        fprintf(stderr, "    --");
+        print_kebab(ts[i].name);
+        fputc('\n', stderr);
+    }
+    fprintf(stderr, "\n");
 }
 
 static int parse_args(int argc, char **argv, cli_args_t *out) {
-    static struct option opts[] = {
-        { "config", required_argument, 0, 'c' },
-        { "debug",  no_argument,       0, 'd' },
-        { "help",   no_argument,       0, 'h' },
-        { 0 }
-    };
-    out->config_path = NULL;
-    out->log_debug = false;
-    int c;
-    while ((c = getopt_long(argc, argv, "c:dh", opts, NULL)) != -1) {
-        switch (c) {
-            case 'c': out->config_path = optarg; break;
-            case 'd': out->log_debug = true; break;
-            case 'h': usage(argv[0]); return 1;
-            default:  usage(argv[0]); return -1;
-        }
-    }
-    if (!out->config_path) {
-        fprintf(stderr, "--config is required\n");
-        usage(argv[0]);
+    memset(out, 0, sizeof(*out));
+
+    size_t n_int = 0, n_bool = 0, n_str = 0;
+    const dl_int_field_t  *ti = dl_config_int_fields (&n_int);
+    const dl_bool_field_t *tb = dl_config_bool_fields(&n_bool);
+    const dl_str_field_t  *ts = dl_config_str_fields (&n_str);
+
+    /* Bounds-check against the set_* bit arrays. */
+    if (n_int  > sizeof(out->set_int)  * 8 ||
+        n_bool > sizeof(out->set_bool) * 8 ||
+        n_str  > sizeof(out->set_str)  * 8) {
+        fprintf(stderr, "internal error: field table outgrew set_* bit arrays\n");
         return -1;
     }
+
+    /* Build the option table: 3 fixed entries + per-field + terminator. */
+    size_t total = 3 + n_int + n_bool + n_str + 1;
+    struct option *opts = (struct option *)calloc(total, sizeof(struct option));
+    if (!opts) { perror("calloc"); return -1; }
+
+    size_t k = 0;
+    opts[k++] = (struct option){ "config", required_argument, 0, 'c' };
+    opts[k++] = (struct option){ "debug",  no_argument,       0, 'd' };
+    opts[k++] = (struct option){ "help",   no_argument,       0, 'h' };
+    for (size_t i = 0; i < n_int; i++)
+        opts[k++] = (struct option){ xstrdup_kebab(ti[i].name), required_argument, 0, (int)(OPT_INT_BASE  + i) };
+    for (size_t i = 0; i < n_bool; i++)
+        opts[k++] = (struct option){ xstrdup_kebab(tb[i].name), optional_argument, 0, (int)(OPT_BOOL_BASE + i) };
+    for (size_t i = 0; i < n_str; i++)
+        opts[k++] = (struct option){ xstrdup_kebab(ts[i].name), required_argument, 0, (int)(OPT_STR_BASE  + i) };
+    opts[k] = (struct option){ 0 };
+
+    /* Seed overrides with defaults so write_*_by_name has a valid
+     * target type to copy into; only fields with set_*[i]=true are
+     * later copied out. */
+    dl_config_defaults(&out->overrides);
+
+    int c;
+    while ((c = getopt_long(argc, argv, "c:dh", opts, NULL)) != -1) {
+        if (c == 'c')      out->config_path = optarg;
+        else if (c == 'd') out->log_debug = true;
+        else if (c == 'h') { usage(argv[0]); free(opts); return 1; }
+        else if (c >= OPT_INT_BASE && c < OPT_INT_BASE + (int)n_int) {
+            size_t i = (size_t)(c - OPT_INT_BASE);
+            if (dl_config_set_int_by_name(&out->overrides, ti[i].name, optarg) != 0) {
+                fprintf(stderr, "--");
+                print_kebab(ti[i].name);
+                fprintf(stderr, ": bad value %s (expected %s in [%ld..%ld])\n",
+                        optarg, type_label(ti[i].type), ti[i].lo, ti[i].hi);
+                free(opts); return -1;
+            }
+            bit_set(out->set_int, i);
+        }
+        else if (c >= OPT_BOOL_BASE && c < OPT_BOOL_BASE + (int)n_bool) {
+            size_t i = (size_t)(c - OPT_BOOL_BASE);
+            bool v = true;
+            if (optarg != NULL && dl_parse_bool(optarg, &v) != 0) {
+                fprintf(stderr, "--");
+                print_kebab(tb[i].name);
+                fprintf(stderr, ": bad value '%s' (expected true|false|1|0)\n", optarg);
+                free(opts); return -1;
+            }
+            if (dl_config_set_bool_by_name(&out->overrides, tb[i].name, v) != 0) {
+                fprintf(stderr, "--");
+                print_kebab(tb[i].name);
+                fprintf(stderr, ": internal error setting bool\n");
+                free(opts); return -1;
+            }
+            bit_set(out->set_bool, i);
+        }
+        else if (c >= OPT_STR_BASE && c < OPT_STR_BASE + (int)n_str) {
+            size_t i = (size_t)(c - OPT_STR_BASE);
+            if (dl_config_set_str_by_name(&out->overrides, ts[i].name, optarg) != 0) {
+                fprintf(stderr, "--");
+                print_kebab(ts[i].name);
+                fprintf(stderr, ": value rejected (too long? max %d)\n",
+                        DL_CONF_MAX_STR - 1);
+                free(opts); return -1;
+            }
+            bit_set(out->set_str, i);
+        }
+        else {
+            usage(argv[0]);
+            free(opts);
+            return -1;
+        }
+    }
+    free(opts);
+    /* `out->config_path` may legitimately be NULL → caller skips load. */
     return 0;
+}
+
+/* Copy fields the user passed from `args->overrides` into `cfg`. */
+static void apply_cli_overrides(dl_config_t *cfg, const cli_args_t *args) {
+    size_t n;
+    const dl_int_field_t  *ti = dl_config_int_fields (&n);
+    for (size_t i = 0; i < n; i++) {
+        if (!bit_test(args->set_int, i)) continue;
+        void       *dst = (char *)cfg + ti[i].offset;
+        const void *src = (const char *)&args->overrides + ti[i].offset;
+        switch (ti[i].type) {
+        case DL_F_U8:  *(uint8_t  *)dst = *(const uint8_t  *)src; break;
+        case DL_F_I8:  *(int8_t   *)dst = *(const int8_t   *)src; break;
+        case DL_F_U16: *(uint16_t *)dst = *(const uint16_t *)src; break;
+        case DL_F_U32: *(uint32_t *)dst = *(const uint32_t *)src; break;
+        }
+    }
+    const dl_bool_field_t *tb = dl_config_bool_fields(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (!bit_test(args->set_bool, i)) continue;
+        bool       *dst = (bool *)((char *)cfg + tb[i].offset);
+        const bool *src = (const bool *)((const char *)&args->overrides + tb[i].offset);
+        *dst = *src;
+    }
+    const dl_str_field_t  *ts = dl_config_str_fields (&n);
+    for (size_t i = 0; i < n; i++) {
+        if (!bit_test(args->set_str, i)) continue;
+        char       *dst = (char *)cfg + ts[i].offset;
+        const char *src = (const char *)&args->overrides + ts[i].offset;
+        snprintf(dst, DL_CONF_MAX_STR, "%s", src);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -215,8 +394,13 @@ int main(int argc, char **argv) {
 
     dl_config_t cfg;
     dl_config_defaults(&cfg);
-    if (dl_config_load(args.config_path, &cfg) < 0) {
+    if (args.config_path && dl_config_load(args.config_path, &cfg) < 0) {
         dl_log_fatal("config load failed");
+        return 3;
+    }
+    apply_cli_overrides(&cfg, &args);
+    if (dl_config_validate(&cfg) != 0) {
+        dl_log_fatal("config validation failed");
         return 3;
     }
 
