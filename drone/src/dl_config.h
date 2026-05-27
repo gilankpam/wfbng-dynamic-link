@@ -6,6 +6,7 @@
  */
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -114,6 +115,30 @@ typedef struct {
     char     hello_majestic_yaml_path[DL_CONF_MAX_STR];
     char     hello_waybeam_json_path[DL_CONF_MAX_STR];
 } dl_config_t;
+
+/* ---- Field table API ----------------------------------------------
+ * The CLI parser in dl_applier walks these tables to build its
+ * getopt_long option list. The conf parser will dispatch via the
+ * same tables once T4 lands; until then conf-file parsing still
+ * uses a hand-written if/else chain and the tables are unused. */
+
+typedef enum {
+    DL_F_U8, DL_F_I8, DL_F_U16, DL_F_U32,
+} dl_field_type_t;
+
+typedef struct {
+    const char     *name;       /* exact conf key; CLI flag is name with _ → - */
+    size_t          offset;     /* offsetof(dl_config_t, …) */
+    dl_field_type_t type;
+    long            lo, hi;     /* inclusive */
+} dl_int_field_t;
+
+typedef struct { const char *name; size_t offset; } dl_bool_field_t;
+typedef struct { const char *name; size_t offset; } dl_str_field_t;
+
+const dl_int_field_t  *dl_config_int_fields (size_t *n_out);
+const dl_bool_field_t *dl_config_bool_fields(size_t *n_out);
+const dl_str_field_t  *dl_config_str_fields (size_t *n_out);
 
 /* Populate `cfg` with built-in defaults. */
 void dl_config_defaults(dl_config_t *cfg);

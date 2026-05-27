@@ -4,6 +4,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -131,6 +132,90 @@ static int dl_parse_bool(const char *val, bool *out) {
     }                                                                  \
     cfg->field = _v;                                                   \
 } while(0)
+
+#define F_INT(name_, type_, lo_, hi_) \
+    { #name_, offsetof(dl_config_t, name_), type_, (long)(lo_), (long)(hi_) }
+#define F_BOOL(name_) { #name_, offsetof(dl_config_t, name_) }
+#define F_STR(name_)  { #name_, offsetof(dl_config_t, name_) }
+
+static const dl_int_field_t DL_INT_FIELDS[] = {
+    F_INT(listen_port,                   DL_F_U16, 1,      65535),
+    F_INT(wfb_tx_ctrl_port,              DL_F_U16, 1,      65535),
+    F_INT(min_idr_interval_ms,           DL_F_U32, 0,      60000),
+    F_INT(idr_listen_port,               DL_F_U16, 0,      65535),
+    F_INT(apply_stagger_ms,              DL_F_U32, 0,      500),
+    F_INT(apply_sub_pace_ms,             DL_F_U32, 0,      50),
+    F_INT(osd_update_interval_ms,        DL_F_U32, 100,    60000),
+    F_INT(health_timeout_ms,             DL_F_U32, 500,    120000),
+    F_INT(safe_k,                        DL_F_U8,  1,      32),
+    F_INT(safe_n,                        DL_F_U8,  2,      255),
+    F_INT(safe_depth,                    DL_F_U8,  1,      8),
+    F_INT(safe_mcs,                      DL_F_U8,  0,      7),
+    F_INT(safe_bandwidth,                DL_F_U8,  20,     40),
+    F_INT(safe_tx_power_dBm,             DL_F_I8,  -10,    30),
+    F_INT(safe_bitrate_kbps,             DL_F_U16, 100,    65535),
+    F_INT(encoder_port,                  DL_F_U16, 1,      65535),
+    F_INT(roi_qp_threshold_kbps,         DL_F_U16, 100,    65535),
+    F_INT(roi_qp_low_anchor_kbps,        DL_F_U16, 100,    65535),
+    F_INT(roi_qp_floor,                  DL_F_I8,  -30,    0),
+    F_INT(roi_qp_step,                   DL_F_U8,  1,      10),
+    F_INT(mavlink_port,                  DL_F_U16, 1,      65535),
+    F_INT(mavlink_sysid,                 DL_F_U8,  0,      255),
+    F_INT(mavlink_compid,                DL_F_U8,  0,      255),
+    F_INT(gs_tunnel_port,                DL_F_U16, 1,      65535),
+    F_INT(hello_announce_initial_ms,     DL_F_U32, 1,      60000),
+    F_INT(hello_announce_steady_ms,      DL_F_U32, 1,      300000),
+    F_INT(hello_keepalive_ms,            DL_F_U32, 1,      300000),
+    F_INT(hello_announce_initial_count,  DL_F_U32, 0,      100000),
+};
+
+static const dl_bool_field_t DL_BOOL_FIELDS[] = {
+    F_BOOL(osd_enable),
+    F_BOOL(osd_debug_latency),
+    F_BOOL(interleaving_supported),
+    F_BOOL(mavlink_enable),
+};
+
+static const dl_str_field_t DL_STR_FIELDS[] = {
+    F_STR(listen_addr),
+    F_STR(wfb_tx_ctrl_addr),
+    F_STR(idr_listen_addr),
+    F_STR(osd_msg_path),
+    F_STR(wlan_dev),
+    F_STR(encoder_kind),
+    F_STR(encoder_host),
+    F_STR(mavlink_addr),
+    F_STR(gs_tunnel_addr),
+    F_STR(hello_wfb_yaml_path),
+    F_STR(hello_majestic_yaml_path),
+    F_STR(hello_waybeam_json_path),
+};
+
+/* Copy `src` into `dst` (size `dstlen`) replacing '-' with '_'.
+ * Truncates safely. Used to convert CLI flag names back to conf
+ * keys for table lookup. */
+__attribute__((unused))
+static void dl_kebab_to_snake(char *dst, size_t dstlen, const char *src) {
+    size_t i = 0;
+    for (; src[i] && i + 1 < dstlen; i++)
+        dst[i] = (src[i] == '-') ? '_' : src[i];
+    dst[i] = '\0';
+}
+
+const dl_int_field_t *dl_config_int_fields(size_t *n_out) {
+    if (n_out) *n_out = sizeof(DL_INT_FIELDS) / sizeof(DL_INT_FIELDS[0]);
+    return DL_INT_FIELDS;
+}
+
+const dl_bool_field_t *dl_config_bool_fields(size_t *n_out) {
+    if (n_out) *n_out = sizeof(DL_BOOL_FIELDS) / sizeof(DL_BOOL_FIELDS[0]);
+    return DL_BOOL_FIELDS;
+}
+
+const dl_str_field_t *dl_config_str_fields(size_t *n_out) {
+    if (n_out) *n_out = sizeof(DL_STR_FIELDS) / sizeof(DL_STR_FIELDS[0]);
+    return DL_STR_FIELDS;
+}
 
 int dl_config_load(const char *path, dl_config_t *cfg) {
     FILE *fd = fopen(path, "r");
