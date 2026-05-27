@@ -184,9 +184,13 @@ dl-applier --config /etc/dynamic-link/drone.conf \
            --safe-mcs 3 --mavlink-port 14570
 ```
 
-Boolean fields are on-only switches: `--mavlink-enable` sets the
-field to `true`. There is no `--no-mavlink-enable`; to force a
-default-true field off, set it in the conf file.
+Boolean fields take an optional value: `--mavlink-enable` (bare) sets
+the field to `true`; `--mavlink-enable=false` (or `=0`, `=no`, `=off`,
+case-insensitive) sets it to `false`. The `=` form is required — a
+space-separated value (`--mavlink-enable false`) does not work, because
+`getopt_long` treats it as a positional argument. The most common
+use is `--interleaving-supported=false` to flip a drone running
+vanilla wfb-ng without editing `drone.conf`.
 
 The Phase-3 debug-suite fields (`debug_enable`, `dbg_log_enable`,
 `dbg_log_dir`, `dbg_max_bytes`, `dbg_fsync_each`) intentionally have

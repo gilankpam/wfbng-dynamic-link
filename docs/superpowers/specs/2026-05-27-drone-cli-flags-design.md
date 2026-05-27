@@ -43,13 +43,11 @@ the file as the durable, audited config surface.
 2. **Flag naming:** kebab-case. Conf key `mavlink_enable` becomes
    CLI flag `--mavlink-enable`. The mapping is mechanical (swap `_`
    ↔ `-`) so a single table backs both names.
-3. **Booleans:** on-only switches. `--osd-debug-latency`,
-   `--mavlink-enable`, etc. all flip their target to `true` when
-   passed. There is no `--no-foo` form. **Consequence:** fields
-   that default to `true` (`osd_enable`, `mavlink_enable`,
-   `interleaving_supported`) cannot be turned off from the CLI;
-   operators must use the conf file to force them off. This is
-   accepted.
+3. **Booleans:** value-taking via `--name` (bare, = true) or
+   `--name=true|false|1|0` (case-insensitive; `yes/no/on/off` also
+   accepted). The `=` form is required for explicit values; a
+   space-separated value is parsed as a positional. Updated
+   2026-05-27 — see `docs/superpowers/specs/2026-05-27-bool-cli-args-design.md`.
 4. **Scope:** every field in `dl_config_t` **except** the Phase-3
    debug-suite block, namely:
    - `debug_enable`
