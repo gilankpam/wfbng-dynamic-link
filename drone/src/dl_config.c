@@ -194,7 +194,6 @@ static const dl_str_field_t DL_STR_FIELDS[] = {
 /* Copy `src` into `dst` (size `dstlen`) replacing '-' with '_'.
  * Truncates safely. Used to convert CLI flag names back to conf
  * keys for table lookup. */
-__attribute__((unused))
 static void dl_kebab_to_snake(char *dst, size_t dstlen, const char *src) {
     size_t i = 0;
     for (; src[i] && i + 1 < dstlen; i++)
@@ -215,6 +214,59 @@ const dl_bool_field_t *dl_config_bool_fields(size_t *n_out) {
 const dl_str_field_t *dl_config_str_fields(size_t *n_out) {
     if (n_out) *n_out = sizeof(DL_STR_FIELDS) / sizeof(DL_STR_FIELDS[0]);
     return DL_STR_FIELDS;
+}
+
+static void write_int_field(dl_config_t *cfg, const dl_int_field_t *f, long v) {
+    void *p = (char *)cfg + f->offset;
+    switch (f->type) {
+    case DL_F_U8:  *(uint8_t  *)p = (uint8_t )v; break;
+    case DL_F_I8:  *(int8_t   *)p = (int8_t  )v; break;
+    case DL_F_U16: *(uint16_t *)p = (uint16_t)v; break;
+    case DL_F_U32: *(uint32_t *)p = (uint32_t)v; break;
+    }
+}
+
+int dl_config_set_int_by_name(dl_config_t *cfg, const char *name, const char *val) {
+    char norm[64];
+    dl_kebab_to_snake(norm, sizeof(norm), name);
+    size_t n = 0;
+    const dl_int_field_t *t = dl_config_int_fields(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(t[i].name, norm) != 0) continue;
+        long v;
+        if (dl_parse_long_ranged(val, t[i].lo, t[i].hi, &v) != 0) return -1;
+        write_int_field(cfg, &t[i], v);
+        return 0;
+    }
+    return -1;
+}
+
+int dl_config_set_bool_by_name(dl_config_t *cfg, const char *name, bool val) {
+    char norm[64];
+    dl_kebab_to_snake(norm, sizeof(norm), name);
+    size_t n = 0;
+    const dl_bool_field_t *t = dl_config_bool_fields(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(t[i].name, norm) != 0) continue;
+        *(bool *)((char *)cfg + t[i].offset) = val;
+        return 0;
+    }
+    return -1;
+}
+
+int dl_config_set_str_by_name(dl_config_t *cfg, const char *name, const char *val) {
+    char norm[64];
+    dl_kebab_to_snake(norm, sizeof(norm), name);
+    size_t n = 0;
+    const dl_str_field_t *t = dl_config_str_fields(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(t[i].name, norm) != 0) continue;
+        if (strlen(val) >= DL_CONF_MAX_STR) return -1;
+        char *dst = (char *)cfg + t[i].offset;
+        snprintf(dst, DL_CONF_MAX_STR, "%s", val);
+        return 0;
+    }
+    return -1;
 }
 
 int dl_config_load(const char *path, dl_config_t *cfg) {

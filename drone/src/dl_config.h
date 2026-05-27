@@ -140,6 +140,14 @@ const dl_int_field_t  *dl_config_int_fields (size_t *n_out);
 const dl_bool_field_t *dl_config_bool_fields(size_t *n_out);
 const dl_str_field_t  *dl_config_str_fields (size_t *n_out);
 
+/* Set a single int/bool/str field by its conf-key name (or its
+ * kebab equivalent). Returns 0 on success, -1 on unknown name,
+ * range violation, parse failure, or string overflow. Callers
+ * provide their own logging context. */
+int dl_config_set_int_by_name (dl_config_t *cfg, const char *name, const char *val);
+int dl_config_set_bool_by_name(dl_config_t *cfg, const char *name, bool        val);
+int dl_config_set_str_by_name (dl_config_t *cfg, const char *name, const char *val);
+
 /* Populate `cfg` with built-in defaults. */
 void dl_config_defaults(dl_config_t *cfg);
 
