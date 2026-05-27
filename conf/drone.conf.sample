@@ -2,6 +2,9 @@
 #
 # Parsed by dl-applier at startup. key=value plaintext, one per line.
 # '#' or ';' start a comment.
+#
+# Every key below can also be set on the CLI as --<kebab-case>;
+# run `dl-applier --help` for the full list. CLI overrides win.
 
 # ---- Listen endpoint for GS decision packets (over wfb-ng tunnel) ----
 listen_addr = 0.0.0.0
