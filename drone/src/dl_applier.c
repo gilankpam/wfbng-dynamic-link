@@ -243,7 +243,7 @@ static void usage(const char *prog) {
     }
 
     const dl_bool_field_t *tb = dl_config_bool_fields(&n);
-    fprintf(stderr, "\n  Boolean fields (--name or --name=true|false; default = true when no value):\n");
+    fprintf(stderr, "\n  Boolean fields (--name or --name=true|false|1|0; default = true when no value):\n");
     for (size_t i = 0; i < n; i++) {
         fprintf(stderr, "    --");
         print_kebab(tb[i].name);
