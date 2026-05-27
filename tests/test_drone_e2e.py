@@ -221,11 +221,13 @@ class _Sandbox:
     tests.
     """
     def __init__(self, state: dict, gs_tunnel_sock: socket.socket,
-                 cfg_path: Path, cfg_dict: dict):
+                 cfg_path: Path, cfg_dict: dict,
+                 cli_args: list[str] | None = None):
         self._state = state
         self._gs_tunnel_sock = gs_tunnel_sock
         self._cfg_path = cfg_path
         self._cfg_dict = cfg_dict
+        self._cli_args = list(cli_args or [])
 
     def __getitem__(self, key):
         return self._state[key]
@@ -275,8 +277,10 @@ class _Sandbox:
         listen_addr = self._state["listen_addr"]
         listen_port = self._state["listen_port"]
         # Same wait-for-bind dance as the initial spawn.
+        spawn_argv = [str(APPLIER), "--config", str(self._cfg_path), "--debug"]
+        spawn_argv.extend(self._cli_args)
         new_proc = subprocess.Popen(
-            [str(APPLIER), "--config", str(self._cfg_path), "--debug"],
+            spawn_argv,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         deadline = time.monotonic() + 2.0
@@ -299,6 +303,7 @@ class _Sandbox:
 
 @contextlib.contextmanager
 def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
+             cli_args: list[str] | None = None,
              **overrides):
     wfb = FakeWfbTx()
     wfb.start()
@@ -371,8 +376,11 @@ def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
         for k, v in defaults.items():
             f.write(f"{k} = {v}\n")
 
+    spawn_argv = [str(APPLIER), "--config", str(cfg), "--debug"]
+    if cli_args:
+        spawn_argv.extend(cli_args)
     proc = subprocess.Popen(
-        [str(APPLIER), "--config", str(cfg), "--debug"],
+        spawn_argv,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     # Wait for applier to bind the socket. Probe by trying to bind
@@ -406,7 +414,7 @@ def _sandbox(tmp_path: Path, *, extra_drone_conf: dict | None = None,
         "proc": proc,
     }
     try:
-        yield _Sandbox(state, gs_tunnel_sock, cfg, defaults)
+        yield _Sandbox(state, gs_tunnel_sock, cfg, defaults, cli_args=cli_args)
     finally:
         proc = state["proc"]
         proc.terminate()
