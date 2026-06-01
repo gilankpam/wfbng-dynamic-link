@@ -22,6 +22,7 @@ from pathlib import Path
 
 from dynamic_link.drone_config import DroneConfigState
 from dynamic_link.policy import (
+    GateConfig,
     LeadingLoopConfig,
     Policy,
     PolicyConfig,
@@ -149,3 +150,85 @@ def test_dynamic_fec_first_tick_always_emits_computed_values():
     n_ceiling = math.ceil(d.k * (1.0 + fec_cfg.max_redundancy_ratio))
     assert d.k <= d.n <= n_ceiling
     _ = safe  # silence unused
+
+
+def test_death_spiral_does_not_oversubscribe_wire():
+    """Regression: 30 ticks of sustained 5% loss at MCS 0 must not
+    drive wire rate above wire_target. NEscalator ramps escalation
+    up to its cap; we verify each emitted (bitrate, k, n) keeps
+    bitrate × n / k ≤ wire_target the whole time, then recovery
+    brings bitrate back up."""
+    from dynamic_link.bitrate import compute_wire_target_kbps
+
+    prof = load_profile("m8812eu2", [PACKAGED_DIR])
+    # Force MCS to stay at 0 by using a very low SNR.  The gate's
+    # emergency_loss_rate fires at 5 % loss, stepping MCS down; the
+    # low SNR prevents any climb back up.
+    cfg = PolicyConfig(
+        leading=LeadingLoopConfig(
+            tx_power_min_dBm=5.0, tx_power_max_dBm=30.0,
+        ),
+        gate=GateConfig(max_mcs=7),
+        safe=SafeDefaults(k=2, n=3, depth=1, mcs=0),
+    )
+    drone_cfg = DroneConfigState()
+    drone_cfg.on_hello(Hello(
+        generation_id=1, mtu_bytes=1500, fps=60, applier_build_sha=0,
+    ))
+    p = Policy(cfg, prof, drone_config=drone_cfg)
+
+    wire_targets: dict[int, float] = {}
+    mcs0_decisions: list[tuple[int, int, int, int]] = []
+
+    for tick_i in range(60):
+        loss = 0.05 if tick_i < 30 else 0.0
+        fec_pressure = 0.20 if loss > 0 else 0.0
+        # SNR=2 keeps the selector near the floor and prevents MCS climbs.
+        sigs = _sigs(
+            tick_i * 100.0,
+            snr=2.0,
+            residual_loss=loss,
+            fec_work=fec_pressure,
+        )
+        d = p.tick(sigs)
+
+        if d.mcs not in wire_targets:
+            wire_targets[d.mcs] = compute_wire_target_kbps(
+                prof, cfg.leading.bandwidth, d.mcs, 1500,
+                cfg.bitrate.utilization_factor,
+            )
+
+        wire_actual = d.bitrate_kbps * d.n / d.k
+        assert wire_actual <= wire_targets[d.mcs] + 1, (
+            f"tick={tick_i} mcs={d.mcs}: "
+            f"wire={wire_actual:.0f} > target={wire_targets[d.mcs]:.0f} "
+            f"(bitrate={d.bitrate_kbps} k={d.k} n={d.n})"
+        )
+
+        if d.mcs == 0:
+            mcs0_decisions.append((tick_i, d.k, d.n, d.bitrate_kbps))
+
+    in_loss = [x for x in mcs0_decisions if x[0] < 30]
+    in_recovery = [x for x in mcs0_decisions if x[0] >= 30]
+    assert len(in_loss) >= 10, (
+        f"too few MCS-0 ticks during loss: {len(in_loss)}"
+    )
+    assert len(in_recovery) >= 10, (
+        f"too few MCS-0 ticks during recovery: {len(in_recovery)}"
+    )
+
+    # Bitrate trends down as NEscalator ramps n up during loss.
+    min_during_loss = min(x[3] for x in in_loss)
+    initial = in_loss[0][3]
+    assert min_during_loss < initial, (
+        f"bitrate did not shrink during loss: initial={initial} "
+        f"min={min_during_loss}"
+    )
+
+    # Bitrate recovers once loss clears.
+    max_during_recovery = max(x[3] for x in in_recovery)
+    last_loss = in_loss[-1][3]
+    assert max_during_recovery >= last_loss, (
+        f"bitrate did not recover: last_loss={last_loss} "
+        f"max_recovery={max_during_recovery}"
+    )

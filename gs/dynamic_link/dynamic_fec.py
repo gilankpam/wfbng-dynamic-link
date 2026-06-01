@@ -1,10 +1,10 @@
 """Dynamic FEC selection — see spec §"Dynamic FEC algorithm".
 
 Three pieces:
-  - `compute_k`: from (bitrate_kbps, mtu_bytes, fps) → integer k,
-    clamped to `[k_min, k_max]`. The intuition is "one FEC block
-    per frame" (k = packets per frame), so block-fill stays within
-    a frame period.
+  - `compute_k`: from (wire_target_kbps, mtu_bytes, fps) → integer k,
+    anchored on the encoder rate (wire/(1+base_red)) and divided by
+    cfg.blocks_per_frame. Default bpf = 1 + max_red, giving
+    block_fill_ms ≤ frame_period_ms at all n ≤ n_max.
   - `NEscalator`: tracks `n_escalation` across ticks; ramps up on
     sustained `residual_loss`, decrements on sustained clean
     windows. Hysteresis is the load-bearing piece — bare-reactive
@@ -29,6 +29,7 @@ class DynamicFecConfig:
     k_max: int = 16
     base_redundancy_ratio: float = 0.5
     max_redundancy_ratio: float = 1.0
+    blocks_per_frame: float = 2.0
     n_loss_threshold: float = 0.02
     n_loss_windows: int = 3
     n_loss_step: int = 1
@@ -52,6 +53,11 @@ class DynamicFecConfig:
             raise ValueError(
                 f"max_redundancy_ratio ({self.max_redundancy_ratio}) "
                 f"< base ({self.base_redundancy_ratio})"
+            )
+        if self.blocks_per_frame <= 0:
+            raise ValueError(
+                f"blocks_per_frame must be > 0; "
+                f"got {self.blocks_per_frame}"
             )
         if self.max_n_escalation < 0:
             raise ValueError(
@@ -81,16 +87,29 @@ class DynamicFecConfig:
 
 def compute_k(
     *,
-    bitrate_kbps: int,
+    wire_target_kbps: float,
     mtu_bytes: int,
     fps: int,
     cfg: DynamicFecConfig,
 ) -> int:
-    """Packets-per-frame, clamped to [k_min, k_max]."""
-    if bitrate_kbps <= 0 or mtu_bytes <= 0 or fps <= 0:
+    """Block size, sized so block_fill stays inside one frame period
+    even at maximum n escalation.
+
+    Anchored on the encoder bitrate at n_base (= wire_target / (1 +
+    base_redundancy_ratio)) rather than on the wire rate, so block_fill
+    does not inflate as n grows above n_base. The result is divided by
+    `cfg.blocks_per_frame`; with the default (1 + max_redundancy_ratio)
+    the bound holds at every emitted n by construction. See
+    docs/superpowers/specs/2026-05-23-block-fill-enforcement-design.md.
+    """
+    if wire_target_kbps <= 0 or mtu_bytes <= 0 or fps <= 0:
         return cfg.k_min
-    packets_per_frame = (bitrate_kbps * 1000.0) / (fps * mtu_bytes * 8.0)
-    return max(cfg.k_min, min(cfg.k_max, int(packets_per_frame)))
+    anchor_encoder_kbps = wire_target_kbps / (1.0 + cfg.base_redundancy_ratio)
+    packets_per_frame = (
+        anchor_encoder_kbps * 1000.0 / (fps * mtu_bytes * 8.0)
+    )
+    k = packets_per_frame / cfg.blocks_per_frame
+    return max(cfg.k_min, min(cfg.k_max, int(k)))
 
 
 def compute_n(
@@ -104,6 +123,34 @@ def compute_n(
     n_max = math.ceil(k * (1.0 + cfg.max_redundancy_ratio))
     n = n_base + max(0, n_escalation)
     return min(n, n_max)
+
+
+def clamp_n_for_bitrate_floor(
+    n_candidate: int,
+    k: int,
+    wire_target_kbps: float,
+    min_bitrate_kbps: int,
+) -> int:
+    """Cap n so that bitrate = wire_target_kbps × k / n stays ≥ min_bitrate_kbps.
+
+    Preserves the wire-safety invariant at the bitrate floor: when
+    n_escalation would push encoder bitrate below the floor, we stop
+    growing FEC instead of letting wire rate inflate past PHY.
+
+    Pathological edge: when `min_bitrate_kbps > wire_target_kbps`
+    (link can't carry minimum video at all), `n_max_phy < k` and we
+    cap at k (degenerate: no parity). The wire-safety invariant
+    lightly bends here, but only when the link is failing beyond
+    what this layer can fix.
+    """
+    if k <= 0:
+        raise ValueError(f"k must be > 0; got {k}")
+    if min_bitrate_kbps <= 0:
+        raise ValueError(f"min_bitrate_kbps must be > 0; got {min_bitrate_kbps}")
+    if wire_target_kbps <= 0:
+        raise ValueError(f"wire_target_kbps must be > 0; got {wire_target_kbps}")
+    n_max_phy = int(wire_target_kbps * k / min_bitrate_kbps)
+    return max(k, min(n_candidate, n_max_phy))
 
 
 @dataclass

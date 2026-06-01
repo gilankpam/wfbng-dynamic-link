@@ -1,4 +1,4 @@
-"""Encoder bitrate from effective PHY rate × utilization × k_over_n.
+"""Encoder bitrate from effective PHY rate × utilization × k/n.
 
 The model accounts for per-802.11-frame fixed overhead so that
 encoder bitrate scales correctly with `mtu_bytes`. See:
@@ -36,7 +36,6 @@ def _resolve_preamble_us(profile: RadioProfile) -> float:
 @dataclass(frozen=True)
 class BitrateConfig:
     utilization_factor: float = 0.8
-    base_redundancy_ratio: float = 0.5   # k/n = 1/(1+ratio) = 0.667
     min_bitrate_kbps: int = 1000
     max_bitrate_kbps: int = 24000
 
@@ -45,11 +44,6 @@ class BitrateConfig:
             raise ValueError(
                 f"utilization_factor must be in (0, 1]; "
                 f"got {self.utilization_factor}"
-            )
-        if self.base_redundancy_ratio < 0.0:
-            raise ValueError(
-                f"base_redundancy_ratio must be >= 0; "
-                f"got {self.base_redundancy_ratio}"
             )
         if self.min_bitrate_kbps <= 0:
             raise ValueError(
@@ -78,18 +72,61 @@ def effective_phy_Mbps(
     return mtu_bits / (preamble_s + payload_s) / 1_000_000.0
 
 
-def compute_bitrate_kbps(
+def compute_wire_target_kbps(
     profile: RadioProfile,
     bandwidth: int,
     mcs: int,
     mtu_bytes: int,
-    cfg: BitrateConfig,
-) -> int:
-    """Compute encoder bitrate target in kb/s for `(bandwidth, mcs, mtu_bytes)`."""
+    utilization_factor: float,
+) -> float:
+    """Maximum sustainable wire bitrate (kbps) at this (MCS, bandwidth, mtu).
+
+    `wire_target = eff_phy × utilization_factor`. This is the anchor
+    for the dynamic-FEC dataflow: `k` is sized for it, `n` adds
+    redundancy on top of it, and `bitrate = wire_target × k / n`.
+
+    The result depends only on the radio profile, MCS row, MTU, and
+    utilization — no FEC inputs. Returned as a float; the caller is
+    responsible for any int truncation.
+    """
+    if not (0.0 < utilization_factor <= 1.0):
+        raise ValueError(
+            f"utilization_factor must be in (0, 1]; got {utilization_factor}"
+        )
     phy_Mbps = profile.data_rate_Mbps_LGI[bandwidth][mcs]
     preamble_us = _resolve_preamble_us(profile)
     eff_phy_Mbps = effective_phy_Mbps(phy_Mbps, mtu_bytes, preamble_us)
-    k_over_n = 1.0 / (1.0 + cfg.base_redundancy_ratio)
-    raw_kbps = eff_phy_Mbps * 1000.0 * cfg.utilization_factor * k_over_n
-    return int(max(cfg.min_bitrate_kbps,
-                   min(cfg.max_bitrate_kbps, raw_kbps)))
+    return eff_phy_Mbps * 1000.0 * utilization_factor
+
+
+def compute_bitrate_kbps(
+    wire_target_kbps: float,
+    k: int,
+    n: int,
+    min_bitrate_kbps: int,
+    max_bitrate_kbps: int,
+) -> int:
+    """Encoder bitrate that keeps wire rate at `wire_target_kbps`
+    with the live (k, n). Clamped to [min, max].
+
+    Invariant when no clamp fires: `result × n / k ≤ wire_target_kbps`
+    (int truncation rounds wire DOWN). When `min_bitrate_kbps` clamp
+    fires — only possible when the link is too degraded to sustain
+    minimum video — the invariant does not hold; callers should run
+    `clamp_n_for_bitrate_floor` first to prevent this.
+    """
+    if k <= 0:
+        raise ValueError(f"k must be > 0; got {k}")
+    if n < k:
+        raise ValueError(f"n ({n}) must be >= k ({k})")
+    if min_bitrate_kbps <= 0:
+        raise ValueError(f"min_bitrate_kbps must be > 0; got {min_bitrate_kbps}")
+    if max_bitrate_kbps < min_bitrate_kbps:
+        raise ValueError(
+            f"max_bitrate_kbps ({max_bitrate_kbps}) "
+            f"< min_bitrate_kbps ({min_bitrate_kbps})"
+        )
+    raw_kbps = wire_target_kbps * k / n
+    return int(max(min_bitrate_kbps, min(max_bitrate_kbps, raw_kbps)))
+
+

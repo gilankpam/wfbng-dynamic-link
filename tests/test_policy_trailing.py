@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dynamic_link.bitrate import compute_bitrate_kbps
+from dynamic_link.bitrate import compute_bitrate_kbps, compute_wire_target_kbps
 from dynamic_link.policy import (
     FECBounds,
     LeadingLoopConfig,
@@ -258,13 +258,22 @@ def test_policy_bitrate_matches_formula_at_each_mcs():
         _settle_at_mcs(p, target)
         if p.state.mcs != target:
             continue
-        expected = compute_bitrate_kbps(p.profile, 20, target, 1400, p.cfg.bitrate)
+        # New pipeline: bitrate = wire_target × emitted_k / emitted_n
+        wire = compute_wire_target_kbps(
+            p.profile, 20, target, 1400, p.cfg.bitrate.utilization_factor,
+        )
+        expected = compute_bitrate_kbps(
+            wire_target_kbps=wire, k=p.state.k, n=p.state.n,
+            min_bitrate_kbps=p.cfg.bitrate.min_bitrate_kbps,
+            max_bitrate_kbps=p.cfg.bitrate.max_bitrate_kbps,
+        )
         assert p.state.bitrate_kbps == expected
 
 
 def test_policy_emits_computed_k_n_from_drone_config():
     """With a drone reporting (mtu=1400, fps=60), policy.tick emits a
-    `k` consistent with packets-per-frame at the live bitrate."""
+    `k` consistent with packets-per-frame at the wire target bitrate."""
+    from dynamic_link.bitrate import compute_wire_target_kbps
     from dynamic_link.drone_config import DroneConfigState
     from dynamic_link.wire import Hello
 
@@ -280,14 +289,21 @@ def test_policy_emits_computed_k_n_from_drone_config():
         generation_id=1, mtu_bytes=1400, fps=60, applier_build_sha=0,
     ))
     p = Policy(cfg, prof, drone_config=drone_cfg)
+    from dynamic_link.dynamic_fec import compute_k
+
     # Drive a clean-link tick so the leading selector commits and the
     # emit-gate fires (first-call always emits).
     d = p.tick(_clean_sigs(0.0))
-    # compute_k formula: bitrate_kbps * 1000 / (fps * mtu * 8), clamped.
-    expected_k = max(
-        cfg.dynamic_fec.k_min,
-        min(cfg.dynamic_fec.k_max,
-            int(d.bitrate_kbps * 1000 / (60 * 1400 * 8))),
+    # k is anchored to encoder bitrate (wire_target / (1 + base_redundancy_ratio))
+    # and divided by blocks_per_frame — see compute_k in dynamic_fec.py.
+    wire_target = compute_wire_target_kbps(
+        prof, 20, d.mcs, 1400, cfg.bitrate.utilization_factor,
+    )
+    expected_k = compute_k(
+        wire_target_kbps=wire_target,
+        mtu_bytes=1400,
+        fps=60,
+        cfg=cfg.dynamic_fec,
     )
     assert d.k == expected_k
 

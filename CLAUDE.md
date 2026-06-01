@@ -184,22 +184,31 @@ loop.
   encoder HTTP / mock MAVLink sink — no live radio required. Keep
   it that way; CI runs on a workstation.
 
-### Dynamic FEC (P4b)
+### Dynamic FEC (P4b + bitrate-aware FEC)
 
-`(k, n)` is computed at runtime, not pinned per-MCS in the profile:
+`(k, n)` is computed at runtime, not pinned per-MCS in the profile.
+The pipeline is anchored on `wire_target_kbps = eff_phy × util`:
 
-  k = clamp(bitrate_kbps * 1000 / (fps * mtu_bytes * 8), k_min, k_max)
+  wire_target = effective_phy_Mbps × utilization_factor × 1000
+  k = clamp(wire_target_kbps * 1000 / (fps * mtu_bytes * 8), k_min, k_max)
   n = ceil(k * (1 + base_redundancy_ratio)) + n_escalation
+  n = clamp_n_for_bitrate_floor(n, k, wire_target, min_bitrate_kbps)
+  bitrate = wire_target × emitted_k / emitted_n   (clamped to [min, max])
 
 `mtu_bytes` and `fps` come from the P4a handshake (drone reads them
-from /etc/wfb.yaml and /etc/majestic.yaml). `n_escalation` ramps on
-sustained residual_loss and decays on sustained clean windows; the
-EmitGate bundles (k, n) rewrites onto MCS-change ticks per
-`docs/knob-cadence-bench.md`.
+from /etc/wfb.yaml and /etc/majestic.yaml or /etc/waybeam.json).
+`n_escalation` ramps on sustained `residual_loss` and decays on
+sustained clean windows; the EmitGate bundles `(k, n)` rewrites onto
+MCS-change ticks per `docs/knob-cadence-bench.md`. Bitrate co-emits
+with the emitted `(k, n)` — they always stay coherent.
 
-Bitrate uses a FIXED `k/n = 1/(1 + base_redundancy_ratio)`, not the
-live (k, n), so encoder allocation stays steady when n_escalation
-moves.
+Encoder bitrate shrinks as FEC escalates so that total wire stays
+under PHY (`bitrate × n / k ≤ wire_target` invariant). The bitrate
+floor (`min_bitrate_kbps`) is enforced by `clamp_n_for_bitrate_floor`,
+which caps FEC growth before bitrate would drop below the floor —
+closing the death-spiral mechanism at MCS 0 edge-of-range.
+
+See `docs/superpowers/specs/2026-05-22-bitrate-aware-fec-design.md`.
 
 ## How to land a new phase
 

@@ -185,11 +185,23 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     )
 
     fec_kbounds_raw = fec_raw.get("k_bounds", {})
+    max_red = float(fec_raw.get("max_redundancy_ratio", 1.0))
+    hard_bpf = 1.0 + max_red
+    bpf = float(fec_raw.get("blocks_per_frame", hard_bpf))
+    if bpf < hard_bpf:
+        log.warning(
+            "config: fec.blocks_per_frame=%.2f is below "
+            "1 + max_redundancy_ratio (%.2f) — block_fill will exceed "
+            "one frame period under sustained loss. Set blocks_per_frame "
+            ">= %.2f for the hard latency bound.",
+            bpf, hard_bpf, hard_bpf,
+        )
     dynamic_fec = DynamicFecConfig(
         k_min=int(fec_kbounds_raw.get("min", 4)),
         k_max=int(fec_kbounds_raw.get("max", 16)),
         base_redundancy_ratio=float(fec_raw.get("base_redundancy_ratio", 0.5)),
-        max_redundancy_ratio=float(fec_raw.get("max_redundancy_ratio", 1.0)),
+        max_redundancy_ratio=max_red,
+        blocks_per_frame=bpf,
         n_loss_threshold=float(fec_raw.get("n_loss_threshold", 0.02)),
         n_loss_windows=int(fec_raw.get("n_loss_windows", 3)),
         n_loss_step=int(fec_raw.get("n_loss_step", 1)),
@@ -237,13 +249,16 @@ def _build_policy_config(raw: dict) -> PolicyConfig:
     )
     policy_raw = raw.get("policy", {})
     bitrate_raw = policy_raw.get("bitrate", {})
+    if "base_redundancy_ratio" in bitrate_raw:
+        log.warning(
+            "policy.bitrate.base_redundancy_ratio is deprecated and "
+            "ignored; fec.base_redundancy_ratio is now authoritative "
+            "(bitrate is derived from live (k, n) per the bitrate-aware "
+            "FEC design)."
+        )
     try:
         bitrate = BitrateConfig(
             utilization_factor=float(bitrate_raw.get("utilization_factor", 0.8)),
-            base_redundancy_ratio=float(bitrate_raw.get(
-                "base_redundancy_ratio",
-                float(fec_raw.get("base_redundancy_ratio", 0.5)),
-            )),
             min_bitrate_kbps=int(bitrate_raw.get("min_bitrate_kbps", 1000)),
             max_bitrate_kbps=int(bitrate_raw.get("max_bitrate_kbps", 24000)),
         )

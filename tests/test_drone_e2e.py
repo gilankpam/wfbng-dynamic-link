@@ -953,3 +953,5 @@ def test_vanilla_mode_hello_sets_vanilla_flag(tmp_path: Path):
         assert hello is not None, "no HELLO arrived within 3 s"
         assert hello[5] & HELLO_FLAG_VANILLA_WFB_NG, \
             f"expected vanilla bit set, got byte5=0x{hello[5]:02x}"
+
+
